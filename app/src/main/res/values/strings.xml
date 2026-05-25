@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- App -->
+    <string name="app_name">TERMO1</string>
+
+    <!-- Settings -->
+    <string name="settings_title">НАСТРОЙКИ TERMO1</string>
+    <string name="settings_sound">Звук при термике</string>
+    <string name="settings_vibrate">Вибрация</string>
+    <string name="settings_scheme">Цветовая схема</string>
+    <string name="scheme_dark">Тёмная</string>
+    <string name="scheme_light">Светлая (для солнца)</string>
+    <string name="scheme_high">Высокий контраст</string>
+    <string name="settings_simulate">Симуляция 75 с</string>
+    <string name="settings_cal_reset">Сброс калибровки</string>
+    <string name="settings_exit">Выход</string>
+    <string name="settings_version">Версия</string>
+    <string name="settings_log_path">Путь к логам</string>
+
+    <!-- Status strings -->
+    <string name="status_search">ПОИСК</string>
+    <string name="status_thermal">ТЕРМИК РЯДОМ</string>
+    <string name="status_climb">НАБОР</string>
+    <string name="status_sink">СНИЖЕНИЕ</string>
+    <string name="status_spiral">СПИРАЛЬ</string>
+
+    <!-- General -->
+    <string name="exit_dialog_title">Завершить TERMO1?</string>
+    <string name="exit_dialog_yes">Да</string>
+    <string name="exit_dialog_no">Нет</string>
+
+    <!-- Sensor errors -->
+    <string name="sensor_missing_barometer">Барометр не обнаружен (опционально)</string>
+    <string name="sensor_missing_accel">Акселерометр не обнаружен — приложение не может работать</string>
+    <string name="sensor_missing_gyro">Гироскоп не обнаружен (опционально)</string>
+    <string name="sensor_missing_mag">Магнитометр не обнаружен — компас недоступен</string>
+</resources>
