@@ -55,6 +55,8 @@ public class ThermalDetector {
     private static final float STRENGTH_SCALE = 15f;       // SNR, при котором strength≈6.3
 
     // === Верификация blip ===
+    private static final float ANGLE_DIFF_RESET_THRESHOLD = 45f; // градусов, сброс при резкой смене направления
+    private static final float AVG_FIRST_MIN = 0.0001f;          // мин. среднее первого периода для ratio
     // После стабилизации направления ждём 2 полных периода сигнала,
     // сравниваем level первого и последнего. Если растёт → CONFIRMED (термик),
     // если падает → REJECTED (пилот летит не туда), показываем "змейку".
@@ -69,6 +71,9 @@ public class ThermalDetector {
     private int confirmCount = 0;          // сколько сэмплов прошло после directionReady
     private float confirmStartLevel = 0f;  // level на момент начала верификации
     private int confirmTarget = 50;        // сколько сэмплов нужно для вердикта (адаптивно)
+    private float confirmSumFirst = 0f;    // сумма level за первый период (для averaged comparison)
+    private float confirmSumSecond = 0f;   // сумма level за второй период
+    private int confirmHalfTarget = 25;    // половина confirmTarget — граница периодов
     private int consecutiveRejections = 0; // сколько REJECTED подряд
     private boolean blipConfirmed = false; // true: показываем blip, false: скрываем
     private String pilotAdvice = "";       // рекомендация пилоту ("ЛЕТАЙ ЗМЕЙКОЙ")
@@ -137,13 +142,23 @@ public class ThermalDetector {
         // Запоминаем начальный level при старте верификации
         if (confirmCount == 0) {
             confirmStartLevel = level;
+            confirmSumFirst = 0f;
+            confirmSumSecond = 0f;
             // Адаптивное время: 2 полных периода сигнала
             float freq = signalProcessor.getDominantFrequency();
             float periodSec = 1f / Math.max(freq, 0.25f);
             confirmTarget = (int)(periodSec * 2f * 50f); // 2 периода × 50 Гц
             confirmTarget = Math.max(MIN_CONFIRM_SAMPLES, Math.min(MAX_CONFIRM_SAMPLES, confirmTarget));
+            confirmHalfTarget = confirmTarget / 2;
         }
         confirmCount++;
+
+        // Накопление level: первый период → confirmSumFirst, второй → confirmSumSecond
+        if (confirmCount <= confirmHalfTarget) {
+            confirmSumFirst += level;
+        } else {
+            confirmSumSecond += level;
+        }
 
         // Если направление сильно изменилось (>45°) — сбрасываем верификацию
         float angleDeg = signalProcessor.getStableDirDeg();
@@ -153,7 +168,7 @@ public class ThermalDetector {
         if (confirmCount > 5 && hasConfirmedBlip) {
             float angleDiff = Math.abs(angleDeg - lastConfirmedAngle);
             if (angleDiff > 180f) angleDiff = 360f - angleDiff;
-            if (angleDiff > 45f) {
+            if (angleDiff > ANGLE_DIFF_RESET_THRESHOLD) {
                 // Резкая смена направления — сбрасываем подтверждение
                 blipConfirmed = false;
                 confirmCount = 0;
@@ -162,7 +177,10 @@ public class ThermalDetector {
 
         // Достигли окна верификации — принимаем решение
         if (confirmCount >= confirmTarget && !blipConfirmed) {
-            float ratio = (confirmStartLevel > 0.0001f) ? level / confirmStartLevel : 1f;
+            float avgFirst  = (confirmHalfTarget > 0) ? confirmSumFirst  / confirmHalfTarget : 0f;
+            float avgSecond = (confirmTarget - confirmHalfTarget > 0)
+                    ? confirmSumSecond / (confirmTarget - confirmHalfTarget) : 0f;
+            float ratio = (avgFirst > AVG_FIRST_MIN) ? avgSecond / avgFirst : 1f;
 
             if (ratio >= CONFIRM_GROW_RATIO) {
                 // Сигнал растёт — летим к термику! ✓
@@ -294,6 +312,9 @@ public class ThermalDetector {
         confirmCount = 0;
         confirmStartLevel = 0f;
         confirmTarget = 50;
+        confirmSumFirst = 0f;
+        confirmSumSecond = 0f;
+        confirmHalfTarget = 25;
         blipConfirmed = false;
         consecutiveRejections = 0;
         pilotAdvice = "";

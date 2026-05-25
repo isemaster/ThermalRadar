@@ -11,6 +11,7 @@ import android.widget.*;
 
 import com.termo1.radar.BuildConfig;
 import com.termo1.radar.MainActivity;
+import com.termo1.radar.R;
 
 /**
  * Settings activity for TERMO1.
@@ -59,7 +60,7 @@ public class SettingsActivity extends Activity {
 
         // --- Title ---
         TextView title = new TextView(this);
-        title.setText("НАСТРОЙКИ TERMO1");
+        title.setText(getString(R.string.settings_title));
         title.setTextSize(24);
         title.setTypeface(android.graphics.Typeface.MONOSPACE);
         title.setTextColor(android.graphics.Color.argb(200, 76, 175, 80));
@@ -67,23 +68,23 @@ public class SettingsActivity extends Activity {
         root.addView(title);
 
         // Back button at TOP
-        Button backBtn = createButton("← Назад");
+        Button backBtn = createButton(getString(R.string.settings_back));
         backBtn.setOnClickListener(v -> {
             finish();
         });
         root.addView(backBtn);
 
         // 1. Sound checkbox
-        CheckBox soundCb = createCheckBox("Звук при термике", KEY_SOUND, true);
+        CheckBox soundCb = createCheckBox(getString(R.string.settings_sound), KEY_SOUND, true);
         root.addView(soundCb);
 
         // 2. Vibration checkbox
-        CheckBox vibrateCb = createCheckBox("Вибрация", KEY_VIBRATE, true);
+        CheckBox vibrateCb = createCheckBox(getString(R.string.settings_vibrate), KEY_VIBRATE, true);
         root.addView(vibrateCb);
 
         // 3. Color scheme selector
         TextView schemeLabel = new TextView(this);
-        schemeLabel.setText("Цветовая схема");
+        schemeLabel.setText(getString(R.string.settings_scheme));
         schemeLabel.setTextSize(18);
         schemeLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
         schemeLabel.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
@@ -94,7 +95,7 @@ public class SettingsActivity extends Activity {
         RadioGroup schemeGroup = new RadioGroup(this);
         schemeGroup.setOrientation(RadioGroup.VERTICAL);
 
-        String[] schemeLabels = {"Тёмная", "Светлая (для солнца)", "Высокий контраст"};
+        String[] schemeLabels = {getString(R.string.scheme_dark), getString(R.string.scheme_light), getString(R.string.scheme_high)};
         for (int i = 0; i < schemeLabels.length; i++) {
             RadioButton rb = new RadioButton(this);
             rb.setText(schemeLabels[i]);
@@ -118,7 +119,7 @@ public class SettingsActivity extends Activity {
         root.addView(spacer1);
 
         // 4. Simulation button
-        Button simulateBtn = createButton("Симуляция 75 с");
+        Button simulateBtn = createButton(getString(R.string.settings_simulate));
         simulateBtn.setOnClickListener(v -> {
             Intent intent = new Intent(this, MainActivity.class);
             intent.putExtra("simulate", true);
@@ -134,7 +135,7 @@ public class SettingsActivity extends Activity {
 
         // 5a. Vario smoothing slider (5-100 samples)
         TextView smoothLabel = new TextView(this);
-        smoothLabel.setText("Усреднение варио: ");
+        smoothLabel.setText(getString(R.string.settings_vario_smooth));
         smoothLabel.setTextSize(18);
         smoothLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
         smoothLabel.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
@@ -143,7 +144,7 @@ public class SettingsActivity extends Activity {
 
         final android.widget.TextView smoothValue = new android.widget.TextView(this);
         int currentSmooth = prefs.getInt("vario_smooth", 30);
-        smoothValue.setText(currentSmooth + " отсчётов");
+        smoothValue.setText(String.format(getString(R.string.settings_smooth_format), currentSmooth));
         smoothValue.setTextSize(16);
         smoothValue.setTypeface(android.graphics.Typeface.MONOSPACE);
         smoothValue.setTextColor(android.graphics.Color.argb(255, 255, 255, 0));
@@ -156,7 +157,7 @@ public class SettingsActivity extends Activity {
         smoothSeek.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
             public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) {
                 int value = progress + 5;
-                smoothValue.setText(value + " отсчётов");
+                smoothValue.setText(String.format(getString(R.string.settings_smooth_format), value));
                 prefs.edit().putInt("vario_smooth", value).apply();
             }
             public void onStartTrackingTouch(android.widget.SeekBar seekBar) {}
@@ -171,10 +172,10 @@ public class SettingsActivity extends Activity {
         root.addView(spacer2b);
 
         // 5. Calibration reset button
-        Button calResetBtn = createButton("Сброс калибровки");
+        Button calResetBtn = createButton(getString(R.string.settings_cal_reset));
         calResetBtn.setOnClickListener(v -> {
             prefs.edit().remove("calibration_done").apply();
-            Toast.makeText(this, "Калибровка сброшена", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, getString(R.string.toast_cal_reset), Toast.LENGTH_SHORT).show();
         });
         root.addView(calResetBtn);
 
@@ -185,7 +186,7 @@ public class SettingsActivity extends Activity {
         root.addView(spacer3);
 
         // 6. Send logs button — opens file picker dialog
-        Button sendLogsBtn = createButton("Отправить логи");
+        Button sendLogsBtn = createButton(getString(R.string.settings_send_logs));
         sendLogsBtn.setOnClickListener(v -> showLogFilePicker());
         root.addView(sendLogsBtn);
 
@@ -196,33 +197,33 @@ public class SettingsActivity extends Activity {
         root.addView(spacer4);
 
         // 6b. Flight log START button (auto-log by vario)
-        final Button flightLogStartBtn = createButton("Лог полёта СТАРТ");
+        final Button flightLogStartBtn = createButton(getString(R.string.settings_flight_log_start));
         flightLogStartBtn.setOnClickListener(v -> {
             prefs.edit()
                 .putBoolean("flight_log_enabled", true)
                 .putLong("flight_log_start_ms", System.currentTimeMillis())
                 .apply();
-            Toast.makeText(this, "✅ Запись полёта активна\nАвтостарт по варио > 1 м/с",
+            Toast.makeText(this, getString(R.string.toast_flight_log_start),
                     Toast.LENGTH_LONG).show();
         });
         root.addView(flightLogStartBtn);
 
         // 6c. Flight log STOP button
-        Button flightLogStopBtn = createButton("Лог полёта СТОП");
+        Button flightLogStopBtn = createButton(getString(R.string.settings_flight_log_stop));
         flightLogStopBtn.setOnClickListener(v -> {
             new AlertDialog.Builder(this)
-                    .setTitle("Остановить запись?")
-                    .setPositiveButton("Да", (dialog, w) -> {
+                    .setTitle(getString(R.string.dialog_stop_recording_title))
+                    .setPositiveButton(getString(R.string.exit_dialog_yes), (dialog, w) -> {
                         prefs.edit().putBoolean("flight_log_enabled", false).apply();
                         // Signal MainActivity to stop via intent extra
                         Intent intent = new Intent(this, MainActivity.class);
                         intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
                         intent.putExtra("stop_flight_log", true);
                         startActivity(intent);
-                        Toast.makeText(this, "✋ Запись остановлена",
+                        Toast.makeText(this, getString(R.string.toast_recording_stopped),
                                 Toast.LENGTH_SHORT).show();
                     })
-                    .setNegativeButton("Нет", null)
+                    .setNegativeButton(getString(R.string.exit_dialog_no), null)
                     .show();
         });
         root.addView(flightLogStopBtn);
@@ -257,7 +258,7 @@ public class SettingsActivity extends Activity {
         root.addView(spacerBottom);
 
         // Exit button at VERY BOTTOM
-        Button exitBtn = createButton("Выход");
+        Button exitBtn = createButton(getString(R.string.settings_exit));
         exitBtn.setOnClickListener(v -> {
             finishAffinity();
         });
@@ -306,20 +307,20 @@ public class SettingsActivity extends Activity {
     private void showLogFilePicker() {
         java.io.File extDir = getExternalFilesDir(null);
         if (extDir == null) {
-            Toast.makeText(this, "Внешнее хранилище недоступно",
+            Toast.makeText(this, getString(R.string.toast_no_external_storage),
                     Toast.LENGTH_SHORT).show();
             return;
         }
         java.io.File logDir = new java.io.File(extDir, "logs");
         if (!logDir.exists() || !logDir.isDirectory()) {
-            Toast.makeText(this, "Нет логов для отправки",
+            Toast.makeText(this, getString(R.string.toast_no_logs),
                     Toast.LENGTH_SHORT).show();
             return;
         }
 
         final java.io.File[] files = logDir.listFiles();
         if (files == null || files.length == 0) {
-            Toast.makeText(this, "Нет логов для отправки",
+            Toast.makeText(this, getString(R.string.toast_no_logs),
                     Toast.LENGTH_SHORT).show();
             return;
         }
@@ -349,13 +350,13 @@ public class SettingsActivity extends Activity {
         final boolean[] checked = new boolean[files.length];
 
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Логи (отметьте нужные)");
+        builder.setTitle(getString(R.string.dialog_log_picker_title));
 
         builder.setMultiChoiceItems(names, checked, (dialog, which, isChecked) -> {
             checked[which] = isChecked;
         });
 
-        builder.setPositiveButton("Отправить", (dialog, which) -> {
+        builder.setPositiveButton(getString(R.string.dialog_send), (dialog, which) -> {
             int sent = 0;
             for (int i = 0; i < files.length; i++) {
                 if (checked[i]) {
@@ -364,12 +365,12 @@ public class SettingsActivity extends Activity {
                 }
             }
             if (sent == 0) {
-                Toast.makeText(this, "Не выбрано ни одного файла",
+                Toast.makeText(this, getString(R.string.toast_no_files_selected),
                         Toast.LENGTH_SHORT).show();
             }
         });
 
-        builder.setNeutralButton("Удалить", (dialog, which) -> {
+        builder.setNeutralButton(getString(R.string.dialog_delete), (dialog, which) -> {
             int deleted = 0;
             for (int i = 0; i < files.length; i++) {
                 if (checked[i] && files[i].delete()) {
@@ -377,17 +378,17 @@ public class SettingsActivity extends Activity {
                 }
             }
             if (deleted > 0) {
-                Toast.makeText(this, "Удалено " + deleted + " файлов",
+                Toast.makeText(this, String.format(getString(R.string.toast_deleted_files), deleted),
                         Toast.LENGTH_SHORT).show();
                 // Re-open dialog with updated list
                 showLogFilePicker();
             } else {
-                Toast.makeText(this, "Не выбрано ни одного файла",
+                Toast.makeText(this, getString(R.string.toast_no_files_selected),
                         Toast.LENGTH_SHORT).show();
             }
         });
 
-        builder.setNegativeButton("Отмена", null);
+        builder.setNegativeButton(getString(R.string.dialog_cancel), null);
         builder.show();
     }
 
@@ -414,7 +415,7 @@ public class SettingsActivity extends Activity {
             startActivity(Intent.createChooser(shareIntent,
                     "Отправить лог: " + file.getName()));
         } catch (Exception e) {
-            Toast.makeText(this, "Ошибка: " + e.getMessage(),
+            Toast.makeText(this, getString(R.string.send_error_prefix) + e.getMessage(),
                     Toast.LENGTH_LONG).show();
         }
     }

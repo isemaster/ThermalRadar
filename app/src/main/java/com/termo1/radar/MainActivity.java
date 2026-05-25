@@ -15,8 +15,6 @@ import android.hardware.SensorEvent;
 import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
 import android.location.Location;
-import android.location.LocationListener;
-import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -24,6 +22,12 @@ import android.os.PowerManager;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
+
+import com.google.android.gms.location.FusedLocationProviderClient;
+import com.google.android.gms.location.LocationCallback;
+import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationResult;
+import com.google.android.gms.location.LocationServices;
 
 import com.termo1.radar.core.SimulationManager;
 import com.termo1.radar.core.SignalProcessor;
@@ -38,7 +42,7 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
-public class MainActivity extends Activity implements SensorEventListener, LocationListener {
+public class MainActivity extends Activity implements SensorEventListener {
 
     private static final int SAMPLE_RATE_HZ = 50;
     private static final int RENDER_FPS = 30;
@@ -75,6 +79,8 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     // ---- Compass (fusion) ----
     private final float[] rotationMatrix = new float[9];
     private final float[] orientationVals = new float[3];
+    // reusable buffer — избегаем new float[3] в onSensorChanged (50 Гц)
+    private final float[] worldAccelOut = new float[3];
     private volatile float heading = 0.0f;
     private volatile float pitch = 0.0f;    // наклон вперёд/назад (радианы)
     private volatile float roll = 0.0f;     // крен влево/вправо (радианы)
@@ -95,6 +101,8 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     private static final float VARIO_ALPHA_CALM = 0.95f;      // штиль: сильное сглаживание
     private static final float VARIO_ALPHA_NORMAL = 0.85f;    // норма: умеренное
     private static final float VARIO_ALPHA_TURBULENT = 0.60f; // горы: быстрый отклик
+    private static final float NOISE_FLOOR_FIXED = 3.5f;     // g, фиксированный noiseFloor для SNR
+    private static final float HEADING_EMA_ALPHA = 0.3f;     // коэффициент EMA для сглаживания heading
     private int varioProfile = 1;            // 0=Calm, 1=Normal, 2=Turbulent (из prefs)
     private static final String KEY_VARIO_PROFILE = "vario_profile";
     private int varioSmoothSamples = 30;    // усреднение варио (5-100 отсчётов)
@@ -113,10 +121,12 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
 
     // ---- Thermals ----
     private final List<ThermalBlip> thermals = new ArrayList<ThermalBlip>();
+    private final List<ThermalBlip> thermalsCopy = new ArrayList<ThermalBlip>();
     private final Object thermalLock = new Object();
 
     // ---- GPS ----
-    private LocationManager locationManager;
+    private FusedLocationProviderClient fusedLocationClient;
+    private LocationCallback locationCallback;
     private volatile float gpsSpeed = 0.0f;
     private volatile float gpsHeading = 0.0f;
     private boolean gpsReady = false;
@@ -227,9 +237,12 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         // Runtime permission request for GPS (Android 6+)
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
             if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED
+                    && checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)
                     != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(
-                        new String[]{android.Manifest.permission.ACCESS_FINE_LOCATION},
+                        new String[]{android.Manifest.permission.ACCESS_FINE_LOCATION,
+                                android.Manifest.permission.ACCESS_COARSE_LOCATION},
                         1001);
             }
         }
@@ -255,7 +268,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         // System services
         sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         powerManager = (PowerManager) getSystemService(POWER_SERVICE);
-        locationManager = (LocationManager) getSystemService(LOCATION_SERVICE);
+        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
 
         // Log buffer
         logBuffer = new StringBuilder();
@@ -473,38 +486,17 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
                     // Используем rotationMatrix из компаса
                     if (compassReady) {
                         float[] in = event.values;
-                        float[] out = new float[3];
-                        out[0] = rotationMatrix[0] * in[0] + rotationMatrix[1] * in[1] + rotationMatrix[2] * in[2];
-                        out[1] = rotationMatrix[3] * in[0] + rotationMatrix[4] * in[1] + rotationMatrix[5] * in[2];
+                        worldAccelOut[0] = rotationMatrix[0] * in[0] + rotationMatrix[1] * in[1] + rotationMatrix[2] * in[2];
+                        worldAccelOut[1] = rotationMatrix[3] * in[0] + rotationMatrix[4] * in[1] + rotationMatrix[5] * in[2];
                         // worldAccel[0]=восток, worldAccel[1]=север, z нам не нужен
-                        thermalDetector.processSample(out[0] / 9.81f, out[1] / 9.81f);
+                        thermalDetector.processSample(worldAccelOut[0] / 9.81f, worldAccelOut[1] / 9.81f);
                     } else {
                         thermalDetector.processSample(ax, ay);
                     }
                 }
                 // 50 Гц лог во время полёта — каждый сэмпл акселерометра
                 if (isLogging) {
-                    long now = System.currentTimeMillis();
-                    long dtMs = now - flightStartMs;
-                    logBuffer.append(dtMs).append(",");
-                    logBuffer.append(ax * 1000f).append(",");  // X (mG)
-                    logBuffer.append(ay * 1000f).append(",");  // Y (mG)
-                    logBuffer.append(az * 1000f).append(",");  // Z (mG)
-                    logBuffer.append(latestGyroX * 1000f).append(","); // gyro X (mdps)
-                    logBuffer.append(latestGyroY * 1000f).append(","); // gyro Y (mdps)
-                    logBuffer.append(latestGyroZ * 1000f).append(","); // gyro Z (mdps)
-                    logBuffer.append(latestMagX).append(",");   // mag X (μT)
-                    logBuffer.append(latestMagY).append(",");   // mag Y (μT)
-                    logBuffer.append(latestMagZ).append(",");   // mag Z (μT)
-                    logBuffer.append(latestPressure).append(","); // pressure (hPa)
-                    logBuffer.append(pitch).append(",");          // pitch (rad)
-                    logBuffer.append(roll).append(",");           // roll (rad)
-                    logBuffer.append(getLogHeading()).append(","); // heading (°, fallback to GPS)
-                    logBuffer.append(gpsSpeed).append(",");       // GPS speed (m/s)
-                    logBuffer.append(gpsHeading);                 // GPS heading (°)
-                    // Thermal blip info
-                    appendThermalLog(logBuffer);
-                    logBuffer.append("\n");
+                    appendLogLine(logBuffer);
                 }
                 break;
             }
@@ -586,7 +578,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
                 float diff = newHeading - heading;
                 if (diff > 180f) diff -= 360f;
                 else if (diff < -180f) diff += 360f;
-                heading = (heading + diff * 0.3f + 360f) % 360f;
+                heading = (heading + diff * HEADING_EMA_ALPHA + 360f) % 360f;
             }
         } else if (magnetometer == null) {
             // Нет магнитометра — pitch/roll из гравитации, heading из GPS
@@ -700,7 +692,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
                 sum += hpBuf[i] * hpBuf[i];
             }
             float rms = (float) Math.sqrt(sum / 64.0f);
-            recentSnr = rms / 3.5f; // noiseFloor fixed at 3.5
+            recentSnr = rms / NOISE_FLOOR_FIXED; // noiseFloor fixed at 3.5
             if (recentSnr > maxSnr) {
                 maxSnr = recentSnr;
             }
@@ -727,6 +719,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
             int reduction = (int)(turb * 80f);
             reduction = Math.min(reduction, n / 2);
             n = n - reduction;
+            if (n < 1) n = 1; // safety: n > 0 for division
             alpha = 1f - 1f / n;
         }
 
@@ -768,27 +761,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         // Main sensor log — в реальном режиме пишется 50 Гц в onSensorChanged(TYPE_LINEAR_ACCEL)
         if (simMode && isLogging) {
             sampleCount++;
-            long now = System.currentTimeMillis();
-            long dtMs = now - flightStartMs;
-            logBuffer.append(dtMs).append(",");
-            logBuffer.append(latestAccelX * 1000f).append(",");
-            logBuffer.append(latestAccelY * 1000f).append(",");
-            logBuffer.append(latestAccelZ * 1000f).append(",");
-            logBuffer.append(latestGyroX * 1000f).append(",");
-            logBuffer.append(latestGyroY * 1000f).append(",");
-            logBuffer.append(latestGyroZ * 1000f).append(",");
-            logBuffer.append(latestMagX).append(",");
-            logBuffer.append(latestMagY).append(",");
-            logBuffer.append(latestMagZ).append(",");
-            logBuffer.append(latestPressure).append(",");
-            logBuffer.append(pitch).append(",");
-            logBuffer.append(roll).append(",");
-            logBuffer.append(getLogHeading()).append(",");
-            logBuffer.append(gpsSpeed).append(",");
-            logBuffer.append(gpsHeading);
-            // Thermal blip info (что видит пилот)
-            appendThermalLog(logBuffer);
-            logBuffer.append("\n");
+            appendLogLine(logBuffer);
         }
 
         // GPS track logging (1 Hz, into separate buffer)
@@ -919,6 +892,32 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         sb.append(",");
         sb.append(",");
         sb.append(",");
+    }
+
+    /** Единый метод для записи строки лога (50 Гц). Устраняет дублирование кода между
+     *  real-time и simulation режимами. Использует latestAccelX/Y/Z (уже установлены). */
+    private void appendLogLine(StringBuilder sb) {
+        long now = System.currentTimeMillis();
+        long dtMs = now - flightStartMs;
+        sb.append(dtMs).append(",");
+        sb.append(latestAccelX * 1000f).append(",");  // X (mG)
+        sb.append(latestAccelY * 1000f).append(",");  // Y (mG)
+        sb.append(latestAccelZ * 1000f).append(",");  // Z (mG)
+        sb.append(latestGyroX * 1000f).append(",");   // gyro X (mdps)
+        sb.append(latestGyroY * 1000f).append(",");   // gyro Y (mdps)
+        sb.append(latestGyroZ * 1000f).append(",");   // gyro Z (mdps)
+        sb.append(latestMagX).append(",");             // mag X (μT)
+        sb.append(latestMagY).append(",");             // mag Y (μT)
+        sb.append(latestMagZ).append(",");             // mag Z (μT)
+        sb.append(latestPressure).append(",");         // pressure (hPa)
+        sb.append(pitch).append(",");                  // pitch (rad)
+        sb.append(roll).append(",");                   // roll (rad)
+        sb.append(getLogHeading()).append(",");        // heading (°, fallback to GPS)
+        sb.append(gpsSpeed).append(",");               // GPS speed (m/s)
+        sb.append(gpsHeading);                         // GPS heading (°)
+        // Thermal blip info
+        appendThermalLog(sb);
+        sb.append("\n");
     }
 
     private void stopLogging() {
@@ -1164,13 +1163,42 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     // ========================================================================
 
     private void startGps() {
+        if (fusedLocationClient == null) return;
+        // Build LocationRequest: 1s interval, 0 priority when app in background
+        LocationRequest locationRequest = LocationRequest.create()
+                .setInterval(1000L)
+                .setFastestInterval(500L)
+                .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
+
+        locationCallback = new LocationCallback() {
+            @Override
+            public void onLocationResult(LocationResult locationResult) {
+                if (locationResult == null) return;
+                for (Location location : locationResult.getLocations()) {
+                    gpsSpeed = location.hasSpeed() ? location.getSpeed() : 0.0f;
+                    gpsHeading = location.hasBearing() ? location.getBearing() : 0.0f;
+                    gpsReady = true;
+                    gpsLat = location.getLatitude();
+                    gpsLon = location.getLongitude();
+                    if (location.hasAltitude()) {
+                        gpsAltitude = (float) location.getAltitude();
+                        if (!altitudeInitialized) {
+                            startAltitude = gpsAltitude;
+                            altitudeInitialized = true;
+                        }
+                    }
+                }
+            }
+        };
+
+        // Request location updates with permission check
         try {
-            if (locationManager != null) {
-                locationManager.requestLocationUpdates(
-                        LocationManager.GPS_PROVIDER,
-                        1000L,
-                        1.0f,
-                        this);
+            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED
+                    || checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                fusedLocationClient.requestLocationUpdates(locationRequest,
+                        locationCallback, Looper.getMainLooper());
             }
         } catch (SecurityException e) {
             // Permission not granted
@@ -1178,38 +1206,15 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     }
 
     private void stopGps() {
-        if (locationManager != null) {
+        if (fusedLocationClient != null && locationCallback != null) {
             try {
-                locationManager.removeUpdates(this);
+                fusedLocationClient.removeLocationUpdates(locationCallback);
             } catch (SecurityException e) {
                 // Ignore
             }
         }
+        locationCallback = null;
     }
-
-    @Override
-    @SuppressWarnings("deprecation")
-    public void onLocationChanged(Location location) {
-        gpsSpeed = location.hasSpeed() ? location.getSpeed() : 0.0f;
-        gpsHeading = location.hasBearing() ? location.getBearing() : 0.0f;
-        gpsReady = true;
-        gpsLat = location.getLatitude();
-        gpsLon = location.getLongitude();
-        if (location.hasAltitude()) {
-            gpsAltitude = (float) location.getAltitude();
-            if (!altitudeInitialized) {
-                startAltitude = gpsAltitude;
-                altitudeInitialized = true;
-            }
-        }
-    }
-
-    @Override
-    public void onStatusChanged(String provider, int status, Bundle extras) {}
-    @Override
-    public void onProviderEnabled(String provider) {}
-    @Override
-    public void onProviderDisabled(String provider) {}
 
     // ========================================================================
     // WakeLock
@@ -1385,8 +1390,10 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         testCorrectCount = 0;
         testWindowIdx = 0;
         testWindowFill = 0;
+        java.util.Arrays.fill(testWindowBuffer, false);
         headingWindowIdx = 0;
         headingWindowFill = 0;
+        java.util.Arrays.fill(headingWindow, 0f);
         testStepCorrect = false;
         testCorrectStartMs = 0;
         testFeedback = "";
@@ -2080,9 +2087,9 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
 
             // --- Draw radar ---
             long nowMs = System.currentTimeMillis();
-            List<ThermalBlip> thermalsCopy;
             synchronized (thermalLock) {
-                thermalsCopy = new ArrayList<ThermalBlip>(thermals);
+                thermalsCopy.clear();
+                thermalsCopy.addAll(thermals);
             }
             radarRenderer.draw(canvas, nowMs, thermalsCopy,
                     getCompassHeading(), vario, currentStatus,

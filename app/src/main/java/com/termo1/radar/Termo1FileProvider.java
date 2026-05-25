@@ -9,6 +9,7 @@ import android.util.Log;
 
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.IOException;
 
 /**
  * Minimal ContentProvider to serve log files for Intent.ACTION_SEND.
@@ -34,7 +35,20 @@ public class Termo1FileProvider extends ContentProvider {
             Log.e(TAG, "External storage not available");
             throw new FileNotFoundException("External storage not available");
         }
+        // Path traversal protection: нормализуем и проверяем, что файл внутри extDir
         File file = new File(extDir, path);
+        try {
+            String canonicalPath = file.getCanonicalPath();
+            String canonicalExtDir = extDir.getCanonicalPath();
+            if (!canonicalPath.startsWith(canonicalExtDir + File.separator)
+                    && !canonicalPath.equals(canonicalExtDir)) {
+                Log.e(TAG, "Path traversal blocked: " + canonicalPath);
+                throw new FileNotFoundException("Invalid path");
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to resolve canonical path", e);
+            throw new FileNotFoundException("Invalid path");
+        }
         if (!file.exists()) {
             Log.e(TAG, "File not found: " + file.getAbsolutePath());
             throw new FileNotFoundException("File not found: " + path);

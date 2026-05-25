@@ -21,9 +21,10 @@ public class RadarRenderer {
     private final Paint dashPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint crossPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint pilotFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint pilotGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG); // shadow cached once
     private final Paint pilotPulsePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint thermalFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint thermalGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint thermalGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG); // shadow cached once
     private final Paint thermalStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint dashedLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint cardTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -58,7 +59,10 @@ public class RadarRenderer {
         // pilot
         pilotFillPaint.setStyle(Paint.Style.FILL);
         pilotFillPaint.setColor(Color.GREEN);
-        pilotFillPaint.setShadowLayer(18, 0, 0, Color.GREEN);
+
+        pilotGlowPaint.setStyle(Paint.Style.FILL);
+        pilotGlowPaint.setColor(Color.GREEN);
+        pilotGlowPaint.setShadowLayer(18, 0, 0, Color.GREEN);
 
         pilotPulsePaint.setStyle(Paint.Style.STROKE);
         pilotPulsePaint.setStrokeWidth(1.5f);
@@ -214,9 +218,10 @@ public class RadarRenderer {
     }
 
     private void drawPilot(Canvas c, long nowMs) {
-        // solid dot
+        // glow (shadow cached — не переустанавливаем каждый кадр)
+        c.drawCircle(cx, cy, 10, pilotGlowPaint);
+        // solid dot (без shadow — отдельный Paint)
         c.drawCircle(cx, cy, 7, pilotFillPaint);
-        pilotFillPaint.setShadowLayer(0, 0, 0, 0);
 
         // pulse ring: 7 + 3*sin(t/300)
         float pulse = 7 + (float) Math.sin(nowMs / 300.0) * 3;
@@ -263,10 +268,9 @@ public class RadarRenderer {
             // At 0m: 42px, at 50m: 29.5px, at 100m: 17px, at 150m: 8px
             // Keep minimum size for visibility
 
-            // glow
+            // glow (shadow cached в конструкторе — не переустанавливаем)
             thermalGlowPaint.setColor(Color.argb((int) (alpha * 40), 255, 193, 7));
             c.drawCircle(t.px, t.py, size * 2, thermalGlowPaint);
-            thermalGlowPaint.setShadowLayer(0, 0, 0, 0);
 
             // filled circle #FFC107
             thermalFillPaint.setColor(Color.argb((int) (alpha * 230), 255, 193, 7));

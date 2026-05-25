@@ -34,10 +34,11 @@ public class SignalProcessor {
     private static final float HP_A2 =  0.9565f;
 
     // Состояние фильтров (X и Y каналы, каждая секция)
-    private float hpX_x1, hpX_x2, hpX_y1, hpX_y2;  // ФВЧ, канал X
-    private float lpX_x1, lpX_x2, lpX_y1, lpX_y2;  // ФНЧ, канал X
-    private float hpY_x1, hpY_x2, hpY_y1, hpY_y2;  // ФВЧ, канал Y
-    private float lpY_x1, lpY_x2, lpY_y1, lpY_y2;  // ФНЧ, канал Y
+    // [x1, x2, y1, y2] — packed в float[4] для передачи в biquad
+    private final float[] hpX_state = new float[4];
+    private final float[] lpX_state = new float[4];
+    private final float[] hpY_state = new float[4];
+    private final float[] lpY_state = new float[4];
 
     // === RMS (скользящее окно) ===
     private static final int WINDOW = 64; // ~1.3 с при 50 Гц
@@ -55,6 +56,17 @@ public class SignalProcessor {
     private float noiseFloor = 0.002f;   // g, начальное значение
     private int calibCount = 0;
     private static final int CALIB_SAMPLES = 100;
+
+    // === Фильтр/частотные константы ===
+    private static final float BP_MIN_FREQ = 0.25f;        // Гц, нижняя граница полосового фильтра
+    private static final float BP_MAX_FREQ = 2.5f;         // Гц, верхняя граница полосового фильтра
+    private static final float TURBULENCE_DIR_THRESHOLD = 0.001f; // g, мин. уровень для расчёта направления
+    private static final float NOISE_FLOOR_MIN = 0.0001f;  // g, нижняя граница шумового порога
+    private static final float NOISE_TRACK_MULTIPLIER = 2.5f;  // множитель noiseFloor для отслеживания шума
+    private static final float NOISE_TRACK_ALPHA = 0.0005f;     // скорость адаптации шума (τ ≈ 40 с при 50 Гц)
+    private static final float FREQ_CENTER = 0.5f;          // Гц, центральная частота для size factor
+    private static final float FREQ_RANGE = 2.0f;           // Гц, диапазон от центра до макс
+    private static final float FREQ_SIZE_SCALE = 0.5f;      // диапазон size factor [0.5..1.0]
 
     // === Zero-crossing детектор частоты ===
     private float prevBpX = 0f;          // предыдущее значение bandpass X (для ZC)
@@ -74,12 +86,15 @@ public class SignalProcessor {
     }
 
     /**
-     * Biquad-секция ФНЧ.
+     * Biquad-секция ФНЧ с anti-windup (clamp выхода).
      */
     private float lowpass(float x, float[] state) {
         // state: [x1, x2, y1, y2]
         float y = LP_B0 * x + LP_B1 * state[0] + LP_B2 * state[1]
                 - LP_A1 * state[2] - LP_A2 * state[3];
+        // Anti-windup: IIR может раздуть state при DC-составляющей
+        if (y >  100f) y =  100f;
+        if (y < -100f) y = -100f;
         state[1] = state[0];
         state[0] = x;
         state[3] = state[2];
@@ -88,11 +103,14 @@ public class SignalProcessor {
     }
 
     /**
-     * Biquad-секция ФВЧ.
+     * Biquad-секция ФВЧ с anti-windup (clamp выхода).
      */
     private float highpass(float x, float[] state) {
         float y = HP_B0 * x + HP_B1 * state[0] + HP_B2 * state[1]
                 - HP_A1 * state[2] - HP_A2 * state[3];
+        // Anti-windup
+        if (y >  100f) y =  100f;
+        if (y < -100f) y = -100f;
         state[1] = state[0];
         state[0] = x;
         state[3] = state[2];
@@ -104,33 +122,20 @@ public class SignalProcessor {
      * Пропустить сэмпл через полосовой фильтр (ФВЧ + ФНЧ).
      */
     private float bandpassX(float x) {
-        // ФВЧ 0.25 Гц
-        float[] hpState = {hpX_x1, hpX_x2, hpX_y1, hpX_y2};
-        float hpOut = highpass(x, hpState);
-        hpX_x1 = hpState[0]; hpX_x2 = hpState[1]; hpX_y1 = hpState[2]; hpX_y2 = hpState[3];
-        // ФНЧ 2.5 Гц
-        float[] lpState = {lpX_x1, lpX_x2, lpX_y1, lpX_y2};
-        float lpOut = lowpass(hpOut, lpState);
-        lpX_x1 = lpState[0]; lpX_x2 = lpState[1]; lpX_y1 = lpState[2]; lpX_y2 = lpState[3];
-        return lpOut;
+        float hpOut = highpass(x, hpX_state);
+        return lowpass(hpOut, lpX_state);
     }
 
     private float bandpassY(float y) {
-        float[] hpState = {hpY_x1, hpY_x2, hpY_y1, hpY_y2};
-        float hpOut = highpass(y, hpState);
-        hpY_x1 = hpState[0]; hpY_x2 = hpState[1]; hpY_y1 = hpState[2]; hpY_y2 = hpState[3];
-        float[] lpState = {lpY_x1, lpY_x2, lpY_y1, lpY_y2};
-        float lpOut = lowpass(hpOut, lpState);
-        lpY_x1 = lpState[0]; lpY_x2 = lpState[1]; lpY_y1 = lpState[2]; lpY_y2 = lpState[3];
-        return lpOut;
+        float hpOut = highpass(y, hpY_state);
+        return lowpass(hpOut, lpY_state);
     }
 
     public void reset() {
         // Сброс состояния фильтров
-        hpX_x1 = hpX_x2 = hpX_y1 = hpX_y2 = 0f;
-        lpX_x1 = lpX_x2 = lpX_y1 = lpX_y2 = 0f;
-        hpY_x1 = hpY_x2 = hpY_y1 = hpY_y2 = 0f;
-        lpY_x1 = lpY_x2 = lpY_y1 = lpY_y2 = 0f;
+        for (int i = 0; i < 4; i++) {
+            hpX_state[i] = lpX_state[i] = hpY_state[i] = lpY_state[i] = 0f;
+        }
         // Сброс RMS
         idx = 0;
         fill = 0;
@@ -178,8 +183,8 @@ public class SignalProcessor {
             // Каждое пересечение = половина периода. Частота = crossings / 2 / время(с)
             float measuredFreq = (totalZc / 2f) / ((now - zcTimerMs) / 1000f);
             // Ограничиваем полосой фильтра
-            if (measuredFreq < 0.25f) measuredFreq = 0.25f;
-            if (measuredFreq > 2.5f) measuredFreq = 2.5f;
+            if (measuredFreq < BP_MIN_FREQ) measuredFreq = BP_MIN_FREQ;
+            if (measuredFreq > BP_MAX_FREQ) measuredFreq = BP_MAX_FREQ;
             if (totalZc > 0) {
                 dominantFreq = measuredFreq;
             }
@@ -201,9 +206,9 @@ public class SignalProcessor {
         // Если bandpass близок к шуму (< 2.5× noiseFloor) — медленно подстраиваемся
         // Чтобы термики не калибровались как шум
         float absBp = Math.abs(bpOutX) + Math.abs(bpOutY);
-        if (absBp < noiseFloor * 2.5f) {
-            noiseFloor += (absBp - noiseFloor) * 0.0005f; // τ ≈ 40 с при 50 Гц
-            if (noiseFloor < 0.0001f) noiseFloor = 0.0001f; // нижняя граница
+        if (absBp < noiseFloor * NOISE_TRACK_MULTIPLIER) {
+            noiseFloor += (absBp - noiseFloor) * NOISE_TRACK_ALPHA;
+            if (noiseFloor < NOISE_FLOOR_MIN) noiseFloor = NOISE_FLOOR_MIN;
         }
 
         // ---- RMS окно ----
@@ -234,7 +239,7 @@ public class SignalProcessor {
 
             // Направление: знак от среднего BP (4 квадранта), амплитуда от RMS
             // atan2(X, Y): 0°=север (ось Y), 90°=восток (ось X) — соответствует радару
-            if (turbulenceLevel > 0.001f) {
+            if (turbulenceLevel > TURBULENCE_DIR_THRESHOLD) {
                 float dirY = (meanY >= 0) ? rmsY : -rmsY;
                 float dirX = (meanX >= 0) ? rmsX : -rmsX;
                 turbulenceDir = (float) Math.atan2(dirX, dirY);
@@ -275,7 +280,7 @@ public class SignalProcessor {
      */
     public float getFreqSizeFactor() {
         // 0.5 Гц → 1.0, 2.5 Гц → 0.5, линейно
-        float factor = 1f - (dominantFreq - 0.5f) / 2.0f * 0.5f;
+        float factor = 1f - (dominantFreq - FREQ_CENTER) / FREQ_RANGE * FREQ_SIZE_SCALE;
         return Math.max(0.5f, Math.min(1f, factor));
     }
 
