@@ -17,6 +17,23 @@ public class UiManager {
     public static final int SCHEME_HIGH_CONTRAST = 2; // max contrast
 
     private int colorScheme = SCHEME_DARK;
+    private float density = 1.0f;
+
+    /** Установить плотность экрана для масштабирования шрифтов */
+    public void setDensity(float d) {
+        this.density = d;
+        applyTextSizes();
+    }
+
+    /** Пересчитать размеры шрифтов под текущую плотность */
+    private void applyTextSizes() {
+        varioPaint.setTextSize(110f * density);
+        varioUnitPaint.setTextSize(33f * density);
+        altMslPaint.setTextSize(90f * density);
+        altAglPaint.setTextSize(90f * density);
+        flightTimePaint.setTextSize(75f * density);
+        sysTimePaint.setTextSize(65f * density);
+    }
 
     // === VARIOMETER ===
     private final Paint varioPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -56,47 +73,40 @@ public class UiManager {
     private int colorTextMuted;
 
     public UiManager() {
-        // vario text — bold 220px monospace (center aligned)
         varioPaint.setAntiAlias(true);
-        varioPaint.setTextSize(220);
         varioPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         varioPaint.setTextAlign(Paint.Align.CENTER);
 
         varioUnitPaint.setAntiAlias(true);
-        varioUnitPaint.setTextSize(66);
         varioUnitPaint.setTypeface(Typeface.MONOSPACE);
         varioUnitPaint.setTextAlign(Paint.Align.LEFT);
 
         varioGlowPaint.setAntiAlias(true);
         varioGlowPaint.setStyle(Paint.Style.FILL);
 
-        // altitude — MSL (right-aligned) 180px bold monospace green
+        // altitude — MSL (right-aligned) 90dp bold monospace green
         altMslPaint.setAntiAlias(true);
-        altMslPaint.setTextSize(180);
         altMslPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         altMslPaint.setTextAlign(Paint.Align.RIGHT);
         altMslPaint.setColor(Color.argb(220, 76, 175, 80));
         altMslPaint.setShadowLayer(8, 0, 0, Color.argb(120, 76, 175, 80));
 
-        // altitude — AGL (left-aligned) 180px bold monospace green
+        // altitude — AGL (left-aligned) 90dp bold monospace green
         altAglPaint.setAntiAlias(true);
-        altAglPaint.setTextSize(180);
         altAglPaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         altAglPaint.setTextAlign(Paint.Align.LEFT);
         altAglPaint.setColor(Color.argb(220, 76, 175, 80));
         altAglPaint.setShadowLayer(8, 0, 0, Color.argb(120, 76, 175, 80));
 
-        // flight time — 150px bold monospace green with shadow
+        // flight time — 75dp bold monospace green with shadow
         flightTimePaint.setAntiAlias(true);
-        flightTimePaint.setTextSize(150);
         flightTimePaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         flightTimePaint.setTextAlign(Paint.Align.CENTER);
         flightTimePaint.setColor(Color.argb(220, 76, 175, 80));
         flightTimePaint.setShadowLayer(8, 0, 0, Color.argb(120, 76, 175, 80));
 
-        // system time — 130px bold monospace, dim green (alpha ~0.4), no shadow
+        // system time — 65dp bold monospace, dim green (alpha ~0.4), no shadow
         sysTimePaint.setAntiAlias(true);
-        sysTimePaint.setTextSize(130);
         sysTimePaint.setTypeface(Typeface.create(Typeface.MONOSPACE, Typeface.BOLD));
         sysTimePaint.setTextAlign(Paint.Align.CENTER);
         sysTimePaint.setColor(Color.argb(100, 76, 175, 80));
@@ -204,16 +214,16 @@ public class UiManager {
         String text = String.format("%s%.1f", isUp ? "+" : "", vario);
 
         // glow centered on 220px text
-        varioGlowPaint.setShadowLayer(30, 0, 0, color);
+        varioGlowPaint.setShadowLayer(15, 0, 0, color);
         varioGlowPaint.setColor(Color.TRANSPARENT);
-        c.drawCircle(cx, y + 30, 40, varioGlowPaint);
+        c.drawCircle(cx, y + 15, 20, varioGlowPaint);
 
-        // text — baseline offset for 220px font to visually center at y
+        // text — baseline offset for 110px font
         varioPaint.setColor(color);
-        c.drawText(text, cx, y + 55, varioPaint);
+        c.drawText(text, cx, y + 28, varioPaint);
 
-        // "м/с" label to the right of text
-        c.drawText("м/с", cx + 280, y + 60, varioUnitPaint);
+        // "м/с" label
+        c.drawText("м/с", cx + 140, y + 30, varioUnitPaint);
     }
 
     /**

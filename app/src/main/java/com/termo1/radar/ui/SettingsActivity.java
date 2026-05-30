@@ -82,6 +82,20 @@ public class SettingsActivity extends Activity {
         CheckBox vibrateCb = createCheckBox(getString(R.string.settings_vibrate), KEY_VIBRATE, true);
         root.addView(vibrateCb);
 
+        // 2b. Blind flight mode checkbox
+        CheckBox blindCb = createCheckBox("Слепой полёт (карман)", "blind_mode", false);
+        root.addView(blindCb);
+
+        // 2c. Voice prompts checkbox
+        CheckBox voiceCb = createCheckBox("Голосовые подсказки", "voice_prompts", true);
+        root.addView(voiceCb);
+
+        // Spacer
+        View spacerVib = new View(this);
+        spacerVib.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 24));
+        root.addView(spacerVib);
+
         // 3. Color scheme selector
         TextView schemeLabel = new TextView(this);
         schemeLabel.setText(getString(R.string.settings_scheme));

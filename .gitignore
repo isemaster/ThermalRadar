@@ -18,3 +18,9 @@ local.properties
 
 # OS
 Thumbs.db
+
+# Hermes
+.hermes/
+
+# Docs
+ThermalRadar_Test_Methodology.pdf

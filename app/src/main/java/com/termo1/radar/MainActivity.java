@@ -12,9 +12,7 @@ import android.graphics.Paint;
 import android.graphics.RectF;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
-import android.hardware.SensorEventListener;
 import android.hardware.SensorManager;
-import android.location.Location;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -23,16 +21,16 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 
-import com.google.android.gms.location.FusedLocationProviderClient;
-import com.google.android.gms.location.LocationCallback;
-import com.google.android.gms.location.LocationRequest;
-import com.google.android.gms.location.LocationResult;
-import com.google.android.gms.location.LocationServices;
-
 import com.termo1.radar.core.SimulationManager;
 import com.termo1.radar.core.SignalProcessor;
 import com.termo1.radar.core.ThermalDetector;
+import com.termo1.radar.flight.FlightStateMachine;
+import com.termo1.radar.flight.BlindFlightMode;
+import com.termo1.radar.gps.GpsManager;
+import com.termo1.radar.logging.LogManager;
 import com.termo1.radar.model.ThermalBlip;
+import com.termo1.radar.sensors.SensorController;
+import com.termo1.radar.sensors.VarioManager;
 import com.termo1.radar.ui.RadarRenderer;
 import com.termo1.radar.ui.SettingsActivity;
 import com.termo1.radar.ui.UiManager;
@@ -42,172 +40,127 @@ import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 
-public class MainActivity extends Activity implements SensorEventListener {
+/**
+ * TERMO1 Radar — MainActivity.
+ *
+ * Интегрирует модули:
+ * - SensorController — датчики, компас, вариометр
+ * - GpsManager — GPS
+ * - LogManager — логирование 25 Гц, автостарт/стоп, нарезка
+ * - FlightStateMachine — детекция полёта по высоте
+ * - ThermalDetector — анализ микрораскачки
+ * - RadarView — рендеринг UI
+ */
+public class MainActivity extends Activity {
 
     private static final int SAMPLE_RATE_HZ = 50;
     private static final int RENDER_FPS = 30;
-    private static final long SAMPLE_INTERVAL_MS = 20L;
     private static final long RENDER_INTERVAL_MS = 33L;
     private static final int THERMAL_LIMIT = 12;
     private static final float MAX_DISTANCE_M = 150.0f;
 
-    // ---- Sensors (android.hardware) ----
-    private SensorManager sensorManager;
-    private Sensor barometer;
-    private Sensor accelerometerLinear;    // TYPE_LINEAR_ACCELERATION — для детектора
-    private Sensor accelerometerGravity;   // TYPE_ACCELEROMETER — для компаса (гравитация)
-    private Sensor gyroscope;
-    private Sensor magnetometer;
+    // ========================================================================
+    // Modules
+    // ========================================================================
 
-    // ---- Latest sensor values ----
-    private volatile float latestAccelX;  // linear accel (g) — для детектора
-    private volatile float latestAccelY;
-    private volatile float latestAccelZ;
-    private volatile float gravityAccelX; // raw accel (м/с²) — для компаса
-    private volatile float gravityAccelY;
-    private volatile float gravityAccelZ;
-    private volatile boolean hasGravityAccel;
-    private volatile float latestGyroX;
-    private volatile float latestGyroY;
-    private volatile float latestGyroZ;
-    private volatile float latestMagX;
-    private volatile float latestMagY;
-    private volatile float latestMagZ;
-    private volatile float latestPressure = 1013.25f;
-    private volatile boolean hasLinearAccel;
+    private SensorController sensorController;
+    private GpsManager gpsManager;
+    private LogManager logManager;
+    private FlightStateMachine flightStateMachine;
+    private BlindFlightMode blindFlightMode;
+    private boolean blindModeEnabled;
+    private boolean voicePromptsEnabled;
 
-    // ---- Compass (fusion) ----
-    private final float[] rotationMatrix = new float[9];
-    private final float[] orientationVals = new float[3];
-    // reusable buffer — избегаем new float[3] в onSensorChanged (50 Гц)
-    private final float[] worldAccelOut = new float[3];
-    private volatile float heading = 0.0f;
-    private volatile float pitch = 0.0f;    // наклон вперёд/назад (радианы)
-    private volatile float roll = 0.0f;     // крен влево/вправо (радианы)
-    private volatile float rawHeading = 0.0f; // сырой heading до EMA
-    private volatile boolean compassReady = false;
+    // ========================================================================
+    // Core
+    // ========================================================================
 
-    // ---- Barometer / variometer ----
-    private float baselinePressure = 1013.25f;
-    private int baroCalibCount = 0;
-    private static final int BARO_CALIB_SAMPLES = 50;
-    private volatile float vario = 0.0f;
-    private volatile float altFiltered = 0.0f;     // EMA-smoothed altitude (m) — для HPF
-    private volatile float altRaw = 0.0f;           // raw altitude from baro formula
-    private volatile float prevAltRaw = 0.0f;       // предыдущий altRaw для vario = (-curr+prev)*1000/dt
-    private long lastBaroMs = 0;                     // timestamp последнего барометра (мс)
-    private volatile float maxSnr = 0.0f;
-    private volatile float recentSnr = 0.0f;
-    private static final float VARIO_ALPHA_CALM = 0.95f;      // штиль: сильное сглаживание
-    private static final float VARIO_ALPHA_NORMAL = 0.85f;    // норма: умеренное
-    private static final float VARIO_ALPHA_TURBULENT = 0.60f; // горы: быстрый отклик
-    private static final float NOISE_FLOOR_FIXED = 3.5f;     // g, фиксированный noiseFloor для SNR
-    private static final float HEADING_EMA_ALPHA = 0.3f;     // коэффициент EMA для сглаживания heading
-    private int varioProfile = 1;            // 0=Calm, 1=Normal, 2=Turbulent (из prefs)
-    private static final String KEY_VARIO_PROFILE = "vario_profile";
-    private int varioSmoothSamples = 30;    // усреднение варио (5-100 отсчётов)
-    private static final String KEY_VARIO_SMOOTH = "vario_smooth";
-    private final float[] hpBuf = new float[64];
-    private int hpBufIdx = 0;
-    private int hpBufFill = 0;
+    private ThermalDetector thermalDetector;
+    private SharedPreferences prefs;
 
-    // ---- Скользящее среднее варио 0.75 сек (кольцевой буфер) ----
-    private static final int VARIO_BUF_SIZE = 64;
-    private static final long VARIO_WINDOW_MS = 750;
-    private final float[] varioBuf = new float[VARIO_BUF_SIZE];
-    private final long[] varioTimeBuf = new long[VARIO_BUF_SIZE];
-    private int varioHead = 0;  // индекс для записи
-    private int varioTail = 0;  // индекс самой старой записи
+    // ========================================================================
+    // Thermals
+    // ========================================================================
 
-    // ---- Thermals ----
-    private final List<ThermalBlip> thermals = new ArrayList<ThermalBlip>();
-    private final List<ThermalBlip> thermalsCopy = new ArrayList<ThermalBlip>();
+    private final List<ThermalBlip> thermals = new ArrayList<>();
+    private final List<ThermalBlip> thermalsCopy = new ArrayList<>();
     private final Object thermalLock = new Object();
 
-    // ---- GPS ----
-    private FusedLocationProviderClient fusedLocationClient;
-    private LocationCallback locationCallback;
-    private volatile float gpsSpeed = 0.0f;
-    private volatile float gpsHeading = 0.0f;
-    private boolean gpsReady = false;
-    private float gpsAltitude = 0.0f;
-    private float startAltitude = 0.0f;
-    private java.io.FileWriter gpsWriter = null;
-    private boolean altitudeInitialized = false;
-    private double gpsLat = 0.0;
-    private double gpsLon = 0.0;
+    // ========================================================================
+    // UI
+    // ========================================================================
 
-    // ---- Power ----
-    private PowerManager powerManager;
-    private PowerManager.WakeLock wakeLock;
-
-    // ---- Logging ----
-    private boolean isLogging = false;
-    private StringBuilder logBuffer;
-    private long flightStartMs;
-    private long sampleCount = 0L;
-
-    // ---- Flight auto-log (vario-based) ----
-    private boolean flightLogEnabled = false;
-    private int flightLogState = 0;
-    private long flightLogLastActiveMs;
-    private static final long FLIGHT_LOG_TIMEOUT_MS = 300000;
-    private boolean manualStopRequested = false; // ручной стоп блокирует автолог
-
-    // ---- GPS track file ----
-    private StringBuilder gpsTrackBuffer;
-    private boolean gpsTracking = false;
-    private long lastGpsLogMs;
-
-    // ---- UI ----
     private RadarView radarView;
     private RadarRenderer radarRenderer;
     private UiManager uiManager;
-    private SharedPreferences prefs;
     private VarioSoundManager varioSoundManager;
     private AlertDialog exitDialog;
+    private volatile String currentStatus = "ПОИСК";
+    private String previousStatus = "";
 
-    // ---- Simulation ----
-    private boolean simMode = false;
+    // ===== TTS голосовые подсказки =====
+    private android.speech.tts.TextToSpeech tts;
+    private boolean ttsReady;
+    private String lastTtsPhrase;
+    private long lastTtsSpeakMs;
+
+    // ========================================================================
+    // Simulation
+    // ========================================================================
+
+    private boolean simMode;
     private SimulationManager simulation;
     private long simStartMs;
     private long lastThermalBeepMs;
-    private final Handler simHandler = new Handler(Looper.getMainLooper());
+    private long lastMaxSnrResetMs;
+    private Handler simHandler = new Handler(Looper.getMainLooper());
     private Runnable simTask;
 
-    // ---- IO thread (файловые операции в фоне) ----
-    private android.os.HandlerThread ioThread;
-    private android.os.Handler ioHandler;
+    // ========================================================================
+    // Processing / rendering
+    // ========================================================================
 
-    // ---- Processing / rendering threads ----
-    private volatile boolean running = false;
-    private final Handler renderHandler = new Handler(Looper.getMainLooper());
+    private volatile boolean running;
+    private Handler renderHandler = new Handler(Looper.getMainLooper());
     private Runnable renderTask;
-    private volatile String currentStatus = "ПОИСК";
 
-    // ---- Thermal detector ----
-    private ThermalDetector thermalDetector;
-    private boolean usingLinearAccel = false;
+    // ========================================================================
+    // Power
+    // ========================================================================
 
-    // ---- Test mode ----
-    private boolean testMode = false;
-    private int testStep = 0;
+    private PowerManager powerManager;
+    private PowerManager.WakeLock wakeLock;
+
+    // ========================================================================
+    // Test mode
+    // ========================================================================
+
+    private boolean testMode;
+    private int testStep;
     private String testInstruction = "";
-    private String testFeedback = "";         // real-time feedback text
-    private int testFeedbackColor = 0;        // argb color for feedback
-    private boolean testStepCorrect = false;  // true when current step done correctly
+    private String testFeedback = "";
+    private int testFeedbackColor;
+    private boolean testStepCorrect;
     private long testStepStartMs;
-    private long testCorrectStartMs;          // when correct signal was first detected
-    private long testLastBeepMs;              // cooldown for test beep
-    private boolean testBeepPlaying = false;  // prevent double beep
+    private long testCorrectStartMs;
+    private long testLastBeepMs;
+    private boolean testBeepPlaying;
     private Handler testHandler = new Handler(Looper.getMainLooper());
     private Runnable testTask;
 
-    // ---- Button state ----
-    private boolean calibRequested = false;
+    // Test window
+    private static final int TEST_WINDOW_FRAMES = 45;
+    private static final int TEST_CORRECT_RATIO = 4; // 40% как int для window
+    private final boolean[] testWindowBuffer = new boolean[TEST_WINDOW_FRAMES];
+    private int testWindowIdx;
+    private int testWindowFill;
+    private long testFeedbackLastUpdate;
 
-    // ---- Pressure reading flag ----
-    private boolean hasPressureReading = false;
+    // Heading window
+    private static final int HEADING_WINDOW_FRAMES = 150;
+    private final float[] headingWindow = new float[HEADING_WINDOW_FRAMES];
+    private int headingWindowIdx;
+    private int headingWindowFill;
 
     // ========================================================================
     // Activity lifecycle
@@ -217,11 +170,8 @@ public class MainActivity extends Activity implements SensorEventListener {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Единый формат чисел: точка как десятичный разделитель
-        // (по умолчанию на телефонах с русской локалью — запятая, ломающая CSV)
         java.util.Locale.setDefault(java.util.Locale.US);
 
-        // Fullscreen, keep screen on, immersive sticky
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         getWindow().setFlags(android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
                 android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN);
@@ -234,7 +184,7 @@ public class MainActivity extends Activity implements SensorEventListener {
                         | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
         );
 
-        // Runtime permission request for GPS (Android 6+)
+        // Runtime permission for GPS
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
             if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
                     != android.content.pm.PackageManager.PERMISSION_GRANTED
@@ -249,79 +199,74 @@ public class MainActivity extends Activity implements SensorEventListener {
 
         // Preferences
         prefs = getSharedPreferences("termo1_settings", MODE_PRIVATE);
-        varioProfile = prefs.getInt(KEY_VARIO_PROFILE, 1);
-        varioSmoothSamples = prefs.getInt(KEY_VARIO_SMOOTH, 30);
- 
-         // Radar renderer
+
+        // Modules
+        sensorController = new SensorController(this);
+        sensorController.loadPreferences(prefs);
+        sensorController.setDataListener(sensorDataListener);
+
+        VarioManager varioManager = new VarioManager();
+        varioManager.setVarioSmoothSamples(prefs.getInt("vario_smooth", 30));
+        sensorController.setVarioManager(varioManager);
+
+        gpsManager = new GpsManager(this);
+
+        logManager = new LogManager();
+        logManager.setDataProvider(logDataProvider);
+        logManager.setExternalLogDir(getExternalFilesDir(null) != null
+                ? getExternalFilesDir(null).getAbsolutePath() : null);
+
+        flightStateMachine = new FlightStateMachine();
+        flightStateMachine.setListener(flightListener);
+
+        blindFlightMode = new BlindFlightMode();
+        blindModeEnabled = prefs.getBoolean("blind_mode", false);
+        voicePromptsEnabled = prefs.getBoolean("voice_prompts", true);
+
+        // Renderer + UI
         radarRenderer = new RadarRenderer();
-
-        // UI manager
         uiManager = new UiManager();
+        uiManager.setDensity(getResources().getDisplayMetrics().density);
         uiManager.setNightMode(prefs.getBoolean("night_mode", false));
-        int colorScheme = prefs.getInt("color_scheme", 0);
-        uiManager.setColorScheme(colorScheme);
+        uiManager.setColorScheme(prefs.getInt("color_scheme", 0));
 
-        // Set content view with RadarView
         radarView = new RadarView(this);
         setContentView(radarView);
 
         // System services
-        sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         powerManager = (PowerManager) getSystemService(POWER_SERVICE);
-        fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
 
-        // Log buffer
-        logBuffer = new StringBuilder();
-        gpsTrackBuffer = new StringBuilder();
-
-        // Background I/O thread для записи логов на диск
-        ioThread = new android.os.HandlerThread("termo1-io");
-        ioThread.start();
-        ioHandler = new android.os.Handler(ioThread.getLooper());
-
-        // Vario sound manager
+        // Sound
         varioSoundManager = new VarioSoundManager();
+
+        // TTS голосовые подсказки
+        tts = new android.speech.tts.TextToSpeech(this, status -> {
+            if (status == android.speech.tts.TextToSpeech.SUCCESS) {
+                tts.setLanguage(java.util.Locale.forLanguageTag("ru"));
+                ttsReady = true;
+            }
+        });
 
         // Thermal detector
         thermalDetector = new ThermalDetector();
 
-        // Simulation mode check
+        // Wire VarioManager to thermal detector for adaptive alpha
+        varioManager.setThermalDetector(thermalDetector);
+
+        // Simulation mode
         Intent intent = getIntent();
         if (intent != null && intent.getBooleanExtra("simulate", false)) {
             simMode = true;
             simulation = new SimulationManager();
             simulation.start();
             simStartMs = System.currentTimeMillis();
-            heading = 0f;
-            compassReady = true;
-            altitudeInitialized = true;
-            startAltitude = 500f;
-            gpsAltitude = 500f;
-            flightStartMs = simStartMs;
             lastThermalBeepMs = simStartMs;
             startSimLoop();
         }
 
-        // Check if test mode requested
+        // Test mode
         if (intent != null && intent.getBooleanExtra("test_mode", false)) {
             startTestMode();
-        }
-
-        // Flight auto-log mode
-        flightLogEnabled = prefs.getBoolean("flight_log_enabled", false);
-        if (intent != null && intent.getBooleanExtra("stop_flight_log", false)) {
-            // Stop was requested from settings
-            flightLogEnabled = false;
-            prefs.edit().putBoolean("flight_log_enabled", false).apply();
-            if (isLogging || flightLogState == FLIGHT_LOG_ACTIVE) {
-                stopFlightLog();
-            }
-        }
-        if (flightLogEnabled) {
-            manualStopRequested = false;
-            flightLogState = FLIGHT_LOG_IDLE;
-            flightLogLastActiveMs = System.currentTimeMillis();
-            // startGpsTrack() вызывается в onResume после startGps()
         }
     }
 
@@ -331,19 +276,27 @@ public class MainActivity extends Activity implements SensorEventListener {
         running = true;
 
         uiManager.setNightMode(prefs.getBoolean("night_mode", false));
-        int colorScheme = prefs.getInt("color_scheme", 0);
-        uiManager.setColorScheme(colorScheme);
-        varioProfile = prefs.getInt(KEY_VARIO_PROFILE, 1);
-        varioSmoothSamples = prefs.getInt(KEY_VARIO_SMOOTH, 30);
- 
-         registerSensors();
+        uiManager.setColorScheme(prefs.getInt("color_scheme", 0));
+        sensorController.loadPreferences(prefs);
+
+        sensorController.registerSensors();
         acquireWakeLock();
-        startGps();
-        if (flightLogEnabled) startGpsTrack();
+
+        // Обновить настройки из SharedPreferences (могли измениться в Settings)
+        blindModeEnabled = prefs.getBoolean("blind_mode", false);
+        voicePromptsEnabled = prefs.getBoolean("voice_prompts", true);
+
+        // GPS: структура готова, но запрос не включаем (экономия энергии)
+        // Значения GPS в логе будут 0 — колонки сохраняются для совместимости
+        // gpsManager.startGps();
+
+        // Яркость экрана: средняя (0.5) по умолчанию
+        android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+        lp.screenBrightness = 0.5f;
+        getWindow().setAttributes(lp);
+
         startRendering();
-        if (varioSoundManager != null) {
-            varioSoundManager.start();
-        }
+        if (varioSoundManager != null) varioSoundManager.start();
     }
 
     @Override
@@ -351,30 +304,23 @@ public class MainActivity extends Activity implements SensorEventListener {
         super.onPause();
         running = false;
         stopRendering();
-        if (sensorManager != null) {
-            sensorManager.unregisterListener(this);
-        }
+        sensorController.unregisterSensors();
         releaseWakeLock();
-        stopGps();
-        if (varioSoundManager != null) {
-            varioSoundManager.stop();
-        }
+        gpsManager.stopGps();
+        if (varioSoundManager != null) varioSoundManager.stop();
         stopTestMode();
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        // Удаляем pending callbacks симуляции, чтобы simTask не выполнился после onDestroy
         if (simHandler != null && simTask != null) {
             simHandler.removeCallbacks(simTask);
         }
-        stopFlightLog();
-        stopLogging();
-        if (ioThread != null) {
-            ioThread.quitSafely();
-            ioThread = null;
-            ioHandler = null;
+        logManager.destroy();
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
         }
         if (simulation != null) {
             simulation.stop();
@@ -396,387 +342,162 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     // ========================================================================
-    // Sensor registration — TWO accelerometers for compass + detector
+    // Sensor data callback — вызывается из сенсорного потока
     // ========================================================================
 
-    private void registerSensors() {
-        barometer = sensorManager.getDefaultSensor(Sensor.TYPE_PRESSURE);
-        accelerometerGravity = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
-        accelerometerLinear = sensorManager.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
-        if (accelerometerLinear != null) {
-            usingLinearAccel = true;
-        } else {
-            accelerometerLinear = accelerometerGravity;
-            usingLinearAccel = false;
-        }
-        gyroscope = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
-        magnetometer = sensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
+    private final SensorController.SensorDataListener sensorDataListener =
+            new SensorController.SensorDataListener() {
 
-        // Register all available sensors
-        if (barometer != null)
-            sensorManager.registerListener(this, barometer, SensorManager.SENSOR_DELAY_GAME);
-        if (accelerometerLinear != null)
-            sensorManager.registerListener(this, accelerometerLinear, SensorManager.SENSOR_DELAY_GAME);
-        if (accelerometerGravity != null)
-            sensorManager.registerListener(this, accelerometerGravity, SensorManager.SENSOR_DELAY_GAME);
-        if (gyroscope != null)
-            sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_GAME);
-        if (magnetometer != null)
-            sensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_NORMAL);
+        private final float[] worldAccelOut = new float[3];
 
-        // Build missing sensors message
-        StringBuilder missing = new StringBuilder();
-        if (accelerometerGravity == null) {
-            missing.append("❌ Акселерометр — приложение не может работать\n");
-        }
-        if (accelerometerLinear == null) {
-            missing.append("⚠️ LINEAR_ACCEL — будет использован TYPE_ACCELEROMETER\n");
-        }
-        if (barometer == null) {
-            missing.append("⚠️ Барометр — нет вариометра, автолог по GPS\n");
-        }
-        if (gyroscope == null) {
-            missing.append("⚠️ Гироскоп — нет детекции вращения\n");
-        }
-        if (magnetometer == null) {
-            missing.append("⚠️ Магнитометр — нет компаса, heading = GPS курс\n");
-        }
-
-        if (missing.length() > 0) {
-            String msg = "Доступны не все датчики:\n" + missing.toString()
-                    + "\nЛоги будут неполными, но акселерометр — основа — работает.";
-            new AlertDialog.Builder(this)
-                    .setTitle("Датчики")
-                    .setMessage(msg)
-                    .setPositiveButton("OK", null)
-                    .show();
-        }
-
-        android.util.Log.i("TERMO1", "Sensors: BARO=" + (barometer!=null)
-                + " LINEAR_ACCEL=" + (accelerometerLinear!=null)
-                + " GRAVITY_ACCEL=" + (accelerometerGravity!=null)
-                + " GYRO=" + (gyroscope!=null)
-                + " MAGNET=" + (magnetometer!=null));
-    }
-
-    // ========================================================================
-    // SensorEventListener
-    // ========================================================================
-
-    @Override
-    public void onSensorChanged(SensorEvent event) {
-        switch (event.sensor.getType()) {
-            case Sensor.TYPE_PRESSURE: {
-                latestPressure = event.values[0];
-                hasPressureReading = true;
-                onPressureSample();
-                break;
-            }
-            case Sensor.TYPE_LINEAR_ACCELERATION: {
-                // LINEAR — без гравитации, для детектора микрораскачки
-                float ax = event.values[0] / 9.81f;
-                float ay = event.values[1] / 9.81f;
-                float az = event.values[2] / 9.81f;
-                latestAccelX = ax;
-                latestAccelY = ay;
-                latestAccelZ = az;
-                hasLinearAccel = true;
-                if (thermalDetector != null && !simMode) {
-                    // Поворот из осей телефона в мировые координаты (E=X, N=Y)
-                    // Используем rotationMatrix из компаса
-                    if (compassReady) {
-                        float[] in = event.values;
-                        worldAccelOut[0] = rotationMatrix[0] * in[0] + rotationMatrix[1] * in[1] + rotationMatrix[2] * in[2];
-                        worldAccelOut[1] = rotationMatrix[3] * in[0] + rotationMatrix[4] * in[1] + rotationMatrix[5] * in[2];
-                        // worldAccel[0]=восток, worldAccel[1]=север, z нам не нужен
-                        thermalDetector.processSample(worldAccelOut[0] / 9.81f, worldAccelOut[1] / 9.81f);
-                    } else {
-                        thermalDetector.processSample(ax, ay);
+        @Override
+        public void onLinearAccelSample(float axG, float ayG, float azG,
+                                        float headingDeg, float[] rotMatrix,
+                                        boolean compassReady) {
+            if (blindModeEnabled && flightStateMachine.isFlying() && voicePromptsEnabled) {
+                // Blind mode: передаём gravity + accel в BlindFlightMode
+                blindFlightMode.setGravity(
+                        sensorController.getGravityX(),
+                        sensorController.getGravityY(),
+                        sensorController.getGravityZ());
+                String blindDir = blindFlightMode.processSample(axG, ayG, azG);
+                if (blindDir != null && ttsReady) {
+                    long now = System.currentTimeMillis();
+                    if (!blindDir.equals(lastTtsPhrase) || now - lastTtsSpeakMs > 8000) {
+                        lastTtsPhrase = blindDir;
+                        lastTtsSpeakMs = now;
+                        if (android.os.Build.VERSION.SDK_INT >= 21) {
+                            tts.speak(blindDir, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null);
+                        } else {
+                            tts.speak(blindDir, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null);
+                        }
                     }
                 }
-                // 50 Гц лог во время полёта — каждый сэмпл акселерометра
-                if (isLogging) {
-                    appendLogLine(logBuffer);
+                return; // в слепом режиме не кормим обычный детектор
+            }
+
+            if (thermalDetector != null && !simMode) {
+                if (compassReady) {
+                    worldAccelOut[0] = rotMatrix[0] * axG * 9.81f
+                            + rotMatrix[1] * ayG * 9.81f
+                            + rotMatrix[2] * azG * 9.81f;
+                    worldAccelOut[1] = rotMatrix[3] * axG * 9.81f
+                            + rotMatrix[4] * ayG * 9.81f
+                            + rotMatrix[5] * azG * 9.81f;
+                    thermalDetector.processSample(worldAccelOut[0] / 9.81f,
+                            worldAccelOut[1] / 9.81f);
+                } else {
+                    thermalDetector.processSample(axG, ayG);
                 }
-                break;
             }
-            case Sensor.TYPE_ACCELEROMETER: {
-                // GRAVITY — с гравитацией, только для компаса
-                gravityAccelX = event.values[0];
-                gravityAccelY = event.values[1];
-                gravityAccelZ = event.values[2];
-                hasGravityAccel = true;
+            // Logging 25 Гц (через децимацию внутри LogManager)
+            logManager.recordSample();
+        }
 
-                // Если LINEAR_ACCEL недоступен — используем ACCELEROMETER и для детектора
-                if (!usingLinearAccel && thermalDetector != null && !simMode) {
-                    // Поворот из осей телефона в мировые
-                    if (compassReady) {
-                        float[] in = event.values;
-                        float[] out = new float[3];
-                        out[0] = rotationMatrix[0] * in[0] + rotationMatrix[1] * in[1] + rotationMatrix[2] * in[2];
-                        out[1] = rotationMatrix[3] * in[0] + rotationMatrix[4] * in[1] + rotationMatrix[5] * in[2];
-                        thermalDetector.processSample(out[0] / 9.81f, out[1] / 9.81f);
-                    } else {
-                        float gx = gravityAccelX / 9.81f;
-                        float gy = gravityAccelY / 9.81f;
-                        thermalDetector.processSample(gx, gy);
-                    }
+        @Override
+        public void onGravityAccelSample(float axMs2, float ayMs2, float azMs2,
+                                         float headingDeg, float[] rotMatrix,
+                                         boolean compassReady) {
+            if (!sensorController.hasLinearAccel() && thermalDetector != null && !simMode) {
+                if (compassReady) {
+                    worldAccelOut[0] = rotMatrix[0] * axMs2 + rotMatrix[1] * ayMs2 + rotMatrix[2] * azMs2;
+                    worldAccelOut[1] = rotMatrix[3] * axMs2 + rotMatrix[4] * ayMs2 + rotMatrix[5] * azMs2;
+                    thermalDetector.processSample(worldAccelOut[0] / 9.81f,
+                            worldAccelOut[1] / 9.81f);
+                } else {
+                    thermalDetector.processSample(axMs2 / 9.81f, ayMs2 / 9.81f);
                 }
-                break;
-            }
-            case Sensor.TYPE_GYROSCOPE: {
-                latestGyroX = event.values[0];
-                latestGyroY = event.values[1];
-                latestGyroZ = event.values[2];
-                break;
-            }
-            case Sensor.TYPE_MAGNETIC_FIELD: {
-                latestMagX = event.values[0];
-                latestMagY = event.values[1];
-                latestMagZ = event.values[2];
-                updateCompass();
-                break;
             }
         }
-    }
-
-    @Override
-    public void onAccuracyChanged(Sensor sensor, int accuracy) {
-        // Not used
-    }
+    };
 
     // ========================================================================
-    // Compass — использует gravityAccel (TYPE_ACCELEROMETER, с гравитацией)
+    // Log data provider — для LogManager
     // ========================================================================
 
-    private void updateCompass() {
-        if (!hasGravityAccel) {
-            return;
+    private final LogManager.LogDataProvider logDataProvider = new LogManager.LogDataProvider() {
+        @Override
+        public float getAccelX() { return sensorController.getAccelX(); }
+        @Override
+        public float getAccelY() { return sensorController.getAccelY(); }
+        @Override
+        public float getAccelZ() { return sensorController.getAccelZ(); }
+        @Override
+        public float getGyroX() { return sensorController.getGyroX(); }
+        @Override
+        public float getGyroY() { return sensorController.getGyroY(); }
+        @Override
+        public float getGyroZ() { return sensorController.getGyroZ(); }
+        @Override
+        public float getMagX() { return sensorController.getMagX(); }
+        @Override
+        public float getMagY() { return sensorController.getMagY(); }
+        @Override
+        public float getMagZ() { return sensorController.getMagZ(); }
+        @Override
+        public float getPressure() { return sensorController.getPressure(); }
+        @Override
+        public float getPitch() { return sensorController.getPitch(); }
+        @Override
+        public float getRoll() { return sensorController.getRoll(); }
+        @Override
+        public float getLogHeading() {
+            return sensorController.getLogHeading(gpsManager.getHeading());
         }
-        float[] grav = new float[3];
-        float[] geom = new float[3];
-        grav[0] = gravityAccelX;
-        grav[1] = gravityAccelY;
-        grav[2] = gravityAccelZ;
-        geom[0] = latestMagX;
-        geom[1] = latestMagY;
-        geom[2] = latestMagZ;
-
-        if (SensorManager.getRotationMatrix(rotationMatrix, null, grav, geom)) {
-            SensorManager.getOrientation(rotationMatrix, orientationVals);
-            float newHeading = (float) Math.toDegrees(orientationVals[0]);
-            rawHeading = newHeading;
-            pitch = orientationVals[1];
-            roll = orientationVals[2];
-            if (newHeading < 0.0f) {
-                newHeading += 360.0f;
-            }
-            if (!compassReady) {
-                heading = newHeading;
-                compassReady = true;
-            } else {
-                float diff = newHeading - heading;
-                if (diff > 180f) diff -= 360f;
-                else if (diff < -180f) diff += 360f;
-                heading = (heading + diff * HEADING_EMA_ALPHA + 360f) % 360f;
-            }
-        } else if (magnetometer == null) {
-            // Нет магнитометра — pitch/roll из гравитации, heading из GPS
-            pitch = (float) Math.atan2(-gravityAccelX,
-                    Math.sqrt(gravityAccelY * gravityAccelY + gravityAccelZ * gravityAccelZ));
-            roll = (float) Math.atan2(gravityAccelY, gravityAccelZ);
-            rawHeading = gpsHeading;
-            if (gpsReady) {
-                compassReady = true;
-            }
-        } else {
-            // Магнитометр есть, но getRotationMatrix вернул false (магнитная интерференция)
-            // Не используем старую матрицу — сбрасываем compassReady
-            compassReady = false;
-            pitch = (float) Math.atan2(-gravityAccelX,
-                    Math.sqrt(gravityAccelY * gravityAccelY + gravityAccelZ * gravityAccelZ));
-            roll = (float) Math.atan2(gravityAccelY, gravityAccelZ);
-        }
-    }
-
-    private float getCompassHeading() {
-        if (compassReady) {
-            return heading;
-        }
-        if (gpsReady) {
-            return gpsHeading;
-        }
-        return 0.0f;
-    }
-
-    /** For logging: heading value with null-safety when mag missing */
-    private float getLogHeading() {
-        if (magnetometer != null && compassReady) {
-            return rawHeading;
-        }
-        return gpsHeading; // fallback to GPS
-    }
-
-    // ========================================================================
-    // Pressure-based variometer
-    // ========================================================================
-
-    private void onPressureSample() {
-        float p = latestPressure;
-        if (p < 300f || p > 1100f) return;
-
-        // Калибровка: первые 50 сэмплов — baseline
-        if (baroCalibCount < BARO_CALIB_SAMPLES) {
-            baselinePressure += (p - baselinePressure) / (baroCalibCount + 1);
-            baroCalibCount++;
-            return;
-        }
-
-        // Барометрическая высота: h = 44330.77 * (1 - (p/p0)^0.190263)
-        float ratio = p / baselinePressure;
-        altRaw = 44330.7692307692f * (1.0f - (float) Math.pow(ratio, 0.190263072286998f));
-
-        // Vario = производная: (-curr + prev) * 1000 / dt_ms
-        long nowMs = System.currentTimeMillis();
-        if (baroCalibCount == BARO_CALIB_SAMPLES) {
-            altFiltered = altRaw;
-            prevAltRaw = altRaw;
-            lastBaroMs = nowMs;
-            baroCalibCount++;
-            return;
-        }
-        // EMA на высоте (только для HPF)
-        float alpha = getVarioAlpha();
-        altFiltered = alpha * altFiltered + (1f - alpha) * altRaw;
-
-        // rawVario = (altRaw - prevAltRaw) * 1000 / dtMs
-        long dtMs = nowMs - lastBaroMs;
-        lastBaroMs = nowMs;
-        if (dtMs > 1) {
-            float rawVario = (altRaw - prevAltRaw) * 1000f / (float) dtMs;
-            prevAltRaw = altRaw;
-
-            // Добавляем в кольцевой буфер
-            varioBuf[varioHead] = rawVario;
-            varioTimeBuf[varioHead] = nowMs;
-            varioHead = (varioHead + 1) % VARIO_BUF_SIZE;
-            if (varioHead == varioTail) {
-                varioTail = (varioTail + 1) % VARIO_BUF_SIZE;
-            }
-
-            // Скользящее среднее за 750 мс
-            long cutoff = nowMs - VARIO_WINDOW_MS;
-            float sum = 0f;
-            int count = 0;
-            int idx = varioTail;
-            while (idx != varioHead) {
-                if (varioTimeBuf[idx] >= cutoff) {
-                    sum += varioBuf[idx];
-                    count++;
+        @Override
+        public String getThermalLogSuffix() {
+            if (thermalDetector != null) {
+                ThermalBlip blip = thermalDetector.getCurrentBlip();
+                if (blip != null) {
+                    return "," + blip.angle
+                            + "," + String.format(java.util.Locale.US, "%.1f", blip.strength)
+                            + "," + (int) blip.distance
+                            + "," + blip.source
+                            + "," + String.format(java.util.Locale.US, "%.2f",
+                                    thermalDetector.getSignalProcessor().getSnr())
+                            + "," + String.format(java.util.Locale.US, "%.4f",
+                                    thermalDetector.getSignalProcessor().getNoiseFloor());
                 }
-                idx = (idx + 1) % VARIO_BUF_SIZE;
             }
-            vario = (count > 0) ? sum / count : 0f;
-            if (Math.abs(vario) < 0.05f) vario = 0f;
+            return ",,,,,,";
         }
-
-        // High-pass для RMS (оставлено для совместимости)
-        float hp = altRaw - altFiltered;
-        hpBuf[hpBufIdx] = hp;
-        hpBufIdx = (hpBufIdx + 1) & 63;
-        if (hpBufFill < 64) hpBufFill++;
-        // RMS каждые 64 сэмпла
-        if (hpBufFill >= 64) {
-            float sum = 0.0f;
-            for (int i = 0; i < 64; i++) {
-                sum += hpBuf[i] * hpBuf[i];
-            }
-            float rms = (float) Math.sqrt(sum / 64.0f);
-            recentSnr = rms / NOISE_FLOOR_FIXED; // noiseFloor fixed at 3.5
-            if (recentSnr > maxSnr) {
-                maxSnr = recentSnr;
-            }
-
-            processSample();
-            updateStatus();
-        }
-    }
+    };
 
     // ========================================================================
-    // Adaptive vario alpha (based on Vario15 KF approach)
+    // Flight state listener
     // ========================================================================
 
-    /** Compute EMA alpha based on smoothing samples [20..200] */
-    private float getVarioAlpha() {
-        // alpha = 1 - 1/N where N = smoothing samples [5..100]
-        int n = Math.max(5, Math.min(100, varioSmoothSamples));
-        float alpha = 1f - 1f / n;
-
-        // Adaptive: turbulence reduces alpha (faster response, max -20 samples)
-        if (thermalDetector != null) {
-            float turb = thermalDetector.getSignalProcessor().getTurbulenceLevel();
-            // turb 0..0.5g → reduce samples by 0..40
-            int reduction = (int)(turb * 80f);
-            reduction = Math.min(reduction, n / 2);
-            n = n - reduction;
-            if (n < 1) n = 1; // safety: n > 0 for division
-            alpha = 1f - 1f / n;
+    private final FlightStateMachine.FlightStateListener flightListener =
+            new FlightStateMachine.FlightStateListener() {
+        @Override
+        public void onFlightStarted() {
+            logManager.startLogging();
+            android.widget.Toast.makeText(MainActivity.this,
+                    "Полёт обнаружен, запись лога", android.widget.Toast.LENGTH_SHORT).show();
         }
 
-        // Принудительное ограничение
-        return Math.max(0.9f, Math.min(0.9999f, alpha));
-    }
+        @Override
+        public void onFlightFinished() {
+            logManager.stopLogging();
+            android.widget.Toast.makeText(MainActivity.this,
+                    "Полёт завершён, лог сохранён", android.widget.Toast.LENGTH_SHORT).show();
+        }
+    };
 
     // ========================================================================
-    // Process sample (logging, sound)
+    // Process sample (vario sound, flight state)
     // ========================================================================
 
     private void processSample() {
         if (varioSoundManager != null) {
-            varioSoundManager.update(vario);
+            varioSoundManager.update(sensorController.getVario());
         }
 
-        // Flight auto-log state machine (vario-based)
-        if (flightLogEnabled && !testMode && !simMode) {
-            handleFlightLog();
-        }
-
-        // Periodic flush to disk (auto-log mode) — в фоновый поток
-        if (flightLogEnabled && isLogging) {
-            long now = System.currentTimeMillis();
-            if (now - lastFlushMs > FLUSH_INTERVAL_MS) {
-                lastFlushMs = now;
-                if (ioHandler != null) {
-                    ioHandler.post(new Runnable() {
-                        @Override
-                        public void run() {
-                            flushLogBuffer();
-                            flushGpsTrack();
-                        }
-                    });
-                }
-            }
-        }
-
-        // Main sensor log — в реальном режиме пишется 50 Гц в onSensorChanged(TYPE_LINEAR_ACCEL)
-        if (simMode && isLogging) {
-            sampleCount++;
-            appendLogLine(logBuffer);
-        }
-
-        // GPS track logging (1 Hz, into separate buffer)
-        if (gpsTracking && isLogging) {
-            long now = System.currentTimeMillis();
-            if (now - lastGpsLogMs > 1000) {
-                lastGpsLogMs = now;
-                long dtMs = now - flightStartMs;
-                gpsTrackBuffer.append(dtMs).append(",");
-                gpsTrackBuffer.append(gpsLat).append(",");
-                gpsTrackBuffer.append(gpsLon).append(",");
-                gpsTrackBuffer.append(gpsAltitude).append(",");
-                gpsTrackBuffer.append(gpsSpeed).append(",");
-                gpsTrackBuffer.append(gpsHeading).append("\n");
-            }
+        // Flight state machine (на основе высоты MSL)
+        if (!testMode && !simMode) {
+            float alt = gpsManager.isAltitudeInitialized()
+                    ? gpsManager.getAltitude() : sensorController.getAltitudeRaw();
+            flightStateMachine.update(alt, System.currentTimeMillis());
         }
     }
 
@@ -789,28 +510,21 @@ public class MainActivity extends Activity implements SensorEventListener {
         synchronized (thermalLock) {
             Iterator<ThermalBlip> it = thermals.iterator();
             while (it.hasNext()) {
-                if (!it.next().isAlive(now)) {
-                    it.remove();
-                }
+                if (!it.next().isAlive(now)) it.remove();
             }
             thermals.add(new ThermalBlip(angle, strength, distance, source, now));
-            while (thermals.size() > THERMAL_LIMIT) {
-                thermals.remove(0);
-            }
+            while (thermals.size() > THERMAL_LIMIT) thermals.remove(0);
         }
     }
 
     // ========================================================================
-    // Status update
+    // Status
     // ========================================================================
 
     private void updateStatus() {
         if (simMode) {
-            if (thermalDetector != null) {
-                currentStatus = thermalDetector.getStatusText();
-            } else {
-                currentStatus = UiManager.STATUS_SEARCH;
-            }
+            currentStatus = thermalDetector != null
+                    ? thermalDetector.getStatusText() : UiManager.STATUS_SEARCH;
             return;
         }
 
@@ -819,8 +533,8 @@ public class MainActivity extends Activity implements SensorEventListener {
             return;
         }
 
+        float vario = sensorController.getVario();
         float level = thermalDetector.getSignalProcessor().getTurbulenceMs2();
-        float snr = thermalDetector.getSignalProcessor().getSnr();
 
         if (vario > 1.0f && level > 0.3f) {
             currentStatus = UiManager.STATUS_CLIMB;
@@ -838,404 +552,52 @@ public class MainActivity extends Activity implements SensorEventListener {
     }
 
     // ========================================================================
-    // Logging (CSV)
+    // Calibration
     // ========================================================================
 
-    private void startLogging() {
-        if (isLogging) return;
-        isLogging = true;
-        flightStartMs = System.currentTimeMillis();
-        sampleCount = 0;
-        logBuffer.setLength(0);
-
-        // Metadata header for flight auto-log
-        if (flightLogEnabled) {
-            logBuffer.append("# TERMO1 Flight Log\n");
-            logBuffer.append("# Device: ").append(android.os.Build.MANUFACTURER)
-                    .append(" ").append(android.os.Build.MODEL).append("\n");
-            logBuffer.append("# Android: ").append(android.os.Build.VERSION.RELEASE)
-                    .append(" (API ").append(android.os.Build.VERSION.SDK_INT).append(")\n");
-            logBuffer.append("# Sensors: ACCEL=").append(accelerometerGravity!=null)
-                    .append(" LINEAR_ACCEL=").append(accelerometerLinear!=null && usingLinearAccel)
-                    .append(" BARO=").append(barometer!=null)
-                    .append(" GYRO=").append(gyroscope!=null)
-                    .append(" MAG=").append(magnetometer!=null).append("\n");
-            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(
-                    "yyyy-MM-dd HH:mm:ss", java.util.Locale.US);
-            logBuffer.append("# Date: ").append(sdf.format(new java.util.Date())).append("\n");
-            logBuffer.append("# Columns: dtMs,ax,ay,az,gx,gy,gz,mx,my,mz,pressure,pitch,roll,heading,gpsSpeed,gpsHeading,thermalAngle,thermalStrength,thermalDist,thermalSource,snr,noiseFloor\n");
-        }
-
-        // Column header line (not commented — parsers read it)
-        logBuffer.append("dtMs,ax,ay,az,gx,gy,gz,mx,my,mz,pressure,pitch,roll,heading,gpsSpeed,gpsHeading,thermalAngle,thermalStrength,thermalDist,thermalSource,snr,noiseFloor\n");
-    }
-
-    /** Добавить в StringBuilder информацию о текущем thermal blip (что видит пилот). */
-    private void appendThermalLog(StringBuilder sb) {
-        if (thermalDetector != null) {
-            com.termo1.radar.model.ThermalBlip blip = thermalDetector.getCurrentBlip();
-            if (blip != null) {
-                sb.append(",").append(blip.angle);
-                sb.append(",").append(String.format(java.util.Locale.US, "%.1f", blip.strength));
-                sb.append(",").append((int) blip.distance);
-                sb.append(",").append(blip.source);
-                // SNR и noiseFloor
-                sb.append(",").append(String.format(java.util.Locale.US, "%.2f", thermalDetector.getSignalProcessor().getSnr()));
-                sb.append(",").append(String.format(java.util.Locale.US, "%.4f", thermalDetector.getSignalProcessor().getNoiseFloor()));
-                return;
-            }
-        }
-        // 4 пустых поля: angle,strength,dist,source + snr,noiseFloor = 6 полей
-        sb.append(",");
-        sb.append(",");
-        sb.append(",");
-        sb.append(",");
-        sb.append(",");
-        sb.append(",");
-    }
-
-    /** Единый метод для записи строки лога (50 Гц). Устраняет дублирование кода между
-     *  real-time и simulation режимами. Использует latestAccelX/Y/Z (уже установлены). */
-    private void appendLogLine(StringBuilder sb) {
-        long now = System.currentTimeMillis();
-        long dtMs = now - flightStartMs;
-        sb.append(dtMs).append(",");
-        sb.append(latestAccelX * 1000f).append(",");  // X (mG)
-        sb.append(latestAccelY * 1000f).append(",");  // Y (mG)
-        sb.append(latestAccelZ * 1000f).append(",");  // Z (mG)
-        sb.append(latestGyroX * 1000f).append(",");   // gyro X (mdps)
-        sb.append(latestGyroY * 1000f).append(",");   // gyro Y (mdps)
-        sb.append(latestGyroZ * 1000f).append(",");   // gyro Z (mdps)
-        sb.append(latestMagX).append(",");             // mag X (μT)
-        sb.append(latestMagY).append(",");             // mag Y (μT)
-        sb.append(latestMagZ).append(",");             // mag Z (μT)
-        sb.append(latestPressure).append(",");         // pressure (hPa)
-        sb.append(pitch).append(",");                  // pitch (rad)
-        sb.append(roll).append(",");                   // roll (rad)
-        sb.append(getLogHeading()).append(",");        // heading (°, fallback to GPS)
-        sb.append(gpsSpeed).append(",");               // GPS speed (m/s)
-        sb.append(gpsHeading);                         // GPS heading (°)
-        // Thermal blip info
-        appendThermalLog(sb);
-        sb.append("\n");
-    }
-
-    private void stopLogging() {
-        if (!isLogging) return;
-        isLogging = false;
-        if (logBuffer.length() > 0) {
-            try {
-                java.io.File extDir = getExternalFilesDir(null);
-                if (extDir == null) {
-                    android.util.Log.e("TERMO1", "External storage not available, cannot save log");
-                    return;
-                }
-                java.io.File logDir = new java.io.File(extDir, "logs");
-                if (!logDir.exists()) {
-                    logDir.mkdirs();
-                }
-                java.text.SimpleDateFormat sdf =
-                        new java.text.SimpleDateFormat("yyyyMMdd_HHmmss",
-                                java.util.Locale.US);
-                String fileName;
-                if (testMode) {
-                    fileName = "test_" + sdf.format(new java.util.Date()) + ".csv";
-                } else {
-                    fileName = "flight_" + sdf.format(new java.util.Date()) + ".csv";
-                }
-                java.io.File logFile = new java.io.File(logDir, fileName);
-                java.io.FileWriter fw = new java.io.FileWriter(logFile);
-                fw.write(logBuffer.toString());
-                fw.close();
-                android.util.Log.i("TERMO1", "Log saved: " + logFile.getAbsolutePath());
-                // Сжатие в ZIP — экономия места в 5-7 раз
-                zipLogFile(logFile);
-            } catch (java.io.IOException e) {
-                android.util.Log.e("TERMO1", "Failed to write log file", e);
-            }
-        }
-        logBuffer.setLength(0);
-    }
-
-    /** Сжать CSV в ZIP и удалить оригинал. */
-    private void zipLogFile(java.io.File csvFile) {
-        if (csvFile == null || !csvFile.exists() || csvFile.length() < 100) return;
-        try {
-            java.io.File zipFile = new java.io.File(csvFile.getParent(),
-                    csvFile.getName().replace(".csv", ".zip"));
-            java.io.FileInputStream fis = new java.io.FileInputStream(csvFile);
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(zipFile);
-            java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(fos);
-            zos.setLevel(9); // максимальное сжатие
-            zos.putNextEntry(new java.util.zip.ZipEntry(csvFile.getName()));
-            byte[] buf = new byte[8192];
-            int len;
-            while ((len = fis.read(buf)) > 0) {
-                zos.write(buf, 0, len);
-            }
-            zos.closeEntry();
-            zos.close();
-            fis.close();
-            long saved = csvFile.length() - zipFile.length();
-            android.util.Log.i("TERMO1", "ZIP: " + csvFile.getName()
-                    + " " + csvFile.length()/1024 + "K → " + zipFile.length()/1024 + "K"
-                    + " (экономия " + (saved * 100 / csvFile.length()) + "%)");
-            csvFile.delete();
-        } catch (java.io.IOException e) {
-            android.util.Log.e("TERMO1", "ZIP failed for " + csvFile.getName(), e);
-        }
-    }
-    // ---- Flight auto-log (vario-based, for unattended pilot logging) ----
-    private static final int FLIGHT_LOG_IDLE = 0;
-    private static final int FLIGHT_LOG_ACTIVE = 1;
-    private static final int FLIGHT_LOG_PAUSED = 2;
-
-    private void handleFlightLog() {
-        long now = System.currentTimeMillis();
-        float absVario = (barometer != null) ? Math.abs(vario) : 0f;
-        // Fallback при отсутствии барометра: турбулентность > 0.05g = полёт
-        float turbLevel = (thermalDetector != null)
-                ? thermalDetector.getSignalProcessor().getTurbulenceLevel() : 0f;
-        float speed = gpsSpeed;
-        boolean inFlight = absVario > 1.0f || speed > 3.0f || turbLevel > 0.05f;
-        boolean onGround = absVario < 0.2f && speed < 1.0f && turbLevel < 0.02f;
-
-        switch (flightLogState) {
-            case FLIGHT_LOG_IDLE:
-                if (inFlight && !manualStopRequested) {
-                    flightLogState = FLIGHT_LOG_ACTIVE;
-                    flightLogLastActiveMs = now;
-                    // Первый запуск — открываем файл
-                    if (!isLogging) {
-                        startLogging();
-                    }
-                    logBuffer.append(now - flightStartMs)
-                            .append(",FLIGHT_START,vario=").append(vario)
-                            .append(" speed=").append(speed).append("\n");
-                }
-                break;
-
-            case FLIGHT_LOG_ACTIVE:
-                if (!onGround) {
-                    flightLogLastActiveMs = now;
-                }
-                if (now - flightLogLastActiveMs > FLIGHT_LOG_TIMEOUT_MS) {
-                    flightLogState = FLIGHT_LOG_PAUSED;
-                    logBuffer.append(now - flightStartMs)
-                            .append(",FLIGHT_PAUSE,idle_5min vario=").append(vario)
-                            .append(" speed=").append(speed).append("\n");
-                    // Flush to disk but keep file open
-                    flushLogBuffer();
-                }
-                break;
-
-            case FLIGHT_LOG_PAUSED:
-                if (inFlight && !manualStopRequested) {
-                    flightLogState = FLIGHT_LOG_ACTIVE;
-                    flightLogLastActiveMs = now;
-                    logBuffer.append(now - flightStartMs)
-                            .append(",FLIGHT_RESUME,vario=").append(vario)
-                            .append(" speed=").append(speed).append("\n");
-                }
-                break;
-        }
-    }
-
-    private java.io.FileWriter flightLogWriter = null;
-    private String flightLogFileName = null;       // одно имя файла на сессию
-    private long lastFlushMs = 0;
-    private static final long FLUSH_INTERVAL_MS = 30000; // flush every 30s
-
-    /** Periodically flush log buffer to disk file (keeps file open) */
-    private void flushLogBuffer() {
-        if (logBuffer.length() == 0) return;
-        try {
-            if (flightLogWriter == null) {
-                java.io.File extDir = getExternalFilesDir(null);
-                if (extDir == null) {
-                    android.util.Log.e("TERMO1", "External storage not available, cannot flush log");
-                    return;
-                }
-                java.io.File logDir = new java.io.File(extDir, "logs");
-                if (!logDir.exists()) logDir.mkdirs();
-                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(
-                        "yyyyMMdd_HHmmss", java.util.Locale.US);
-                if (flightLogFileName == null) {
-                    flightLogFileName = "flight_" + sdf.format(new java.util.Date()) + ".csv";
-                }
-                flightLogWriter = new java.io.FileWriter(
-                        new java.io.File(logDir, flightLogFileName), true);
-            }
-            flightLogWriter.write(logBuffer.toString());
-            flightLogWriter.flush();
-            logBuffer.setLength(0);
-        } catch (java.io.IOException e) {
-            android.util.Log.e("TERMO1", "Flush log failed", e);
-        }
-    }
-
-    private void flushGpsTrack() {
-        if (gpsTrackBuffer.length() == 0) return;
-        try {
-            if (gpsWriter == null) {
-                java.io.File extDir = getExternalFilesDir(null);
-                if (extDir == null) {
-                    android.util.Log.e("TERMO1", "External storage not available, cannot flush GPS");
-                    return;
-                }
-                java.io.File logDir = new java.io.File(extDir, "logs");
-                if (!logDir.exists()) logDir.mkdirs();
-                java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat(
-                        "yyyyMMdd_HHmmss", java.util.Locale.US);
-                String fileName = "gps_" + sdf.format(new java.util.Date()) + ".csv";
-                gpsWriter = new java.io.FileWriter(
-                        new java.io.File(logDir, fileName), true);
-            }
-            gpsWriter.write(gpsTrackBuffer.toString());
-            gpsWriter.flush();
-            gpsTrackBuffer.setLength(0);
-        } catch (java.io.IOException e) {
-            android.util.Log.e("TERMO1", "Flush GPS failed", e);
-        }
-    }
-
-    private void startGpsTrack() {
-        gpsTracking = true;
-        gpsTrackBuffer.setLength(0);
-        gpsTrackBuffer.append("dtMs,lat,lon,altM,speed,gpsHeading\n");
-        lastGpsLogMs = System.currentTimeMillis();
-    }
-
-    private void stopFlightLog() {
-        // Write end marker
-        if (isLogging) {
-            logBuffer.append(System.currentTimeMillis() - flightStartMs)
-                    .append(",FLIGHT_SESSION_END\n");
-        }
-
-        // Final flush of main log
-        flushLogBuffer();
-        // Close FileWriter
-        if (flightLogWriter != null) {
-            try {
-                flightLogWriter.close();
-            } catch (java.io.IOException e) {
-                android.util.Log.e("TERMO1", "Close log failed", e);
-            }
-            flightLogWriter = null;
-        }
-
-        // Save any remaining buffer (from non-flushed writes)
-        if (logBuffer.length() > 0) {
-            try {
-                java.io.File logDir = new java.io.File(
-                        getExternalFilesDir(null), "logs");
-                if (!logDir.exists()) logDir.mkdirs();
-                java.io.FileWriter fw = new java.io.FileWriter(
-                        new java.io.File(logDir, "flight_remainder.csv"), true);
-                fw.write(logBuffer.toString());
-                fw.close();
-            } catch (java.io.IOException e) {
-                android.util.Log.e("TERMO1", "Save remainder failed", e);
-            }
-            logBuffer.setLength(0);
-        }
-
-        // Flush and close GPS track
-        flushGpsTrack();
-        if (gpsWriter != null) {
-            try {
-                gpsWriter.close();
-            } catch (java.io.IOException e) {
-                android.util.Log.e("TERMO1", "Close GPS writer failed", e);
-            }
-            gpsWriter = null;
-        }
-
-        isLogging = false;
-        gpsTracking = false;
-        flightLogState = FLIGHT_LOG_IDLE;
-        flightLogEnabled = false;
+    public void resetCalibration() {
+        sensorController.resetCalibration();
+        if (thermalDetector != null) thermalDetector.resetCalibration();
+        android.widget.Toast.makeText(this,
+                "Калибровка сброшена. Ждите 2с...",
+                android.widget.Toast.LENGTH_SHORT).show();
     }
 
     // ========================================================================
-    // GPS
+    // Manual logging buttons
     // ========================================================================
 
-    private void startGps() {
-        if (fusedLocationClient == null) return;
-        // Build LocationRequest: 1s interval, 0 priority when app in background
-        LocationRequest locationRequest = LocationRequest.create()
-                .setInterval(1000L)
-                .setFastestInterval(500L)
-                .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY);
-
-        locationCallback = new LocationCallback() {
-            @Override
-            public void onLocationResult(LocationResult locationResult) {
-                if (locationResult == null) return;
-                for (Location location : locationResult.getLocations()) {
-                    gpsSpeed = location.hasSpeed() ? location.getSpeed() : 0.0f;
-                    gpsHeading = location.hasBearing() ? location.getBearing() : 0.0f;
-                    gpsReady = true;
-                    gpsLat = location.getLatitude();
-                    gpsLon = location.getLongitude();
-                    if (location.hasAltitude()) {
-                        gpsAltitude = (float) location.getAltitude();
-                        if (!altitudeInitialized) {
-                            startAltitude = gpsAltitude;
-                            altitudeInitialized = true;
-                        }
-                    }
-                }
-            }
-        };
-
-        // Request location updates with permission check
-        try {
-            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
-                    == android.content.pm.PackageManager.PERMISSION_GRANTED
-                    || checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)
-                    == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                fusedLocationClient.requestLocationUpdates(locationRequest,
-                        locationCallback, Looper.getMainLooper());
-            }
-        } catch (SecurityException e) {
-            // Permission not granted
+    public void toggleManualLogging() {
+        if (logManager.isLogging()) {
+            flightStateMachine.reset();
+            logManager.stopLogging();
+            android.widget.Toast.makeText(this,
+                    "Лог сохранён", android.widget.Toast.LENGTH_SHORT).show();
+        } else {
+            logManager.startLogging();
+            android.widget.Toast.makeText(this,
+                    "Запись лога начата", android.widget.Toast.LENGTH_SHORT).show();
         }
-    }
-
-    private void stopGps() {
-        if (fusedLocationClient != null && locationCallback != null) {
-            try {
-                fusedLocationClient.removeLocationUpdates(locationCallback);
-            } catch (SecurityException e) {
-                // Ignore
-            }
-        }
-        locationCallback = null;
     }
 
     // ========================================================================
     // WakeLock
     // ========================================================================
 
-    private static final long WAKE_LOCK_TIMEOUT_MS = 3600000L; // 1 час
-    private long lastWakeLockRefreshMs = 0;
+    private static final long WAKE_LOCK_TIMEOUT_MS = 3600000L;
+    private long lastWakeLockRefreshMs;
 
     private void acquireWakeLock() {
         if (powerManager != null && wakeLock == null) {
             wakeLock = powerManager.newWakeLock(
-                    PowerManager.PARTIAL_WAKE_LOCK,
-                    "TERMO1:RadarLock");
+                    PowerManager.PARTIAL_WAKE_LOCK, "TERMO1:RadarLock");
             if (wakeLock != null) {
-                wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS); // таймаут — если краш, освободится за час
+                wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
                 lastWakeLockRefreshMs = System.currentTimeMillis();
             }
         }
     }
 
-    /** Перезахват WakeLock с новым таймаутом — вызывать каждые 30 мин */
     private void refreshWakeLock() {
         long now = System.currentTimeMillis();
         if (wakeLock != null && (now - lastWakeLockRefreshMs > WAKE_LOCK_TIMEOUT_MS / 2)) {
@@ -1282,9 +644,7 @@ public class MainActivity extends Activity implements SensorEventListener {
         simTask = new Runnable() {
             @Override
             public void run() {
-                if (!simMode || simulation == null) {
-                    return;
-                }
+                if (!simMode || simulation == null) return;
                 if (!simulation.isRunning()) {
                     Intent i = new Intent(MainActivity.this, SettingsActivity.class);
                     i.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_NEW_TASK);
@@ -1304,83 +664,49 @@ public class MainActivity extends Activity implements SensorEventListener {
                 }
                 simulation.update(elapsed);
 
-                latestPressure = simulation.getPressure();
-                gpsSpeed = simulation.getSpeed();
-                gpsHeading = simulation.getHeading();
-                float newSimHeading = simulation.getHeading();
-                heading = newSimHeading;
-                compassReady = true;
-                gpsReady = true;
-                vario = simulation.getVario();
-
-                gpsAltitude = simulation.getAltitudeMsl();
-                if (!altitudeInitialized) {
-                    startAltitude = gpsAltitude;
-                    altitudeInitialized = true;
-                }
-                flightStartMs = simStartMs;
-
-                // Пропускаем синтезированный сигнал через реальный детектор
+                // Feed simulation data through thermal detector
                 if (thermalDetector != null) {
                     thermalDetector.processSample(simulation.getAccelX(), simulation.getAccelY());
-                    recentSnr = thermalDetector.getSignalProcessor().getSnr();
-                    maxSnr = Math.max(maxSnr, recentSnr);
-
-                    // Звук при появлении blip
                     if (thermalDetector.isBlipConfirmed()) {
-                        long nowMs = System.currentTimeMillis();
-                        if (nowMs - lastThermalBeepMs > 3000) {
-                            if (varioSoundManager != null) {
-                                varioSoundManager.playThermalBeep();
-                            }
-                            lastThermalBeepMs = nowMs;
+                        if (now - lastThermalBeepMs > 3000) {
+                            if (varioSoundManager != null) varioSoundManager.playThermalBeep();
+                            lastThermalBeepMs = now;
                         }
                     }
                 }
 
                 updateStatus();
                 processSample();
-
-                simHandler.postDelayed(this, SAMPLE_INTERVAL_MS);
+                simHandler.postDelayed(this, 20); // 50 Гц симуляция
             }
         };
-        simHandler.postDelayed(simTask, SAMPLE_INTERVAL_MS);
+        simHandler.postDelayed(simTask, 20);
     }
 
     // ========================================================================
-    // Test mode — пошаговое тестирование с real-time обратной связью
+    // Test mode
     // ========================================================================
 
-    // Пороги для анализа движения (в g) — для нового DC-blocker + RMS (сигнал ~160x сильнее)
-    private static final float TEST_AMP_THRESHOLD = 0.05f;     // мин амплитуда RMS
-    private static final float TEST_STRONG_THRESHOLD = 0.15f;  // сильное движение
-    private static final float TEST_AXIS_RATIO = 2.5f;         // преобладание оси (X vs Y)
-    private static final float TEST_HEADING_RANGE = 50f;       // мин диапазон heading (°)
-    private static final float TEST_FAST_RMS = 0.3f;           // RMS для быстрой тряски (g)
-    private static final float TEST_CORRECT_RATIO = 0.4f;      // 40% фреймов в окне должны быть правильными
-    private static final int TEST_MAX_STEP_MS = 60000;         // макс 1 мин на шаг
-    private static final int TEST_CORRECT_WINDOW_MS = 1500;    // окно: 1.5 сек
-
-    // Скользящее окно для определения правильности (не сбрасывается при одиночных ошибках)
-    private static final int TEST_WINDOW_FRAMES = 45; // 1.5 сек при 30 FPS
-    private final boolean[] testWindowBuffer = new boolean[TEST_WINDOW_FRAMES];
-    private int testWindowIdx = 0;
-    private int testWindowFill = 0;
-
-    private int testCorrectCount = 0;
-    private long testFeedbackLastUpdate;
+    private static final float TEST_AMP_THRESHOLD = 0.05f;
+    private static final float TEST_STRONG_THRESHOLD = 0.15f;
+    private static final float TEST_AXIS_RATIO = 2.5f;
+    private static final float TEST_HEADING_RANGE = 50f;
+    private static final float TEST_FAST_RMS = 0.3f;
+    private static final float TEST_CORRECT_RATIO_FLOAT = 0.4f;
+    private static final int TEST_MAX_STEP_MS = 60000;
+    private static final int TEST_CORRECT_WINDOW_MS = 1500;
 
     private void startTestMode() {
         testMode = true;
         testStep = 0;
         testStepStartMs = System.currentTimeMillis();
-        testCorrectCount = 0;
         testStepCorrect = false;
         testFeedback = "";
-        testFeedbackColor = android.graphics.Color.argb(255, 255, 255, 255);
+        testFeedbackColor = Color.argb(255, 255, 255, 255);
         testCorrectStartMs = 0;
         testLastBeepMs = 0;
-        startLogging();
+        // Test log — используем manual logging
+        logManager.startLogging();
         nextTestStep();
     }
 
@@ -1403,105 +729,89 @@ public class MainActivity extends Activity implements SensorEventListener {
                 setTestInstruction("ШАГ 1/6: КАЛИБРОВКА",
                         "Положите телефон НЕПОДВИЖНО на стол",
                         "Датчики калибруются... 5 секунд");
-                testLogLine("STEP1_CALIBRATION");
                 break;
             case 2:
                 setTestInstruction("ШАГ 2/6: ОСЬ X (ВЛЕВО-ВПРАВО)",
                         "Качайте телефон строго ВЛЕВО-ВПРАВО",
                         "Амплитуда: ±3-5 см | Частота: 1-2 Гц");
-                testLogLine("STEP2_START: X axis, amp=3-5cm, freq=1-2Hz");
                 break;
             case 3:
                 setTestInstruction("ШАГ 3/6: ОСЬ Y (ВПЕРЁД-НАЗАД)",
                         "Качайте телефон строго ВПЕРЁД-НАЗАД",
                         "Амплитуда: ±3-5 см | Частота: 1-2 Гц");
-                testLogLine("STEP3_START: Y axis, amp=3-5cm, freq=1-2Hz");
                 break;
             case 4:
                 setTestInstruction("ШАГ 4/6: ПОВОРОТ (YAW)",
                         "Поверните телефон на 90° ВЛЕВО",
                         "Затем обратно — проверка компаса");
-                testLogLine("STEP4_START: rotate 90° left, check compass");
                 break;
             case 5:
                 setTestInstruction("ШАГ 5/6: СПИРАЛЬ",
                         "Крутите телефон плавно на 360°",
                         "Крен ±30° | 1 оборот за 5-7 секунд");
-                testLogLine("STEP5_START: spiral 360°, roll 30°");
                 break;
             case 6:
                 setTestInstruction("ШАГ 6/6: ТРЯСКА",
                         "Трясите телефон БЫСТРО",
                         "Частота: 3-5 Гц | Амплитуда ±5 см");
-                testLogLine("STEP6_START: fast shake, 3-5Hz, amp=±5cm");
                 break;
             case 7:
-                // Тест завершён
                 testMode = false;
-                stopLogging();
+                logManager.stopLogging();
                 showTestCompleteDialog();
                 return;
             default:
                 testMode = false;
-                stopLogging();
+                logManager.stopLogging();
                 return;
         }
     }
+
+    private int testCorrectCount;
 
     private void setTestInstruction(String title, String line1, String line2) {
         testInstruction = title + "\n" + line1 + "\n" + line2;
     }
 
-    /**
-     * Called from onDraw (30 FPS). Analyzes current sensor data
-     * for the current test step and gives real-time feedback.
-     */
     private void updateTestFeedback() {
         if (!testMode || testStepCorrect || thermalDetector == null) return;
 
         SignalProcessor sp = thermalDetector.getSignalProcessor();
         float hpX = sp.getBpX();
         float hpY = sp.getBpY();
-        float level = sp.getTurbulenceLevel(); // в g
+        float level = sp.getTurbulenceLevel();
         float levelMs2 = level * 9.81f;
-        float headingDiff = 0f;
         float headingNow = getCompassHeading();
-
         long now = System.currentTimeMillis();
         long stepElapsed = now - testStepStartMs;
 
-        // Auto-advance if step takes too long (>60s)
         if (stepElapsed > TEST_MAX_STEP_MS) {
-            testFeedbackColor = android.graphics.Color.argb(255, 255, 100, 100);
+            testFeedbackColor = Color.argb(255, 255, 100, 100);
             testFeedback = "⏱ Время вышло. Переход к следующему шагу...";
             nextTestStep();
             return;
         }
 
-        // Time remaining display
         int secLeft = (int)((TEST_MAX_STEP_MS - stepElapsed) / 1000);
         String timeStr = "Осталось: " + secLeft + "с";
 
         boolean correct = false;
         String feedback = "";
-        int color = android.graphics.Color.argb(255, 255, 255, 200);
+        int color = Color.argb(255, 255, 255, 200);
 
         switch (testStep) {
             case 1: {
-                // Калибровка: ждём 5 секунд
                 if (stepElapsed > 5000) {
                     correct = true;
                     feedback = "✅ Калибровка завершена";
-                    color = android.graphics.Color.argb(255, 0, 255, 0);
+                    color = Color.argb(255, 0, 255, 0);
                 } else {
                     feedback = "⏳ Калибровка... " + (stepElapsed / 1000 + 1) + "/5 с";
-                    color = android.graphics.Color.argb(255, 200, 200, 200);
+                    color = Color.argb(200, 200, 200, 200);
                 }
                 break;
             }
-
             case 2: {
-                // X axis shake с динамическими рекомендациями
                 float absX = Math.abs(hpX);
                 float absY = Math.abs(hpY);
                 boolean frameCorrect = absX > TEST_AMP_THRESHOLD && absY < absX / TEST_AXIS_RATIO;
@@ -1509,71 +819,67 @@ public class MainActivity extends Activity implements SensorEventListener {
                 float windowRatio = getWindowCorrectRatio();
                 float mixRatio = (absX + absY > 0.001f) ? absX / (absX + absY) : 0;
 
-                if (windowRatio > TEST_CORRECT_RATIO) {
+                if (windowRatio > TEST_CORRECT_RATIO_FLOAT) {
                     correct = (stepElapsed > 5000);
                     if (correct) {
                         feedback = "✅ ОСЬ X: отлично! X/Y=" + String.format("%.1f", mixRatio);
-                        color = android.graphics.Color.argb(255, 0, 255, 0);
+                        color = Color.argb(255, 0, 255, 0);
                     } else {
                         feedback = "⬅️➡️ Продолжайте качать влево-вправо";
-                        color = android.graphics.Color.argb(255, 0, 255, 0);
+                        color = Color.argb(255, 0, 255, 0);
                     }
                 } else if (absY > absX * 1.5f && absY > 0.002f) {
                     feedback = "❌ Качайте ВЛЕВО-ВПРАВО, а не вперёд-назад!";
-                    color = android.graphics.Color.argb(255, 255, 100, 100);
+                    color = Color.argb(255, 255, 100, 100);
                 } else if (absX < 0.001f) {
                     feedback = "⏳ Качайте СИЛЬНЕЕ! Амплитуда ±3-5 см, частота 1-2 Гц";
-                    color = android.graphics.Color.argb(200, 200, 200, 0);
+                    color = Color.argb(200, 200, 200, 0);
                 } else if (absX < TEST_AMP_THRESHOLD) {
                     feedback = "⬆️ Увеличьте амплитуду, качайте размашистее!";
-                    color = android.graphics.Color.argb(255, 255, 200, 0);
+                    color = Color.argb(255, 255, 200, 0);
                 } else {
                     feedback = "⬅️➡️ Хорошо, держите ритм!";
-                    color = android.graphics.Color.argb(255, 0, 255, 0);
+                    color = Color.argb(255, 0, 255, 0);
                 }
                 feedback += " | X:" + String.format("%.0f", absX*1000) + "mG Y:" + String.format("%.0f", absY*1000) + "mG " + timeStr;
                 break;
             }
-
             case 3: {
-                // Y axis shake с динамическими рекомендациями
                 float absX = Math.abs(hpX);
                 float absY = Math.abs(hpY);
                 boolean frameCorrect = absY > TEST_AMP_THRESHOLD && absX < absY / TEST_AXIS_RATIO;
                 addToWindow(frameCorrect);
                 float windowRatio = getWindowCorrectRatio();
 
-                if (windowRatio > TEST_CORRECT_RATIO) {
+                if (windowRatio > TEST_CORRECT_RATIO_FLOAT) {
                     correct = (stepElapsed > 5000);
                     if (correct) {
                         feedback = "✅ ОСЬ Y: отлично!";
-                        color = android.graphics.Color.argb(255, 0, 255, 0);
+                        color = Color.argb(255, 0, 255, 0);
                     } else {
                         feedback = "↕️ Продолжайте качать вперёд-назад";
-                        color = android.graphics.Color.argb(255, 0, 255, 0);
+                        color = Color.argb(255, 0, 255, 0);
                     }
                 } else if (absX > absY * 1.5f && absX > 0.002f) {
                     feedback = "❌ Качайте ВПЕРЁД-НАЗАД, не в стороны!";
-                    color = android.graphics.Color.argb(255, 255, 100, 100);
+                    color = Color.argb(255, 255, 100, 100);
                 } else if (absY < 0.001f) {
                     feedback = "⏳ Качайте СИЛЬНЕЕ по оси Y! Амплитуда ±3-5 см";
-                    color = android.graphics.Color.argb(200, 200, 200, 0);
+                    color = Color.argb(200, 200, 200, 0);
                 } else if (absY < TEST_AMP_THRESHOLD) {
                     feedback = "⬆️ Добавьте амплитуды, качайте размашистее!";
-                    color = android.graphics.Color.argb(255, 255, 200, 0);
+                    color = Color.argb(255, 255, 200, 0);
                 } else {
                     feedback = "↕️ Хорошо, продолжайте!";
-                    color = android.graphics.Color.argb(255, 0, 255, 0);
+                    color = Color.argb(255, 0, 255, 0);
                 }
                 feedback += " | X:" + String.format("%.0f", absX*1000) + "mG Y:" + String.format("%.0f", absY*1000) + "mG " + timeStr;
                 break;
             }
-
             case 4: {
-                // Yaw rotation
-                if (!compassReady) {
+                if (!sensorController.isCompassReady()) {
                     feedback = "⏳ Компас калибруется...";
-                    color = android.graphics.Color.argb(200, 200, 200, 0);
+                    color = Color.argb(200, 200, 200, 0);
                     break;
                 }
                 updateHeadingWindow(headingNow);
@@ -1582,26 +888,24 @@ public class MainActivity extends Activity implements SensorEventListener {
                 addToWindow(frameCorrect);
                 float windowRatio = getWindowCorrectRatio();
 
-                if (windowRatio > TEST_CORRECT_RATIO) {
+                if (windowRatio > TEST_CORRECT_RATIO_FLOAT) {
                     correct = true;
                     feedback = "✅ Компас работает! Размах " + String.format("%.0f°", headingRange);
-                    color = android.graphics.Color.argb(255, 0, 255, 0);
+                    color = Color.argb(255, 0, 255, 0);
                 } else if (headingRange > 30f) {
                     feedback = "🔄 Ещё поворот! Нужно не менее 50° разворота";
-                    color = android.graphics.Color.argb(255, 255, 200, 0);
+                    color = Color.argb(255, 255, 200, 0);
                 } else if (headingRange > 10f) {
                     feedback = "🔄 Поверните телефон на 90° влево (больше! h=" + String.format("%.0f°", headingNow) + ")";
-                    color = android.graphics.Color.argb(255, 255, 200, 0);
+                    color = Color.argb(255, 255, 200, 0);
                 } else {
                     feedback = "🔄 Поверните телефон на 90° ВЛЕВО от текущего положения!";
-                    color = android.graphics.Color.argb(200, 200, 200, 0);
+                    color = Color.argb(200, 200, 200, 0);
                 }
                 feedback += " | range=" + String.format("%.0f°", headingRange) + " " + timeStr;
                 break;
             }
-
             case 5: {
-                // Spiral: both axes active + heading changing
                 float absX = Math.abs(hpX);
                 float absY = Math.abs(hpY);
                 float bothActive = absX + absY;
@@ -1612,107 +916,76 @@ public class MainActivity extends Activity implements SensorEventListener {
                 addToWindow(frameCorrect);
                 float windowRatio = getWindowCorrectRatio();
 
-                if (windowRatio > TEST_CORRECT_RATIO) {
+                if (windowRatio > TEST_CORRECT_RATIO_FLOAT) {
                     correct = (stepElapsed > 7000);
                     if (correct) {
                         feedback = "✅ СПИРАЛЬ: отлично! (" + String.format("%.0f", bothActive*9.81f*100) + " см/с²)";
-                        color = android.graphics.Color.argb(255, 0, 255, 0);
+                        color = Color.argb(255, 0, 255, 0);
                     } else {
                         feedback = "🌀 Крутите + трясите, уже хорошо";
-                        color = android.graphics.Color.argb(255, 0, 255, 0);
+                        color = Color.argb(255, 0, 255, 0);
                     }
                 } else if (bothActive > TEST_AMP_THRESHOLD && headingRange < 10f) {
                     feedback = "🌀 Крутите телефон (поворачивайте!), не только трясите!";
-                    color = android.graphics.Color.argb(255, 255, 200, 0);
+                    color = Color.argb(255, 255, 200, 0);
                 } else if (headingRange > 20f && bothActive < TEST_AMP_THRESHOLD) {
                     feedback = "🌀 Трясите активнее во время поворота!";
-                    color = android.graphics.Color.argb(255, 255, 200, 0);
+                    color = Color.argb(255, 255, 200, 0);
                 } else {
                     feedback = "🌀 Трясите + крутите одновременно!";
-                    color = android.graphics.Color.argb(200, 200, 200, 0);
+                    color = Color.argb(200, 200, 200, 0);
                 }
                 feedback += " " + timeStr;
                 break;
             }
-
             case 6: {
-                // Fast shake — динамические рекомендации
                 boolean frameCorrect = level > TEST_STRONG_THRESHOLD;
                 addToWindow(frameCorrect);
                 float windowRatio = getWindowCorrectRatio();
 
-                if (windowRatio > TEST_CORRECT_RATIO) {
+                if (windowRatio > TEST_CORRECT_RATIO_FLOAT) {
                     correct = (stepElapsed > 3000);
                     if (correct) {
                         feedback = "✅ ТРЯСКА: SNR=" + String.format("%.1f", sp.getSnr());
-                        color = android.graphics.Color.argb(255, 0, 255, 0);
+                        color = Color.argb(255, 0, 255, 0);
                     } else {
                         feedback = "💨 Продолжайте трясти! " + String.format("%.0f", levelMs2*100) + " см/с²";
-                        color = android.graphics.Color.argb(255, 0, 255, 0);
+                        color = Color.argb(255, 0, 255, 0);
                     }
                 } else if (level > 0.01f) {
                     feedback = "💨 БЫСТРЕЕ! Нужно 3-5 Гц (качков в секунду)";
-                    color = android.graphics.Color.argb(255, 255, 200, 0);
+                    color = Color.argb(255, 255, 200, 0);
                 } else {
                     feedback = "💨 Трясите БЫСТРЕЕ И СИЛЬНЕЕ! Частота 3-5 Гц";
-                    color = android.graphics.Color.argb(200, 200, 200, 0);
+                    color = Color.argb(200, 200, 200, 0);
                 }
                 feedback += " | " + String.format("%.0f%%", windowRatio*100) + " " + timeStr;
                 break;
             }
         }
 
-        // Update feedback text (rate-limited to ~10 FPS)
         if (now - testFeedbackLastUpdate > 100 || correct != testStepCorrect) {
             testFeedback = feedback;
             testFeedbackColor = color;
             testFeedbackLastUpdate = now;
         }
 
-        // When step is done correctly: beep + thermal blip + advance
         if (correct && !testStepCorrect) {
             testStepCorrect = true;
-            testLogLine("STEP" + testStep + "_CORRECT");
-            // Play success beep (700 Hz × 5)
             if (varioSoundManager != null && (now - testLastBeepMs > 2000)) {
                 varioSoundManager.playTestBeep();
                 testLastBeepMs = now;
             }
-            // Add thermal blip at direction of movement
             float angleDeg = sp.getStableDirDeg();
             if (angleDeg < 0) angleDeg += 360f;
             float strength = Math.min(sp.getSnr(), 8f);
             addThermal(angleDeg, strength, 30f, "test_step" + testStep);
-            // Auto-advance after 2 seconds
-            testHandler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    if (testMode) nextTestStep();
-                }
+            testHandler.postDelayed(() -> {
+                if (testMode) nextTestStep();
             }, 2000);
         }
-
-        // Log test data point once per second
-        if (now - testLastBeepMs > 1000) {
-            testLogLine("STEP" + testStep + "_DATA: level=" + String.format("%.4f", level)
-                    + " hpX=" + String.format("%.4f", hpX)
-                    + " hpY=" + String.format("%.4f", hpY)
-                    + " heading=" + String.format("%.1f", headingNow)
-                    + " correct=" + testStepCorrect);
-            testLastBeepMs = now;
-        }
     }
 
-    private float lastHeading = 0f;
-
-    /** Normdiff between two headings in degrees [0,180]. */
-    private float headingChange(float a, float b) {
-        float d = Math.abs(a - b);
-        if (d > 180f) d = 360f - d;
-        return d;
-    }
-
-    // ---- Sliding window for test feedback ----
     private void addToWindow(boolean correct) {
         testWindowBuffer[testWindowIdx] = correct;
         testWindowIdx = (testWindowIdx + 1) % TEST_WINDOW_FRAMES;
@@ -1728,12 +1001,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         return (float) count / testWindowFill;
     }
 
-    // ---- Heading window (min/max over 5s) ----
-    private static final int HEADING_WINDOW_FRAMES = 150; // 5s at 30 FPS
-    private final float[] headingWindow = new float[HEADING_WINDOW_FRAMES];
-    private int headingWindowIdx = 0;
-    private int headingWindowFill = 0;
-
     private void updateHeadingWindow(float heading) {
         headingWindow[headingWindowIdx] = heading;
         headingWindowIdx = (headingWindowIdx + 1) % HEADING_WINDOW_FRAMES;
@@ -1742,16 +1009,15 @@ public class MainActivity extends Activity implements SensorEventListener {
 
     private float getHeadingRange() {
         if (headingWindowFill < 10) return 0f;
-        // Копируем и сортируем heading'и, ищем max разрыв → размах = 360 - max_gap
         float[] hdgs = new float[headingWindowFill];
         System.arraycopy(headingWindow, 0, hdgs, 0, headingWindowFill);
         java.util.Arrays.sort(hdgs);
-        float maxGap = hdgs[0] + 360f - hdgs[hdgs.length - 1]; // разрыв через 0
+        float maxGap = hdgs[0] + 360f - hdgs[hdgs.length - 1];
         for (int i = 1; i < hdgs.length; i++) {
             float gap = hdgs[i] - hdgs[i - 1];
             if (gap > maxGap) maxGap = gap;
         }
-        return 360f - maxGap; // размах = 360 - самый большой разрыв
+        return 360f - maxGap;
     }
 
     private void stopTestMode() {
@@ -1759,16 +1025,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         if (testTask != null) {
             testHandler.removeCallbacks(testTask);
         }
-    }
-
-    private void testLogLine(String line) {
-        long now = System.currentTimeMillis();
-        long t = (flightStartMs > 0) ? (now - flightStartMs) : 0;
-        String logLine = t + "," + line + "\n";
-        if (isLogging) {
-            logBuffer.append(logLine);
-        }
-        android.util.Log.i("TERMO1_TEST", line);
     }
 
     private void showTestCompleteDialog() {
@@ -1783,41 +1039,60 @@ public class MainActivity extends Activity implements SensorEventListener {
                 .show();
     }
 
-    public String getTestInstruction() {
-        return testInstruction;
-    }
+    public String getTestInstruction() { return testInstruction; }
+    public boolean isTestMode() { return testMode; }
+    public String getTestFeedback() { return testFeedback; }
+    public int getTestFeedbackColor() { return testFeedbackColor; }
 
-    public boolean isTestMode() {
-        return testMode;
-    }
+    // ========================================================================
+    // Compass heading (для UI и test mode)
+    // ========================================================================
 
-    public String getTestFeedback() {
-        return testFeedback;
-    }
-
-    public int getTestFeedbackColor() {
-        return testFeedbackColor;
+    private float getCompassHeading() {
+        if (sensorController.isCompassReady()) return sensorController.getHeading();
+        if (gpsManager.isReady()) return gpsManager.getHeading();
+        return 0.0f;
     }
 
     // ========================================================================
-    // Calibration reset
+    // TTS голосовые подсказки
     // ========================================================================
 
-    public void resetCalibration() {
-        baroCalibCount = 0;
-        baselinePressure = latestPressure;
-        hpBufFill = 0;
-        recentSnr = 0f;
-        if (thermalDetector != null) {
-            thermalDetector.resetCalibration();
+    /** Произнести направление на термик (только передние сектора 45°) */
+    private void speakThermalDirection(float thermalAngle, float distanceMeters) {
+        float heading = getCompassHeading();
+        float rel = (thermalAngle - heading + 540f) % 360f - 180f; // [-180, 180]
+
+        String phrase;
+        if (rel < -112.5f || rel > 112.5f) return; // задние сектора — молчим
+        if (rel < -67.5f)       phrase = "Термик слева";
+        else if (rel < -22.5f)  phrase = "Термик спереди слева";
+        else if (rel < 22.5f)   phrase = "Термик спереди";
+        else if (rel < 67.5f)   phrase = "Термик спереди справа";
+        else                    phrase = "Термик справа";
+
+        // Округление до 10 метров
+        int distRounded = ((int)Math.round(distanceMeters / 10f)) * 10;
+        if (distRounded < 10) distRounded = 10;
+        if (distRounded > 150) distRounded = 150;
+        phrase += " " + distRounded + " метров";
+
+        // Дебаунс: не повторять ту же фразу чаще чем раз в 8 секунд
+        long now = System.currentTimeMillis();
+        if (phrase.equals(lastTtsPhrase) && now - lastTtsSpeakMs < 8000) return;
+
+        lastTtsPhrase = phrase;
+        lastTtsSpeakMs = now;
+
+        if (android.os.Build.VERSION.SDK_INT >= 21) {
+            tts.speak(phrase, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null);
+        } else {
+            tts.speak(phrase, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null);
         }
-        android.widget.Toast.makeText(this,
-                "Калибровка сброшена. Ждите 2с...",
-                android.widget.Toast.LENGTH_SHORT).show();
     }
 
     // ========================================================================
-    // Back button handler
+    // Back button
     // ========================================================================
 
     @Override
@@ -1833,48 +1108,33 @@ public class MainActivity extends Activity implements SensorEventListener {
         new AlertDialog.Builder(this)
                 .setTitle(getString(R.string.exit_dialog_title))
                 .setPositiveButton(getString(R.string.exit_dialog_yes),
-                        new DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(DialogInterface d, int w) {
-                                finishAffinity();
-                            }
-                        })
-                .setNegativeButton(getString(R.string.exit_dialog_no),
-                        (DialogInterface.OnClickListener) null)
+                        (d, w) -> finishAffinity())
+                .setNegativeButton(getString(R.string.exit_dialog_no), null)
                 .show();
     }
 
     private void showExitOnScreenDialog() {
-        if (exitDialog != null && exitDialog.isShowing()) {
-            return;
-        }
+        if (exitDialog != null && exitDialog.isShowing()) return;
         exitDialog = new AlertDialog.Builder(this)
                 .setTitle("Завершить TERMO1?")
-                .setPositiveButton("Да",
-                        new DialogInterface.OnClickListener() {
-                            @Override
-                            public void onClick(DialogInterface d, int w) {
-                                finishAffinity();
-                            }
-                        })
-                .setNegativeButton("Нет",
-                        (DialogInterface.OnClickListener) null)
+                .setPositiveButton("Да", (d, w) -> finishAffinity())
+                .setNegativeButton("Нет", null)
                 .show();
     }
 
     // ========================================================================
-    // RadarView — inner class extending View
+    // RadarView — inner class
     // ========================================================================
 
     class RadarView extends View implements View.OnClickListener {
 
-        // Gear button (top-right)
+        // Gear button
         private final Paint gearPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF gearRect = new RectF();
         private final Paint gearInnerPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint gearToothPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-        // Exit button (top-left)
+        // Exit button
         private final Paint exitPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint exitXPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF exitRect = new RectF();
@@ -1883,37 +1143,33 @@ public class MainActivity extends Activity implements SensorEventListener {
         private final Paint simPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint simBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-        // === НАВИГАЦИОННЫЕ КНОПКИ ===
-        // Калибровка (слева под варио), Старт (справа под варио)
+        // Navigation buttons
         private final Paint btnTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint btnBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final RectF calibBtnRect = new RectF();  // слева
-        private final RectF startBtnRect = new RectF();  // справа
+        private final RectF calibBtnRect = new RectF();
+        private final RectF startBtnRect = new RectF();
 
-        // Тест (между высотами)
+        // Test button
         private final Paint testBtnBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint testBtnTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF testBtnRect = new RectF();
 
-        // Test instruction overlay
+        // Test overlay
         private final Paint testOverlayPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint testTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint testBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        // Test border + progress bar (вынесены из onDraw — GC fix)
         private final Paint testBorderPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint testBarBgPaint = new Paint();
         private final Paint testBarFillPaint = new Paint();
 
-        private long lastAddedBlipBornMs = -1;  // для дедупликации blip в onDraw
-
-        // Надпись "пишем лог" между кнопками (только при активной записи)
+        // Logging label
         private final Paint logLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-        // Данные с датчиков под кнопкой калибровки
+        // Sensor data
         private final Paint sensorDataPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
-        private float touchX;
-        private float touchY;
+        private long lastAddedBlipBornMs = -1;
+        private float touchX, touchY;
+        private long touchDownTime;
 
         public RadarView(Context context) {
             super(context);
@@ -1921,7 +1177,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             setClickable(true);
             setOnClickListener(this);
 
-            // Gear
             gearPaint.setStyle(Paint.Style.STROKE);
             gearPaint.setStrokeWidth(4);
             gearPaint.setColor(Color.argb(180, 255, 255, 255));
@@ -1931,7 +1186,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             gearToothPaint.setStyle(Paint.Style.FILL);
             gearToothPaint.setColor(Color.argb(180, 255, 255, 255));
 
-            // Exit
             exitPaint.setStyle(Paint.Style.STROKE);
             exitPaint.setStrokeWidth(4);
             exitPaint.setColor(Color.argb(180, 255, 100, 100));
@@ -1940,7 +1194,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             exitXPaint.setColor(Color.argb(180, 255, 100, 100));
             exitXPaint.setStrokeCap(Paint.Cap.ROUND);
 
-            // SIM badge
             simBgPaint.setStyle(Paint.Style.FILL);
             simBgPaint.setColor(Color.argb(80, 255, 193, 7));
             simPaint.setAntiAlias(true);
@@ -1949,7 +1202,6 @@ public class MainActivity extends Activity implements SensorEventListener {
             simPaint.setColor(Color.argb(220, 255, 193, 7));
             simPaint.setTextAlign(Paint.Align.LEFT);
 
-            // Button text
             btnTextPaint.setAntiAlias(true);
             btnTextPaint.setColor(Color.argb(200, 0, 255, 0));
             btnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
@@ -1959,39 +1211,32 @@ public class MainActivity extends Activity implements SensorEventListener {
             btnBgPaint.setColor(Color.argb(40, 0, 255, 0));
             btnBgPaint.setAntiAlias(true);
 
-            // Test button
             testBtnBgPaint.setStyle(Paint.Style.FILL);
             testBtnBgPaint.setColor(Color.argb(50, 255, 193, 7));
             testBtnBgPaint.setAntiAlias(true);
-
             testBtnTextPaint.setAntiAlias(true);
             testBtnTextPaint.setColor(Color.argb(220, 255, 193, 7));
             testBtnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
             testBtnTextPaint.setTextAlign(Paint.Align.CENTER);
 
-            // Test overlay
             testBgPaint.setStyle(Paint.Style.FILL);
             testBgPaint.setColor(Color.argb(200, 10, 10, 10));
-
             testOverlayPaint.setAntiAlias(true);
             testOverlayPaint.setColor(Color.argb(180, 0, 255, 0));
             testOverlayPaint.setTextSize(28);
             testOverlayPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
             testOverlayPaint.setTextAlign(Paint.Align.LEFT);
-
             testTextPaint.setAntiAlias(true);
             testTextPaint.setColor(Color.argb(220, 255, 255, 255));
             testTextPaint.setTextSize(32);
             testTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
             testTextPaint.setTextAlign(Paint.Align.LEFT);
 
-            // Log label
             logLabelPaint.setTextSize(24);
             logLabelPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
             logLabelPaint.setTextAlign(Paint.Align.CENTER);
             logLabelPaint.setColor(Color.argb(200, 33, 150, 243));
 
-            // Sensor data paint — под кнопкой калибровки
             sensorDataPaint.setAntiAlias(true);
             sensorDataPaint.setTextSize(20);
             sensorDataPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
@@ -2003,20 +1248,16 @@ public class MainActivity extends Activity implements SensorEventListener {
             super.onSizeChanged(w, h, oldw, oldh);
             if (w > 0 && h > 0) {
                 radarRenderer.onSizeChanged(w, h);
-                // Exit button (top-left) — 168px square
-                exitRect.set(12, 12, 12 + 168, 12 + 168);
-                // Gear button (top-right)
-                float gearSize = 168f;
+                exitRect.set(8, 8, 8 + 84, 8 + 84);
+                float gearSize = 84f;
                 gearRect.set(w - gearSize - 24, 24, w - 24, gearSize + 24);
 
-                // Calibration button — left side, below vario
-                float btnY = 260f + 100f; // below vario center
+                float btnY = 180f;
                 float btnW = w * 0.28f;
                 float btnH = 60f;
                 calibBtnRect.set(w * 0.03f, btnY, w * 0.03f + btnW, btnY + btnH);
                 startBtnRect.set(w * 0.97f - btnW, btnY, w * 0.97f, btnY + btnH);
 
-                // Test button — between altitudes
                 float radarCy = h / 2f;
                 float radarR = Math.min(w / 2f, radarCy) - 4;
                 float altY = radarCy + radarR + 80;
@@ -2030,35 +1271,102 @@ public class MainActivity extends Activity implements SensorEventListener {
         @Override
         protected void onDraw(Canvas canvas) {
             super.onDraw(canvas);
-
             int w = getWidth();
             int h = getHeight();
             if (w <= 0 || h <= 0) return;
 
-            // Update vario sound at render rate
-            if (varioSoundManager != null) {
-                varioSoundManager.update(vario);
+            // Blind mode: чёрный экран, минимум UI, только голосовые подсказки
+            if (blindModeEnabled) {
+                canvas.drawColor(Color.BLACK);
+                Paint bp = new Paint(Paint.ANTI_ALIAS_FLAG);
+                bp.setColor(Color.argb(40, 0, 255, 0));
+                bp.setTextSize(32);
+                bp.setTypeface(android.graphics.Typeface.MONOSPACE);
+                bp.setTextAlign(Paint.Align.CENTER);
+                String status = flightStateMachine.isFlying() ? "Слепой полёт" : "Ожидание...";
+                canvas.drawText(status, w/2f, h/2f, bp);
+                return;
             }
-            // Refresh WakeLock timeout (раз в 30 мин)
+
+            // Sound + WakeLock refresh
+            if (varioSoundManager != null) {
+                varioSoundManager.update(sensorController.getVario());
+            }
             refreshWakeLock();
 
-            // --- Add/update thermal blip from real-time detector ---
+            // Process sample for flight state + sound
+            processSample();
+
+            // Push GPS cache to LogManager (1 Гц данные, пишутся в каждом сэмпле)
+            logManager.updateGpsCache(
+                gpsManager.getLat(), gpsManager.getLon(),
+                gpsManager.getAltitude(), gpsManager.getSpeed(), gpsManager.getHeading());
+
+            // MaxSnr periodic reset (каждые 5 мин)
+            long nowMs2 = System.currentTimeMillis();
+            if (nowMs2 - lastMaxSnrResetMs > 300_000) {
+                sensorController.resetMaxSnr();
+                lastMaxSnrResetMs = nowMs2;
+            }
+
+            // Сохранить калибровку наклона после завершения (однократно)
+            if (sensorController.getMountTiltDeg() > 0.1f
+                    && prefs.getFloat("mount_tilt_deg", -1f) != sensorController.getMountTiltDeg()) {
+                sensorController.saveMountTilt(prefs);
+                android.util.Log.i("TERMO1", "Tilt calibration saved: "
+                        + sensorController.getMountTiltDeg() + "°");
+            }
+
+            // Яркость: макс в полёте при записи лога, средняя в остальное время
+            if (flightStateMachine.isFlying() && logManager.isLogging()) {
+                android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+                if (lp.screenBrightness < 1.0f) {
+                    lp.screenBrightness = 1.0f;
+                    getWindow().setAttributes(lp);
+                }
+            } else if (blindModeEnabled) {
+                // Blind mode: экран почти погашен
+                android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+                if (lp.screenBrightness > 0.02f) {
+                    lp.screenBrightness = 0.01f;
+                    getWindow().setAttributes(lp);
+                }
+            }
+
+            // Update status
+            updateStatus();
+
+            // Вибрация при смене статуса на термик/набор
+            if (!currentStatus.equals(previousStatus)) {
+                previousStatus = currentStatus;
+                if (currentStatus.equals(UiManager.STATUS_THERMAL)
+                        || currentStatus.equals(UiManager.STATUS_CLIMB)) {
+                    android.os.Vibrator vib = (android.os.Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+                    if (vib != null && vib.hasVibrator()) {
+                        if (android.os.Build.VERSION.SDK_INT >= 26) {
+                            vib.vibrate(android.os.VibrationEffect.createOneShot(300,
+                                    android.os.VibrationEffect.DEFAULT_AMPLITUDE));
+                        } else {
+                            vib.vibrate(300);
+                        }
+                    }
+                }
+            }
+
+            // Thermal blips from detector
             if (!simMode && thermalDetector != null && !testMode) {
                 ThermalBlip detBlip = thermalDetector.getCurrentBlip();
                 if (detBlip != null) {
                     long now = System.currentTimeMillis();
                     if (now - detBlip.bornMs < ThermalBlip.LIFE_MS) {
                         synchronized (thermalLock) {
-                            // Сначала чистим мёртвые blip
                             Iterator<ThermalBlip> it = thermals.iterator();
                             while (it.hasNext()) {
                                 if (!it.next().isAlive(now)) it.remove();
                             }
-                            // Ищем blip с таким же bornMs — обновляем существующий
                             boolean found = false;
                             for (ThermalBlip tb : thermals) {
                                 if (tb.bornMs == detBlip.bornMs) {
-                                    // Обновляем координаты существующего blip (distance мог измениться)
                                     tb.distance = detBlip.distance;
                                     tb.strength = detBlip.strength;
                                     tb.sizeFactor = detBlip.sizeFactor;
@@ -2070,87 +1378,82 @@ public class MainActivity extends Activity implements SensorEventListener {
                             if (!found && detBlip.bornMs != lastAddedBlipBornMs) {
                                 lastAddedBlipBornMs = detBlip.bornMs;
                                 thermals.add(detBlip);
-                                while (thermals.size() > THERMAL_LIMIT) {
-                                    thermals.remove(0);
+                                // TTS: голосовая подсказка направления на новый термик
+                                if (voicePromptsEnabled && ttsReady) {
+                                    speakThermalDirection(detBlip.angle, detBlip.distance);
                                 }
+                                while (thermals.size() > THERMAL_LIMIT) thermals.remove(0);
                             }
                         }
-                        if (now - lastThermalBeepMs > 3000) {
-                            if (varioSoundManager != null) {
-                                varioSoundManager.playThermalBeep();
-                            }
-                            lastThermalBeepMs = now;
+                        long nowMs = System.currentTimeMillis();
+                        if (nowMs - lastThermalBeepMs > 3000) {
+                            if (varioSoundManager != null) varioSoundManager.playThermalBeep();
+                            lastThermalBeepMs = nowMs;
                         }
                     }
                 }
             }
 
-            // --- Draw radar ---
+            // Draw radar
             long nowMs = System.currentTimeMillis();
             synchronized (thermalLock) {
                 thermalsCopy.clear();
                 thermalsCopy.addAll(thermals);
             }
             radarRenderer.draw(canvas, nowMs, thermalsCopy,
-                    getCompassHeading(), vario, currentStatus,
-                    maxSnr, thermalsCopy.size());
+                    getCompassHeading(), sensorController.getVario(), currentStatus,
+                    sensorController.getMaxSnr(), thermalsCopy.size());
 
-            // --- Draw HUD via UiManager ---
+            // HUD
             float cx = w / 2f;
-            uiManager.drawVario(canvas, cx, 260, vario);
+            uiManager.drawVario(canvas, cx, 260, sensorController.getVario());
             uiManager.drawStatus(canvas, cx, currentStatus);
 
-            // --- Update test feedback (30 FPS) ---
-            if (testMode) {
-                updateTestFeedback();
-            }
+            if (testMode) updateTestFeedback();
 
-            // Info panel at bottom-left
+            // Info panel
             if (thermalDetector != null) {
                 SignalProcessor sp = thermalDetector.getSignalProcessor();
-                float turbMs2 = sp.getTurbulenceMs2();
-                float detSnr = sp.getSnr();
-                uiManager.drawInfo(canvas, 0, h, turbMs2, detSnr, thermalsCopy.size(),
-                        sp.getBpX(), sp.getBpY(), sp.getStableDirDeg(),
-                        thermalDetector.getStatusText());
+                uiManager.drawInfo(canvas, 0, h, sp.getTurbulenceMs2(), sp.getSnr(),
+                        thermalsCopy.size(), sp.getBpX(), sp.getBpY(),
+                        sp.getStableDirDeg(), thermalDetector.getStatusText());
             } else {
-                float varioDisplay = Float.isNaN(vario) ? 0 : vario;
-                float snrDisplay = Float.isNaN(recentSnr) ? 0 : recentSnr;
-                uiManager.drawInfo(canvas, 0, h, varioDisplay, snrDisplay, thermalsCopy.size(),
-                        0, 0, 0, currentStatus);
+                uiManager.drawInfo(canvas, 0, h,
+                        sensorController.getVario(), sensorController.getRecentSnr(),
+                        thermalsCopy.size(), 0, 0, 0, currentStatus);
             }
 
-            // --- Altitude: AGL left, MSL right ---
+            // Altitude
             float radarCy = h / 2f;
             float radarR = Math.min(w / 2f, radarCy) - 4;
-            float altAgl = altitudeInitialized ? (gpsAltitude - startAltitude) : 0f;
+            float gpsAlt = gpsManager.getAltitude();
+            float startAlt = gpsManager.getStartAltitude();
+            float altAgl = gpsManager.isAltitudeInitialized() ? (gpsAlt - startAlt) : 0f;
             float altY = radarCy + radarR + 80;
             float leftMargin = w * 0.05f;
             float rightMargin = w * 0.95f;
-            uiManager.drawAltitude(canvas, leftMargin, rightMargin, altY, gpsAltitude, altAgl);
+            uiManager.drawAltitude(canvas, leftMargin, rightMargin, altY, gpsAlt, altAgl);
 
-            // --- Кнопка ТЕСТ на уровне высот (между AGL и MSL) ---
-            float testBtnY = altY - 20; // на уровне высот
+            // Test button
             canvas.drawRoundRect(testBtnRect, 12, 12, testBtnBgPaint);
             testBtnTextPaint.setTextSize(28);
             testBtnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
-            // Мигает если testMode
             if (testMode) {
                 float blink = (float) Math.sin(nowMs / 300.0) * 0.3f + 0.7f;
                 testBtnTextPaint.setColor(Color.argb((int)(blink*220), 255, 193, 7));
             }
             canvas.drawText("ТЕСТ", testBtnRect.centerX(), testBtnRect.centerY() + 10, testBtnTextPaint);
 
-            // --- Кнопки КАЛИБРОВКА и СТАРТ под варио ---
+            // Кнопки СТАРТ (слева) и СТОП (справа)
             btnTextPaint.setTextSize(26);
             btnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
 
-            // Калибровка (слева)
+            // Старт (слева)
             canvas.drawRoundRect(calibBtnRect, 10, 10, btnBgPaint);
             btnTextPaint.setColor(Color.argb(200, 0, 255, 0));
-            canvas.drawText("КАЛИБР", calibBtnRect.centerX(), calibBtnRect.centerY() + 9, btnTextPaint);
+            canvas.drawText("СТАРТ", calibBtnRect.centerX(), calibBtnRect.centerY() + 9, btnTextPaint);
 
-            // Данные с датчиков под кнопкой калибровки — в одну строку, шрифт ×3
+            // Sensor data below start button
             if (thermalDetector != null) {
                 SignalProcessor sp = thermalDetector.getSignalProcessor();
                 float amp = sp.getTurbulenceMs2();
@@ -2160,56 +1463,70 @@ public class MainActivity extends Activity implements SensorEventListener {
                 if (dir >= 360f) dir -= 360f;
 
                 float dataX = calibBtnRect.left;
-                float dataY = calibBtnRect.bottom + 56;
-                int dataColor = Color.argb(160, 0, 255, 0);
-
-                sensorDataPaint.setColor(dataColor);
-                sensorDataPaint.setTextSize(54);
+                float dataY = calibBtnRect.bottom + 28;
+                sensorDataPaint.setColor(Color.argb(160, 0, 255, 0));
+                float density = getResources().getDisplayMetrics().density;
+                sensorDataPaint.setTextSize(27f * density);
                 sensorDataPaint.setTextAlign(Paint.Align.LEFT);
 
-                // ±0.12
                 String labAmp = "\u00B1" + String.format(java.util.Locale.US, "%.2f", amp);
                 canvas.drawText(labAmp, dataX, dataY, sensorDataPaint);
                 float advX = sensorDataPaint.measureText(labAmp) + 24;
 
-                // 1.35Гц
                 String labFreq = String.format(java.util.Locale.US, "%.2f\u0413\u0446", freq);
                 canvas.drawText(labFreq, dataX + advX, dataY, sensorDataPaint);
                 advX += sensorDataPaint.measureText(labFreq) + 24;
 
-                // 045°
                 String labDir = String.format(java.util.Locale.US, "%.0f\u00B0", dir);
                 canvas.drawText(labDir, dataX + advX, dataY, sensorDataPaint);
+
+                // Строка наклона (мелко, под данными датчиков)
+                float tiltY = dataY + 20;
+                sensorDataPaint.setTextSize(16f * getResources().getDisplayMetrics().density);
+                sensorDataPaint.setColor(Color.argb(120, 0, 255, 0));
+                float mountTilt = sensorController.getMountTiltDeg();
+                float currTilt = sensorController.getCurrentTiltDeg();
+                if (mountTilt > 1f) {
+                    canvas.drawText(String.format(java.util.Locale.US,
+                            "\u041A\u0440\u0435\u043F\u043B\u0435\u043D\u0438\u0435: %.0f\u00B0 | \u041A\u0440\u0435\u043D: %.0f\u00B0",
+                            mountTilt, currTilt), dataX, tiltY, sensorDataPaint);
+                }
             }
 
-            // Надпись "пишем лог" между кнопками (только при активной записи)
-            if (isLogging) {
+            // Logging label — красный в полёте
+            if (logManager.isLogging()) {
                 float labelY = calibBtnRect.centerY() + 9;
                 float labelCx = (calibBtnRect.right + startBtnRect.left) / 2f;
+                if (flightStateMachine.isFlying()) {
+                    logLabelPaint.setColor(Color.argb(220, 255, 80, 80));
+                } else {
+                    logLabelPaint.setColor(Color.argb(200, 33, 150, 243));
+                }
                 canvas.drawText("пишем лог", labelCx, labelY, logLabelPaint);
             }
 
-            // Старт (справа) — меняет текст и цвет
+            // Стоп (справа) — всегда виден
             canvas.drawRoundRect(startBtnRect, 10, 10, btnBgPaint);
-            if (isLogging) {
-                btnTextPaint.setColor(Color.argb(200, 255, 100, 100));
-                canvas.drawText("СТОП", startBtnRect.centerX(), startBtnRect.centerY() + 9, btnTextPaint);
+            if (logManager.isLogging()) {
+                btnTextPaint.setColor(Color.argb(255, 255, 80, 80));
             } else {
-                btnTextPaint.setColor(Color.argb(200, 0, 255, 0));
-                canvas.drawText("СТАРТ", startBtnRect.centerX(), startBtnRect.centerY() + 9, btnTextPaint);
+                btnTextPaint.setColor(Color.argb(60, 255, 80, 80));
             }
+            canvas.drawText("СТОП", startBtnRect.centerX(), startBtnRect.centerY() + 9, btnTextPaint);
 
-            // Flight time below altitudes
+            // Flight time
             long flightTimeMs;
             if (simMode) {
                 flightTimeMs = System.currentTimeMillis() - simStartMs;
+            } else if (logManager.isLogging()) {
+                flightTimeMs = System.currentTimeMillis() - logManager.getFlightStartMs();
             } else {
-                flightTimeMs = (flightStartMs > 0) ? (System.currentTimeMillis() - flightStartMs) : 0;
+                flightTimeMs = 0;
             }
-            uiManager.drawFlightTime(canvas, cx, altY + 180 + 20, flightTimeMs / 1000);
-            uiManager.drawSystemTime(canvas, cx, altY + 180 + 20 + 150 + 10);
+            uiManager.drawFlightTime(canvas, cx, altY + 90 + 10, flightTimeMs / 1000);
+            uiManager.drawSystemTime(canvas, cx, altY + 90 + 10 + 75 + 5);
 
-            // Night mode overlay
+            // Night filter
             uiManager.drawNightFilter(canvas, w, h);
 
             // SIM badge
@@ -2218,36 +1535,29 @@ public class MainActivity extends Activity implements SensorEventListener {
                 float badgeY = 190f;
                 float textW = simPaint.measureText("SIM");
                 float pad = 8f;
-                canvas.drawRoundRect(badgeX, badgeY,
-                        badgeX + textW + pad * 2,
+                canvas.drawRoundRect(badgeX, badgeY, badgeX + textW + pad * 2,
                         badgeY + 32 + pad, 8, 8, simBgPaint);
                 canvas.drawText("SIM", badgeX + pad, badgeY + 28, simPaint);
             }
 
-            // Exit button (top-left)
             drawExitButton(canvas);
-            // Gear button (top-right)
             drawGearButton(canvas);
 
-            // --- Test mode overlay: инструкции в центре радара ---
+            // Test mode overlay
             if (testMode) {
                 String instr = getTestInstruction();
                 String fb = getTestFeedback();
                 if (instr != null && instr.length() > 0) {
-                    // Semi-transparent overlay over radar area
                     float radarCx = w / 2f;
                     float radarCy2 = h / 2f;
                     float radarR2 = Math.min(w / 2f, radarCy2) - 4;
-                    // Filled circle behind pilot dot — instruction background
                     testBgPaint.setColor(Color.argb(180, 5, 5, 5));
                     canvas.drawCircle(radarCx, radarCy2, radarR2 * 0.55f, testBgPaint);
-                    // Border
                     testBorderPaint.setStyle(Paint.Style.STROKE);
                     testBorderPaint.setStrokeWidth(1);
                     testBorderPaint.setColor(Color.argb(40, 0, 255, 0));
                     canvas.drawCircle(radarCx, radarCy2, radarR2 * 0.55f, testBorderPaint);
 
-                    // Instruction title (step header)
                     String[] lines = instr.split("\n");
                     float textY = radarCy2 - radarR2 * 0.35f;
                     testTextPaint.setTextAlign(Paint.Align.CENTER);
@@ -2265,7 +1575,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                         textY += 38;
                     }
 
-                    // Feedback line (dynamic)
                     if (fb != null && fb.length() > 0) {
                         float fbY = radarCy2 + radarR2 * 0.08f;
                         testTextPaint.setColor(getTestFeedbackColor());
@@ -2274,7 +1583,6 @@ public class MainActivity extends Activity implements SensorEventListener {
                         canvas.drawText(fb, radarCx, fbY, testTextPaint);
                     }
 
-                    // Step progress bar
                     float barY = radarCy2 + radarR2 * 0.28f;
                     float barW = radarR2 * 0.8f;
                     float barH = 10f;
@@ -2290,41 +1598,26 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         private void drawGearButton(Canvas canvas) {
-            float left = gearRect.left;
-            float top = gearRect.top;
-            float right = gearRect.right;
-            float bottom = gearRect.bottom;
-            float cx = (left + right) / 2f;
-            float cy = (top + bottom) / 2f;
+            float left = gearRect.left, top = gearRect.top, right = gearRect.right, bottom = gearRect.bottom;
+            float cx = (left + right) / 2f, cy = (top + bottom) / 2f;
             float radius = (right - left) / 2f - 4;
-
             canvas.drawCircle(cx, cy, radius, gearPaint);
-            float innerR = radius * 0.45f;
-            canvas.drawCircle(cx, cy, innerR, gearInnerPaint);
-
+            canvas.drawCircle(cx, cy, radius * 0.45f, gearInnerPaint);
             int teeth = 8;
             float toothLen = radius * 0.3f;
             for (int i = 0; i < teeth; i++) {
                 double angle = Math.toRadians(i * (360 / teeth));
-                float startR = radius - toothLen;
-                float endR = radius + 2;
-                float sx = cx + (float) Math.cos(angle) * startR;
-                float sy = cy + (float) Math.sin(angle) * startR;
-                float ex = cx + (float) Math.cos(angle) * endR;
-                float ey = cy + (float) Math.sin(angle) * endR;
+                float sx = cx + (float) Math.cos(angle) * (radius - toothLen);
+                float sy = cy + (float) Math.sin(angle) * (radius - toothLen);
+                float ex = cx + (float) Math.cos(angle) * (radius + 2);
+                float ey = cy + (float) Math.sin(angle) * (radius + 2);
                 canvas.drawLine(sx, sy, ex, ey, gearToothPaint);
             }
         }
 
         private void drawExitButton(Canvas canvas) {
-            float left = exitRect.left;
-            float top = exitRect.top;
-            float right = exitRect.right;
-            float bottom = exitRect.bottom;
-            float cx = (left + right) / 2f;
-            float cy = (top + bottom) / 2f;
-            float radius = (right - left) / 2f - 4;
-
+            float cx = exitRect.centerX(), cy = exitRect.centerY();
+            float radius = (exitRect.right - exitRect.left) / 2f - 4;
             canvas.drawCircle(cx, cy, radius, exitPaint);
             float inset = radius * 0.30f;
             canvas.drawLine(cx - inset, cy - inset, cx + inset, cy + inset, exitXPaint);
@@ -2336,44 +1629,42 @@ public class MainActivity extends Activity implements SensorEventListener {
             touchX = event.getX();
             touchY = event.getY();
 
+            if (event.getAction() == MotionEvent.ACTION_DOWN) {
+                // Запоминаем время для детекции долгого нажатия
+                touchDownTime = System.currentTimeMillis();
+                return true;
+            }
+
             if (event.getAction() == MotionEvent.ACTION_UP) {
-                // Exit button
+                long touchDuration = System.currentTimeMillis() - touchDownTime;
+
                 if (exitRect.contains(touchX, touchY)) {
                     showExitOnScreenDialog();
                     return true;
                 }
-                // Gear button
                 if (gearRect.contains(touchX, touchY)) {
-                    Intent intent = new Intent(MainActivity.this, SettingsActivity.class);
-                    startActivity(intent);
+                    startActivity(new Intent(MainActivity.this, SettingsActivity.class));
                     return true;
                 }
-                // Calibration button
+                // СТАРТ: тап = старт лога, долгое нажатие = сброс калибровки
                 if (calibBtnRect.contains(touchX, touchY)) {
-                    resetCalibration();
-                    return true;
-                }
-                // Start/Stop button
-                if (startBtnRect.contains(touchX, touchY)) {
-                    if (isLogging) {
-                        manualStopRequested = true;
-                        stopLogging();
+                    if (touchDuration > 600) {
+                        resetCalibration();
                         android.widget.Toast.makeText(MainActivity.this,
-                                "Лог сохранён", android.widget.Toast.LENGTH_SHORT).show();
+                                "Калибровка сброшена (долгое нажатие)",
+                                android.widget.Toast.LENGTH_SHORT).show();
                     } else {
-                        manualStopRequested = false;
-                        startLogging();
-                        android.widget.Toast.makeText(MainActivity.this,
-                                "Запись лога начата", android.widget.Toast.LENGTH_SHORT).show();
+                        toggleManualLogging();
                     }
                     return true;
                 }
-                // Test button
+                if (startBtnRect.contains(touchX, touchY)) {
+                    if (logManager.isLogging()) toggleManualLogging();
+                    return true;
+                }
                 if (testBtnRect.contains(touchX, touchY)) {
-                    if (!testMode) {
-                        startTestMode();
-                    } else {
-                        // Press again during test = cancel
+                    if (!testMode) startTestMode();
+                    else {
                         stopTestMode();
                         testMode = false;
                         testInstruction = "";
@@ -2387,8 +1678,6 @@ public class MainActivity extends Activity implements SensorEventListener {
         }
 
         @Override
-        public void onClick(View v) {
-            // Click listener for accessibility — handled by onTouchEvent
-        }
+        public void onClick(View v) {}
     }
 }
