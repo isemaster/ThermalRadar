@@ -12,7 +12,7 @@
     <string name="scheme_light">Светлая (для солнца)</string>
     <string name="scheme_high">Высокий контраст</string>
     <string name="settings_simulate">Симуляция 75 с</string>
-    <string name="settings_cal_reset">Сброс калибровки</string>
+    <string name="settings_cal_reset">Калибровка</string>
     <string name="settings_exit">Выход</string>
     <string name="settings_version">Версия</string>
     <string name="settings_log_path">Путь к логам</string>

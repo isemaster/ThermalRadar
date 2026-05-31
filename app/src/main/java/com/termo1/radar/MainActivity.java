@@ -290,6 +290,20 @@ public class MainActivity extends Activity {
         // Значения GPS в логе будут 0 — колонки сохраняются для совместимости
         // gpsManager.startGps();
 
+        // Обработать запрос калибровки из настроек (tilt_calibration_requested)
+        if (prefs.getBoolean("tilt_calibration_requested", false)) {
+            prefs.edit().remove("tilt_calibration_requested").apply();
+            // Запустить калибровку наклона через Handler (нужно время для датчиков)
+            new android.os.Handler().postDelayed(() -> {
+                sensorController.resetCalibration();
+                // После завершения калибровки (2 сек) сохранить угол
+                new android.os.Handler().postDelayed(() -> {
+                    float angle = sensorController.getMountTiltDeg();
+                    prefs.edit().putFloat("mount_tilt_deg", angle).apply();
+                }, 2500);
+            }, 500);
+        }
+
         // Яркость экрана: средняя (0.5) по умолчанию
         android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
         lp.screenBrightness = 0.5f;
@@ -1406,7 +1420,7 @@ public class MainActivity extends Activity {
 
             // HUD
             float cx = w / 2f;
-            uiManager.drawVario(canvas, cx, 260, sensorController.getVario());
+            uiManager.drawVario(canvas, cx, 130, sensorController.getVario());
             uiManager.drawStatus(canvas, cx, currentStatus);
 
             if (testMode) updateTestFeedback();
@@ -1463,9 +1477,9 @@ public class MainActivity extends Activity {
                 if (dir >= 360f) dir -= 360f;
 
                 float dataX = calibBtnRect.left;
-                float dataY = calibBtnRect.bottom + 28;
-                sensorDataPaint.setColor(Color.argb(160, 0, 255, 0));
                 float density = getResources().getDisplayMetrics().density;
+                float dataY = calibBtnRect.bottom + 58 + 27f * density;
+                sensorDataPaint.setColor(Color.argb(160, 0, 255, 0));
                 sensorDataPaint.setTextSize(27f * density);
                 sensorDataPaint.setTextAlign(Paint.Align.LEFT);
 
@@ -1480,29 +1494,33 @@ public class MainActivity extends Activity {
                 String labDir = String.format(java.util.Locale.US, "%.0f\u00B0", dir);
                 canvas.drawText(labDir, dataX + advX, dataY, sensorDataPaint);
 
-                // Строка наклона (мелко, под данными датчиков)
-                float tiltY = dataY + 20;
+                // Строка наклона (всегда, 0° если не откалибровано)
+                float tiltY = dataY + 20 + 27f * density;
                 sensorDataPaint.setTextSize(16f * getResources().getDisplayMetrics().density);
                 sensorDataPaint.setColor(Color.argb(120, 0, 255, 0));
-                float mountTilt = sensorController.getMountTiltDeg();
-                float currTilt = sensorController.getCurrentTiltDeg();
-                if (mountTilt > 1f) {
-                    canvas.drawText(String.format(java.util.Locale.US,
-                            "\u041A\u0440\u0435\u043F\u043B\u0435\u043D\u0438\u0435: %.0f\u00B0 | \u041A\u0440\u0435\u043D: %.0f\u00B0",
-                            mountTilt, currTilt), dataX, tiltY, sensorDataPaint);
+                {
+                    float mountTilt = sensorController.getMountTiltDeg();
+                    float currTilt = sensorController.getCurrentTiltDeg();
+                    if (mountTilt > 0.5f) {
+                        canvas.drawText(String.format(java.util.Locale.US,
+                                "\u041A\u0440\u0435\u043F\u043B\u0435\u043D\u0438\u0435: %.0f\u00B0 | \u041A\u0440\u0435\u043D: %.0f\u00B0",
+                                mountTilt, currTilt), dataX, tiltY, sensorDataPaint);
+                    } else {
+                        canvas.drawText(String.format(java.util.Locale.US,
+                                "\u041A\u0440\u0435\u043D: %.0f\u00B0 (\u043D\u0435\u0442 \u043A\u0430\u043B\u0438\u0431\u0440\u043E\u0432\u043A\u0438)",
+                                currTilt), dataX, tiltY, sensorDataPaint);
+                    }
                 }
-            }
 
-            // Logging label — красный в полёте
-            if (logManager.isLogging()) {
-                float labelY = calibBtnRect.centerY() + 9;
-                float labelCx = (calibBtnRect.right + startBtnRect.left) / 2f;
-                if (flightStateMachine.isFlying()) {
-                    logLabelPaint.setColor(Color.argb(220, 255, 80, 80));
-                } else {
-                    logLabelPaint.setColor(Color.argb(200, 33, 150, 243));
+            // Logging label — над дебаг строкой
+                if (logManager.isLogging()) {
+                    logLabelPaint.setTextSize(27f * density);
+                    float labelY = dataY - 35f * density;
+                    logLabelPaint.setColor(flightStateMachine.isFlying()
+                            ? Color.argb(220, 255, 80, 80)
+                            : Color.argb(200, 33, 150, 243));
+                    canvas.drawText("пишем лог", dataX + 5f, labelY, logLabelPaint);
                 }
-                canvas.drawText("пишем лог", labelCx, labelY, logLabelPaint);
             }
 
             // Стоп (справа) — всегда виден
@@ -1523,8 +1541,8 @@ public class MainActivity extends Activity {
             } else {
                 flightTimeMs = 0;
             }
-            uiManager.drawFlightTime(canvas, cx, altY + 90 + 10, flightTimeMs / 1000);
-            uiManager.drawSystemTime(canvas, cx, altY + 90 + 10 + 75 + 5);
+            uiManager.drawFlightTime(canvas, cx, altY + 100 + 10 + 35f * getResources().getDisplayMetrics().density, flightTimeMs / 1000);
+            uiManager.drawSystemTime(canvas, cx, altY + 100 + 10 + 75 + 5 + 70f * getResources().getDisplayMetrics().density);
 
             // Night filter
             uiManager.drawNightFilter(canvas, w, h);

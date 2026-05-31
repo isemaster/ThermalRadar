@@ -61,7 +61,7 @@ public class SettingsActivity extends Activity {
         // --- Title ---
         TextView title = new TextView(this);
         title.setText(getString(R.string.settings_title));
-        title.setTextSize(24);
+        title.setTextSize(19);
         title.setTypeface(android.graphics.Typeface.MONOSPACE);
         title.setTextColor(android.graphics.Color.argb(200, 76, 175, 80));
         title.setPadding(0, 0, 0, 40);
@@ -99,7 +99,7 @@ public class SettingsActivity extends Activity {
         // 3. Color scheme selector
         TextView schemeLabel = new TextView(this);
         schemeLabel.setText(getString(R.string.settings_scheme));
-        schemeLabel.setTextSize(18);
+        schemeLabel.setTextSize(14);
         schemeLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
         schemeLabel.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
         schemeLabel.setPadding(0, 16, 0, 8);
@@ -113,7 +113,7 @@ public class SettingsActivity extends Activity {
         for (int i = 0; i < schemeLabels.length; i++) {
             RadioButton rb = new RadioButton(this);
             rb.setText(schemeLabels[i]);
-            rb.setTextSize(16);
+            rb.setTextSize(13);
             rb.setTypeface(android.graphics.Typeface.MONOSPACE);
             rb.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
             rb.setId(i);
@@ -150,7 +150,7 @@ public class SettingsActivity extends Activity {
         // 5a. Vario smoothing slider (5-100 samples)
         TextView smoothLabel = new TextView(this);
         smoothLabel.setText(getString(R.string.settings_vario_smooth));
-        smoothLabel.setTextSize(18);
+        smoothLabel.setTextSize(14);
         smoothLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
         smoothLabel.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
         smoothLabel.setPadding(0, 16, 0, 8);
@@ -159,7 +159,7 @@ public class SettingsActivity extends Activity {
         final android.widget.TextView smoothValue = new android.widget.TextView(this);
         int currentSmooth = prefs.getInt("vario_smooth", 30);
         smoothValue.setText(String.format(getString(R.string.settings_smooth_format), currentSmooth));
-        smoothValue.setTextSize(16);
+        smoothValue.setTextSize(13);
         smoothValue.setTypeface(android.graphics.Typeface.MONOSPACE);
         smoothValue.setTextColor(android.graphics.Color.argb(255, 255, 255, 0));
         smoothValue.setPadding(0, 0, 0, 8);
@@ -185,11 +185,21 @@ public class SettingsActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, 24));
         root.addView(spacer2b);
 
-        // 5. Calibration reset button
-        Button calResetBtn = createButton(getString(R.string.settings_cal_reset));
+        // 5. Calibration button — запоминает наклон крепления
+        final float[] mountTiltDeg = {prefs.getFloat("mount_tilt_deg", 0f)};
+        Button calResetBtn = createButton(getString(R.string.settings_cal_reset)
+                + (mountTiltDeg[0] > 0.5f ? String.format(" %.0f°", mountTiltDeg[0]) : ""));
         calResetBtn.setOnClickListener(v -> {
-            prefs.edit().remove("calibration_done").apply();
-            Toast.makeText(this, getString(R.string.toast_cal_reset), Toast.LENGTH_SHORT).show();
+            prefs.edit().putBoolean("tilt_calibration_requested", true).apply();
+            // Пока не знаем угол — MainActivity сохранит его в mount_tilt_deg
+            Toast.makeText(this, "Повисните неподвижно на 2 секунды", Toast.LENGTH_LONG).show();
+            mountTiltDeg[0] = 0f;
+            v.postDelayed(() -> {
+                float saved = prefs.getFloat("mount_tilt_deg", 0f);
+                mountTiltDeg[0] = saved;
+                ((Button)v).setText(getString(R.string.settings_cal_reset)
+                        + (saved > 0.5f ? String.format(" %.0f°", saved) : ""));
+            }, 4000);
         });
         root.addView(calResetBtn);
 
@@ -250,7 +260,7 @@ public class SettingsActivity extends Activity {
 
         // 7. Version & log path
         TextView infoText = new TextView(this);
-        infoText.setTextSize(14);
+        infoText.setTextSize(11);
         infoText.setTypeface(android.graphics.Typeface.MONOSPACE);
         infoText.setTextColor(android.graphics.Color.argb(80, 0, 255, 0));
         String version;
@@ -285,7 +295,7 @@ public class SettingsActivity extends Activity {
     private CheckBox createCheckBox(String label, String prefKey, boolean defaultVal) {
         CheckBox cb = new CheckBox(this);
         cb.setText(label);
-        cb.setTextSize(18);
+        cb.setTextSize(14);
         cb.setTypeface(android.graphics.Typeface.MONOSPACE);
         cb.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
         cb.setChecked(prefs.getBoolean(prefKey, defaultVal));
@@ -297,7 +307,7 @@ public class SettingsActivity extends Activity {
     private Button createButton(String text) {
         Button btn = new Button(this);
         btn.setText(text);
-        btn.setTextSize(18);
+        btn.setTextSize(14);
         btn.setTypeface(android.graphics.Typeface.MONOSPACE);
         btn.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
         btn.setBackgroundColor(android.graphics.Color.argb(30, 0, 255, 0));

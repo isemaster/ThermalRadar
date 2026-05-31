@@ -27,12 +27,12 @@ public class UiManager {
 
     /** Пересчитать размеры шрифтов под текущую плотность */
     private void applyTextSizes() {
-        varioPaint.setTextSize(110f * density);
-        varioUnitPaint.setTextSize(33f * density);
-        altMslPaint.setTextSize(90f * density);
-        altAglPaint.setTextSize(90f * density);
-        flightTimePaint.setTextSize(75f * density);
-        sysTimePaint.setTextSize(65f * density);
+        varioPaint.setTextSize(50f * density);
+        varioUnitPaint.setTextSize(20f * density);
+        altMslPaint.setTextSize(80f * density);
+        altAglPaint.setTextSize(80f * density);
+        flightTimePaint.setTextSize(70f * density);
+        sysTimePaint.setTextSize(70f * density);
     }
 
     // === VARIOMETER ===
@@ -213,17 +213,14 @@ public class UiManager {
 
         String text = String.format("%s%.1f", isUp ? "+" : "", vario);
 
-        // glow centered on 220px text
-        varioGlowPaint.setShadowLayer(15, 0, 0, color);
+        // glow
+        varioGlowPaint.setShadowLayer(8, 0, 0, color);
         varioGlowPaint.setColor(Color.TRANSPARENT);
-        c.drawCircle(cx, y + 15, 20, varioGlowPaint);
+        c.drawCircle(cx, y + 10, 12, varioGlowPaint);
 
-        // text — baseline offset for 110px font
+        // text
         varioPaint.setColor(color);
-        c.drawText(text, cx, y + 28, varioPaint);
-
-        // "м/с" label
-        c.drawText("м/с", cx + 140, y + 30, varioUnitPaint);
+        c.drawText(text, cx, y + 18 + 50f * density, varioPaint);
     }
 
     /**
@@ -321,7 +318,7 @@ public class UiManager {
         long hours = elapsedSec / 3600;
         long minutes = (elapsedSec % 3600) / 60;
         long seconds = elapsedSec % 60;
-        String text = String.format("+%02d:%02d:%02d", hours, minutes, seconds);
+        String text = String.format("%02d:%02d:%02d", hours, minutes, seconds);
         c.drawText(text, cx, y, flightTimePaint);
     }
 
