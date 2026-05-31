@@ -1519,7 +1519,8 @@ public class MainActivity extends Activity {
                     logLabelPaint.setColor(flightStateMachine.isFlying()
                             ? Color.argb(220, 255, 80, 80)
                             : Color.argb(200, 33, 150, 243));
-                    canvas.drawText("пишем лог", dataX + 5f, labelY, logLabelPaint);
+                    float shiftRight = logLabelPaint.measureText("пише");
+                    canvas.drawText("пишем лог", dataX + 5f + shiftRight, labelY, logLabelPaint);
                 }
             }
 
