@@ -1,0 +1,400 @@
+# План доработок ThermalRadar
+
+Ниже — конкретный план по трём направлениям: (A) точность детекции при снижении, (B) центровка ядра в крутке, (C) логирование. Для каждого пункта — что менять, в каком файле, какая логика.
+
+---
+
+## A. Более точное определение термиков при снижении
+
+### A.1. Проблема (что показал анализ лога)
+
+- **Флаг `has_thermal` горит ~96% времени всего полёта**, включая явное снижение, буксировку, заход на посадку. Детектор на акселерометре не отличает «настоящий термик впереди» от «параплан трясёт на любых турбулентностях».
+- **Перед 4 confirmed-наборами высоты** голосовых подсказок **не было** (0 из 4 в окне 5–10 с до набора) — детектор уже давно «видел» термик и не считал его новым, а полезной информации в этот момент не давал.
+- **Ложные срабатывания** сконцентрированы: буксировка/отрыв (вибрация лебёдки), пик набора (выход из термика), финальное снижение, заход на посадку.
+- **`ThermalDetector.java:202`** сбрасывает `currentBlip = null` при `ratio <= CONFIRM_SHRINK_RATIO` — в крутке это происходит каждые ~7 с (на «слабой» стороне круга), что плодит фантомные «новые» блипы.
+
+### A.2. Что сделать
+
+#### A.2.1. Добавить вариметр как второй канал детекции (`ThermalDetector.java`)
+
+Сейчас детектор смотрит только на `accel_rms` (микрораскачку). Добавить `vario_smooth` из `VarioManager` как подтверждение:
+
+```
+DETECTION требует:
+  accel_rms > threshold  (как сейчас)
+  И
+  vario_smooth > -0.3 m/s   (не в явном снижении — там термик не «впереди», а «уходит»)
+```
+
+При **явном снижении** (`vario < -1.0 м/с` в течение > 3 с) — переход в режим **«descent scan»**: не подтверждать новые блипы, но и не сбрасывать текущий (пилот может лететь к термике через зону «sink»). Это уберёт ложные срабатывания в финальном снижении.
+
+#### A.2.2. Подавить детекцию на малой высоте и при буксировке (`ThermalDetector.java` + `FlightStateMachine.java`)
+
+```
+SUPPRESS thermal detection when:
+  alt_smooth < 30 m  (около земли — это турбулентность от рельефа/лебёдки)
+  OR
+  ground_speed > 45 km/h AND alt_smooth < 100 m  (буксировка — вибрация от лебёдки)
+  OR
+  |accel_mag| EMA за 5 с > 0.6 m/s²  (явная турбулентность, не микрораскачка термика)
+```
+
+Это уберёт ложные срабатывания при отрыве и заходе на посадку.
+
+#### A.2.3. Заменить reset-by-shrink на EMA-трекинг (`ThermalDetector.java:180–210`)
+
+Вместо жёсткого сброса `currentBlip = null` при падении сигнала — **плавное затухание confidence**:
+
+```
+if ratio <= CONFIRM_SHRINK_RATIO:
+    blip_confidence *= 0.7       # плавно снижаем
+    if blip_confidence < 0.2:
+        currentBlip = null        # только тогда сбрасываем
+else:
+    blip_confidence = min(1.0, blip_confidence + 0.3)
+```
+
+Это уберёт фантомные «рождения» в крутке — блин будет жить, пока confidence не упадёт ниже 0.2.
+
+#### A.2.4. Географическая дедупликация блипов (главное для крутки)
+
+Сейчас `MainActivity.java:1390` проверяет только `detBlip.bornMs != lastAddedBlipBornMs`. Добавить проверку в **GPS-координатах** (см. раздел B.1) — если новый блин в радиусе 120 м от последнего активного, считать что это тот же термик, не триггерить голос.
+
+### A.3. Ожидаемый эффект
+
+- Ложные срабатывания при буксировке/посадке: **−90%**
+- Фантомные голосовые подсказки в крутке: **−80%** (с 19/20мин до ~4/20мин)
+- Перед confirmed-наборами появится **полезный сигнал** — переход из «слабый sink» в «lift ahead»
+
+---
+
+## B. Центровка ядра при полёте в термике
+
+### B.1. Persistent thermal tracking (фундамент)
+
+В `MainActivity.java` вместо `ArrayList<ThermalBlip> thermals` с сбросом по `isAlive` — **активная сессия трекинга**:
+
+```java
+class TrackedThermal {
+    double lat, lon;          // GPS-позиция ядра (оценка)
+    float strength;
+    long lastUpdateMs;
+    int circleCount;          // сколько кругов нарезал пилот
+    float[] varioByBin = new float[8];  // 8 секторов по 45°
+    int[] samplesByBin = new int[8];
+    long circleStartMs;
+    float headingAtCircleStart;
+}
+
+TrackedThermal activeThermal = null;
+```
+
+**Логика обновления** (в колбэке `MainActivity.java:1370`):
+
+```java
+ThermalBlip detBlip = thermalDetector.getCurrentBlip();
+if (detBlip != null) {
+    // 1. Перевести пеленг+dist в GPS-координаты ядра
+    double[] coreLatLon = projectFromPilot(pilotLat, pilotLon, detBlip.angle, detBlip.distance);
+    
+    if (activeThermal != null && activeThermal.isAlive(now)) {
+        double d = haversine(pilotLat, pilotLon, activeThermal.lat, activeThermal.lon);
+        if (d < 120) {
+            // Тот же термик — обновляем оценку позиции (EMA)
+            activeThermal.lat = 0.8*activeThermal.lat + 0.2*coreLatLon[0];
+            activeThermal.lon = 0.8*activeThermal.lon + 0.2*coreLatLon[1];
+            activeThermal.strength = detBlip.strength;
+            activeThermal.lastUpdateMs = now;
+            // Голос НЕ зовём
+        } else {
+            // Новый термик в другом месте
+            finalizeActiveThermal();
+            activeThermal = new TrackedThermal(coreLatLon[0], coreLatLon[1], ...);
+            speakThermalDirection(detBlip.angle, detBlip.distance);  // голос зовём
+        }
+    } else {
+        activeThermal = new TrackedThermal(coreLatLon[0], coreLatLon[1], ...);
+        speakThermalDirection(detBlip.angle, detBlip.distance);
+    }
+}
+```
+
+### B.2. Детекция крутки (`FlightStateMachine.java` или новый `CirclingDetector`)
+
+```java
+class CirclingDetector {
+    float yawEma = 0;  // EMA от gyro.z
+    long circlingSinceMs = 0;
+    
+    void update(float gyroZ, long now) {
+        yawEma = 0.85f*yawEma + 0.15f*gyroZ;
+        boolean turning = Math.abs(yawEma) > 18f;  // °/с
+        if (turning && circlingSinceMs == 0) circlingSinceMs = now;
+        else if (!turning && circlingSinceMs != 0) {
+            if (now - circlingSinceMs < 4000) circlingSinceMs = 0;  // короткий поворот — не круг
+            // иначе остаётся в circling ещё 5 с (гистерезис)
+            else if (now - circlingSinceMs > 5000 + 5000) circlingSinceMs = 0;
+        }
+    }
+    boolean isCircling(long now) {
+        return circlingSinceMs != 0 && now - circlingSinceMs > 4000;
+    }
+}
+```
+
+### B.3. Сбор варио по секторам круга (центровка)
+
+В `MainActivity` в цикле обновления (10 Гц достаточно, можно проредить с 50 Гц):
+
+```java
+if (circlingDetector.isCircling(now) && activeThermal != null) {
+    float heading = getCompassHeading();
+    int bin = (int)((heading % 360) / 45) % 8;  // 0..7
+    
+    float v = varioManager.getVarioSmooth();
+    // EMA по бину
+    if (activeThermal.samplesByBin[bin] == 0) {
+        activeThermal.varioByBin[bin] = v;
+    } else {
+        activeThermal.varioByBin[bin] = 0.7f*activeThermal.varioByBin[bin] + 0.3f*v;
+    }
+    activeThermal.samplesByBin[bin]++;
+    
+    // Детект завершения круга (heading пересёк начальный ±22.5°)
+    float dh = angleDiff(heading, activeThermal.headingAtCircleStart);
+    if (Math.abs(dh) < 22.5f && now - activeThermal.circleStartMs > 10000) {
+        onCircleComplete(activeThermal, now);
+        activeThermal.circleStartMs = now;
+        activeThermal.headingAtCircleStart = heading;
+    }
+}
+```
+
+### B.4. Подсказка по центровке (после полного круга)
+
+```java
+void onCircleComplete(TrackedThermal t, long now) {
+    // Найти бин с максимальным средним варио
+    int bestBin = 0;
+    for (int i=1; i<8; i++) if (t.varioByBin[i] > t.varioByBin[bestBin]) bestBin = i;
+    int worstBin = 0;
+    for (int i=1; i<8; i++) if (t.varioByBin[i] < t.varioByBin[worstBin]) worstBin = i;
+    
+    float vMax = t.varioByBin[bestBin];
+    float vMin = t.varioByBin[worstBin];
+    float asymmetry = vMax - vMin;
+    
+    // Направление ядра относительно текущего курса
+    float coreHeadingAbs = bestBin * 45f;  // абсолютный курс, где было максимальное вармо
+    float relCore = (coreHeadingAbs - getCompassHeading() + 540) % 360 - 180;
+    
+    if (asymmetry < 0.4f) {
+        // Симметрично — хорошо
+        if (t.circleCount % 3 == 0) speak("Отцентровано");  // раз в 3 круга, не чаще
+    } else {
+        String dir;
+        if (relCore > -67.5f && relCore < -22.5f)      dir = "вперёд-влево";
+        else if (relCore >= -22.5f && relCore <= 22.5f) dir = "вперёд";
+        else if (relCore > 22.5f && relCore <= 67.5f)   dir = "вперёд-вправо";
+        else if (relCore > 67.5f && relCore <= 112.5f)  dir = "вправо";
+        else if (relCore < -67.5f && relCore >= -112.5f) dir = "влево";
+        else dir = "назад";  // нужно развернуться
+        speak("Сдвиг " + dir);  // например "Сдвиг вперёд-вправо"
+    }
+    t.circleCount++;
+    // Сброс бинов для следующего круга (или оставить с EMA — на ваш выбор)
+    Arrays.fill(t.varioByBin, 0);
+    Arrays.fill(t.samplesByBin, 0);
+}
+```
+
+**Логика понятна пилоту**: «Сдвиг вперёд-вправо» = ядро термика смещено вперёд-вправо от центра твоего круга → немного подвинь круг в ту сторону.
+
+### B.5. Визуальная помощь на радаре (`RadarRenderer.java`)
+
+Добавить два элемента в крутке:
+
+1. **Centroid dot** (крупная зелёная точка) — позиция `activeThermal.lat/lon`, переведённая в пиксели. Не зависит от текущего пеленга, стабильно стоит на месте, пока пилот крутит.
+2. **Drift arrow** — вектор от центра круга пилота к centroid. Длина пропорциональна дистанции, цвет:
+   - зелёный если < 30 м (хорошо отцентровано)
+   - жёлтый если 30–80 м
+   - красный если > 80 м
+3. **Circle trace** — пунктиром реальная траектория за последние 60 с (из GPS).
+
+### B.6. Дебаунс голоса в крутке
+
+В `speakThermalDirection()` (`MainActivity.java:1096`):
+
+```java
+long debounceMs = circlingDetector.isCircling(now) ? 15000 : 8000;
+if (phrase.equals(lastTtsPhrase) && now - lastTtsSpeakMs < debounceMs) return;
+```
+
+В крутке — не чаще раза в 15 с (один круг), в кризисе — 8 с как сейчас.
+
+---
+
+## C. Логирование
+
+### C.1. GPS — всегда (даже если отключён в UI)
+
+Сейчас `GpsManager` «отключаемый» — если пилот выключил GPS в настройках, `cachedGpsLat/Lon` = 0/NaN, и анализ постфактум невозможен.
+
+**Изменение в `LogManager.recordSample()`** (строки 187–191):
+- Если GPS выключен — **всё равно** регистрировать `GpsManager` через `FusedLocationProvider` в фоне (потребляет минимум батареи, отключается только звук/вармо от GPS).
+- Добавить колонку **`gpsFixAge`** (мс с последнего fix) — чтобы постфактум понимать, какие сэмплы GPS свежие, какие устаревшие.
+- Добавить колонку **`gpsAccuracy`** (м) — точность fix из `Location.getAccuracy()`.
+
+```
+Новые колонки в CSV (после gpsAlt):
+  gpsFixAge,        // мс с последнего fix (0 = свежий, 60000+ = устаревший)
+  gpsAccuracy       // м, точность fix
+```
+
+**Логирование GPS на 1 Гц, а не 50 Гц** — `cachedGpsLat/Lon` обновляются в колбэке `GpsManager`, а в CSV пишется текущее закешированное значение. Это нормально, но **добавить отдельную колонку** с unix-timestamp последнего fix (мс), чтобы анализу было видно возраст.
+
+### C.2. Логирование блипов — отдельный events-лог
+
+Создать **параллельный файл** `Blips<chunkname>.csv` рядом с `Samples<chunkname>.csv` (тоже в ZIP-чанке):
+
+```
+bornMs, detectedMs, angle, rel_bearing, dist_m, strength, snr, source, 
+pilot_lat, pilot_lon, pilot_heading, alt_m, vario, gs_kmh, circling,
+is_new (1 = новый bornMs, голосозванный; 0 = обновление существующего),
+replaces_bornMs (если обновление, bornMs предыдущего)
+```
+
+Каждая строка = **одно обновление детектора** (50 Гц → ~50 строк/с при активном блипе). Это позволит:
+- точно реконструировать, когда появлялись новые блипы;
+- видеть эволюцию `angle/dist/strength` внутри одной сессии трекинга;
+- строить карту положения ядер в GPS-координатах.
+
+**Триггер записи** — в `MainActivity.java:1370` после каждого обновления `thermals.add()` или `tb.distance = detBlip.distance` (обновление существующего):
+
+```java
+logManager.recordBlipEvent(
+    detBlip.bornMs, System.currentTimeMillis(),
+    detBlip.angle, rel, detBlip.distance, detBlip.strength, snr,
+    detBlip.source, pilotLat, pilotLon, getCompassHeading(),
+    alt_smooth, vario_smooth, gs_kmh, circlingDetector.isCircling(now),
+    isNew, prevBornMs);
+```
+
+### C.3. Логирование голосовых подсказок — отдельный Voice-лог
+
+Создать `Voice<chunkname>.csv`:
+
+```
+speakMs, phrase, sector, dist_rounded_m, thermal_bornMs, 
+thermal_angle_abs, thermal_angle_rel, pilot_heading, alt_m, vario,
+skipped_reason (null | "rear_sector" | "debounce_8s" | "debounce_15s_circling" | "same_thermal_gps"),
+circling (0/1)
+```
+
+Каждая строка = **попытка вызвать TTS** (включая подавленные). Это позволит:
+- видеть не только что было сказано, но и **что было подавлено и почему** — критично для отладки дебаунса и фильтров;
+- сопоставлять подсказки с confirmed-наборами высоты.
+
+**Триггер записи** — в `speakThermalDirection()` (`MainActivity.java:1076`) на **входе в функцию**, до всех фильтров:
+
+```java
+private void speakThermalDirection(float thermalAngle, float distanceMeters) {
+    float heading = getCompassHeading();
+    float rel = (thermalAngle - heading + 540) % 360 - 180;
+    
+    logManager.recordVoiceEvent(             // <-- ДО фильтров
+        System.currentTimeMillis(), thermalAngle, rel, distanceMeters, heading,
+        alt_smooth, vario_smooth, circlingDetector.isCircling(now),
+        activeThermal != null ? activeThermal.bornMs : -1);
+    
+    String phrase = buildPhrase(rel, distanceMeters);
+    if (phrase == null) {
+        logManager.markVoiceSkipped("rear_sector");
+        return;
+    }
+    long debounce = circlingDetector.isCircling(now) ? 15000 : 8000;
+    if (phrase.equals(lastTtsPhrase) && now - lastTtsSpeakMs < debounce) {
+        logManager.markVoiceSkipped("debounce");
+        return;
+    }
+    logManager.markVoiceSpoken(phrase);
+    // ... speak ...
+}
+```
+
+### C.4. Логирование состояния полёта — FlightState-лог
+
+Создать `FlightState<chunkname>.csv` для дискретных смен состояния:
+
+```
+ts_ms, event_type, payload
+```
+
+Типы событий:
+- `FLIGHT_START`, `FLIGHT_STOP` (от `FlightStateMachine`)
+- `CIRCLING_START`, `CIRCLING_END` (от `CirclingDetector`)
+- `THERMAL_ACQUIRED` (новый `activeThermal` создан, с GPS-координатами)
+- `THERMAL_LOST` (`activeThermal` сброшен — confidence < 0.2 или > 60 с без обновления)
+- `CIRCLE_COMPLETE` (завершён круг, с `bestBin`, `asymmetry`, фразой центровки)
+- `TOW_START`, `TOW_END` (если можно детектить буксировку по `gs > 45 && alt < 100`)
+
+### C.5. Структура чанка после доработки
+
+```
+Start<timestamp>-<timestamp>.zip
+├── Samples<...>.csv      (50 Гц, 26→28 колонок: +gpsFixAge, +gpsAccuracy)
+├── Blips<...>.csv        (~50 Гц при активном блипе, ~16 колонок)
+├── Voice<...>.csv        (по событиям, ~10 колонок)
+└── FlightState<...>.csv  (по событиям, 3 колонки)
+```
+
+Размер увеличится незначительно: Blips-лог ~50 кб/чанк (мелкий текст), Voice и FlightState — единицы кб.
+
+### C.6. Заголовок в каждом CSV
+
+В `LogManager` для каждого из 4 файлов писать первую строку с именами колонок (сейчас в `Samples` заголовка нет — это мешает парсингу). Добавить:
+
+```java
+private void writeHeaders(StringBuilder buf) {
+    buf.append("dtMs,gpsSpeed,gpsHeading,gpsLat,gpsLon,gpsAlt,gpsFixAge,gpsAccuracy,");
+    buf.append("ax,ay,az,gx,gy,gz,mx,my,mz,pressure,pitch,roll,heading,");
+    buf.append("thermalAngle,thermalStrength,thermalDist,thermalSource,snr,noiseFloor\n");
+}
+```
+
+---
+
+## Порядок внедрения (минимум → максимум)
+
+| Шаг | Что | Эффект | Объём кода |
+|---|---|---|---|
+| **1** | C.2 + C.3: логирование блипов и голоса | Появится инструмент для оценки остальных правок | ~150 строк в `LogManager` |
+| **2** | A.2.3: EMA confidence вместо жёсткого сброса | −50% фантомных «новых» блипов | ~30 строк в `ThermalDetector` |
+| **3** | B.6: дебаунс 15 с в крутке | −60% спама голосом | ~10 строк в `MainActivity` |
+| **4** | A.2.2: подавление на малой высоте/буксировке | −90% ложных при отрыве/посадке | ~20 строк в `ThermalDetector` |
+| **5** | B.1 + B.2: persistent tracking + circling detector | Фундамент для центровки | ~200 строк |
+| **6** | B.3 + B.4: центровка по секторам + голос | Полезная информация в крутке | ~150 строк |
+| **7** | B.5: визуализация centroid + drift arrow | Зрительная обратная связь | ~80 строк в `RadarRenderer` |
+| **8** | A.2.1: вариметр как 2-й канал | −70% ложных при снижении | ~50 строк в `ThermalDetector` |
+| **9** | C.1: GPS всегда + fixAge/accuracy | Надёжный пост-анализ | ~30 строк |
+| **10** | C.4: FlightState-лог | Полная картина полёта | ~50 строк |
+
+**Шаги 1–4** — первая итерация, ~1–2 дня работы, уже даст заметное улучшение по спаму и ложным срабатываниям, и **появится инструмент** (логи блипов/голоса) для оценки следующих шагов.
+
+**Шаги 5–7** — вторая итерация, центровка ядра. Самая ценная часть для пилота.
+
+**Шаги 8–10** — третья итерация, полировка.
+
+---
+
+## Верификация (как проверять, что стало лучше)
+
+Использовать тот же архив `Radar.rar` + новый формат логов:
+
+1. **По логу голосов**: сравнить количество подсказок в крутке 17:20–17:40 (было 19, цель ≤5).
+2. **По логу блипов**: проверить, что `is_new=1` срабатывает только при `haversine(prev_core, new_core) > 120 м`.
+3. **По confirmed-наборам**: в окне 5–10 с до каждого из 4 наборов высоты должна быть либо центровочная подсказка, либо silence-with-reason (не «случайный новый термик»).
+4. **По FlightState**: проверить, что `CIRCLING_START` срабатывает на ~17:20 и `CIRCLING_END` на ~17:40 — совпадает с фактической круткой по IGC.
+5. **По ложным срабатываниям**: в окнах отрыва/посадки (13:30, 14:50–15:00 UTC) `THERMAL_ACQUIRED` не должно быть.
+
+Если по этим 5 критериям цифры сходятся с целевыми — план сработал.

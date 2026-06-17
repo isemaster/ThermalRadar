@@ -29,6 +29,8 @@ public class GpsManager {
     private boolean altitudeInitialized;
     private double gpsLat;
     private double gpsLon;
+    private volatile float gpsAccuracy = 999f;
+    private volatile long lastFixMs;
 
     public GpsManager(Context context) {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(context);
@@ -52,6 +54,8 @@ public class GpsManager {
                     gpsReady = true;
                     gpsLat = location.getLatitude();
                     gpsLon = location.getLongitude();
+                    gpsAccuracy = location.hasAccuracy() ? location.getAccuracy() : 999f;
+                    lastFixMs = System.currentTimeMillis();
                     if (location.hasAltitude()) {
                         gpsAltitude = (float) location.getAltitude();
                         if (!altitudeInitialized) {
@@ -99,4 +103,7 @@ public class GpsManager {
     public boolean isAltitudeInitialized() { return altitudeInitialized; }
     public double getLat() { return gpsLat; }
     public double getLon() { return gpsLon; }
+    public float getAccuracy() { return gpsAccuracy; }
+    /** Возраст последнего fix (мс) — растёт, если GPS потерян */
+    public long getFixAgeMs() { return System.currentTimeMillis() - lastFixMs; }
 }

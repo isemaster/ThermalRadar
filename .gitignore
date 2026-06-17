@@ -21,3 +21,6 @@ Thumbs.db
 
 # Hermes
 .hermes/
+*.apk
+build/
+*.zip

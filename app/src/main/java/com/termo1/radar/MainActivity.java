@@ -26,6 +26,7 @@ import com.termo1.radar.core.SignalProcessor;
 import com.termo1.radar.core.ThermalDetector;
 import com.termo1.radar.flight.FlightStateMachine;
 import com.termo1.radar.flight.BlindFlightMode;
+import com.termo1.radar.flight.CirclingManager;
 import com.termo1.radar.gps.GpsManager;
 import com.termo1.radar.logging.LogManager;
 import com.termo1.radar.model.ThermalBlip;
@@ -70,6 +71,7 @@ public class MainActivity extends Activity {
     private BlindFlightMode blindFlightMode;
     private boolean blindModeEnabled;
     private boolean voicePromptsEnabled;
+    private CirclingManager circlingManager;
 
     // ========================================================================
     // Core
@@ -77,6 +79,12 @@ public class MainActivity extends Activity {
 
     private ThermalDetector thermalDetector;
     private SharedPreferences prefs;
+
+    // Tracking for event logging state transitions
+    private boolean prevCirclingState;
+    private boolean prevLabelState;
+    private float prevWindFrom = -2f;
+    private float prevWindSpd = -2f;
 
     // ========================================================================
     // Thermals
@@ -223,12 +231,34 @@ public class MainActivity extends Activity {
         blindModeEnabled = prefs.getBoolean("blind_mode", false);
         voicePromptsEnabled = prefs.getBoolean("voice_prompts", true);
 
+        // Circling manager
+        circlingManager = new CirclingManager();
+        circlingManager.setVoiceCallback(text -> {
+            if (ttsReady && voicePromptsEnabled) {
+                long now = System.currentTimeMillis();
+                if (now - lastTtsSpeakMs > 8000) {
+                    lastTtsPhrase = text;
+                    lastTtsSpeakMs = now;
+                    logManager.recordEvent(now, "CIRCLE_GUIDANCE", text);
+                    if (android.os.Build.VERSION.SDK_INT >= 21) {
+                        tts.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null);
+                    } else {
+                        tts.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null);
+                    }
+                }
+            }
+        });
+
         // Renderer + UI
         radarRenderer = new RadarRenderer();
         uiManager = new UiManager();
         uiManager.setDensity(getResources().getDisplayMetrics().density);
         uiManager.setNightMode(prefs.getBoolean("night_mode", false));
-        uiManager.setColorScheme(prefs.getInt("color_scheme", 0));
+        if (prefs.getBoolean("sunlight_mode", false)) {
+            uiManager.setColorScheme(UiManager.SCHEME_HIGH_CONTRAST);
+        } else {
+            uiManager.setColorScheme(prefs.getInt("color_scheme", 0));
+        }
 
         radarView = new RadarView(this);
         setContentView(radarView);
@@ -276,7 +306,11 @@ public class MainActivity extends Activity {
         running = true;
 
         uiManager.setNightMode(prefs.getBoolean("night_mode", false));
-        uiManager.setColorScheme(prefs.getInt("color_scheme", 0));
+        if (prefs.getBoolean("sunlight_mode", false)) {
+            uiManager.setColorScheme(UiManager.SCHEME_HIGH_CONTRAST);
+        } else {
+            uiManager.setColorScheme(prefs.getInt("color_scheme", 0));
+        }
         sensorController.loadPreferences(prefs);
 
         sensorController.registerSensors();
@@ -286,9 +320,13 @@ public class MainActivity extends Activity {
         blindModeEnabled = prefs.getBoolean("blind_mode", false);
         voicePromptsEnabled = prefs.getBoolean("voice_prompts", true);
 
-        // GPS: структура готова, но запрос не включаем (экономия энергии)
-        // Значения GPS в логе будут 0 — колонки сохраняются для совместимости
-        // gpsManager.startGps();
+        // GPS: всегда включён для логирования координат в лог
+        gpsManager.startGps();
+        try {
+            gpsManager.requestUpdates(Looper.getMainLooper());
+        } catch (SecurityException e) {
+            // Игнорируем — permission уже запрошено при старте
+        }
 
         // Обработать запрос калибровки из настроек (tilt_calibration_requested)
         if (prefs.getBoolean("tilt_calibration_requested", false)) {
@@ -459,6 +497,15 @@ public class MainActivity extends Activity {
             return sensorController.getLogHeading(gpsManager.getHeading());
         }
         @Override
+        public float getVario() {
+            return sensorController.getVario();
+        }
+        @Override
+        public int getDetectStatus() {
+            if (thermalDetector != null) return thermalDetector.getStatus();
+            return 0;
+        }
+        @Override
         public String getThermalLogSuffix() {
             if (thermalDetector != null) {
                 ThermalBlip blip = thermalDetector.getCurrentBlip();
@@ -492,9 +539,9 @@ public class MainActivity extends Activity {
 
         @Override
         public void onFlightFinished() {
-            logManager.stopLogging();
+            // Логи НЕ останавливаем — остановка только по кнопке с подтверждением
             android.widget.Toast.makeText(MainActivity.this,
-                    "Полёт завершён, лог сохранён", android.widget.Toast.LENGTH_SHORT).show();
+                    "Полёт завершён, лог продолжается", android.widget.Toast.LENGTH_SHORT).show();
         }
     };
 
@@ -581,17 +628,26 @@ public class MainActivity extends Activity {
     // Manual logging buttons
     // ========================================================================
 
-    public void toggleManualLogging() {
-        if (logManager.isLogging()) {
-            flightStateMachine.reset();
-            logManager.stopLogging();
-            android.widget.Toast.makeText(this,
-                    "Лог сохранён", android.widget.Toast.LENGTH_SHORT).show();
-        } else {
-            logManager.startLogging();
-            android.widget.Toast.makeText(this,
-                    "Запись лога начата", android.widget.Toast.LENGTH_SHORT).show();
-        }
+    public void startManualLogging() {
+        if (logManager.isLogging()) return;
+        logManager.startLogging();
+        android.widget.Toast.makeText(this,
+                "Запись лога начата", android.widget.Toast.LENGTH_SHORT).show();
+    }
+
+    public void confirmStopLogging() {
+        if (!logManager.isLogging()) return;
+        new AlertDialog.Builder(this)
+                .setTitle("Остановить запись?")
+                .setMessage("Лог будет сохранён. Вы уверены?")
+                .setPositiveButton("Да", (d, w) -> {
+                    flightStateMachine.reset();
+                    logManager.stopLogging();
+                    android.widget.Toast.makeText(MainActivity.this,
+                            "Лог сохранён", android.widget.Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Нет", null)
+                .show();
     }
 
     // ========================================================================
@@ -1078,7 +1134,12 @@ public class MainActivity extends Activity {
         float rel = (thermalAngle - heading + 540f) % 360f - 180f; // [-180, 180]
 
         String phrase;
-        if (rel < -112.5f || rel > 112.5f) return; // задние сектора — молчим
+        if (rel < -112.5f || rel > 112.5f) {
+            // Задние сектора — молчим, но логируем
+            logManager.recordEvent(System.currentTimeMillis(), "VOICE_SKIP",
+                    "rear_sector angle=" + (int)thermalAngle + " rel=" + (int)rel);
+            return;
+        }
         if (rel < -67.5f)       phrase = "Термик слева";
         else if (rel < -22.5f)  phrase = "Термик спереди слева";
         else if (rel < 22.5f)   phrase = "Термик спереди";
@@ -1093,10 +1154,17 @@ public class MainActivity extends Activity {
 
         // Дебаунс: не повторять ту же фразу чаще чем раз в 8 секунд
         long now = System.currentTimeMillis();
-        if (phrase.equals(lastTtsPhrase) && now - lastTtsSpeakMs < 8000) return;
+        if (phrase.equals(lastTtsPhrase) && now - lastTtsSpeakMs < 8000) {
+            logManager.recordEvent(now, "VOICE_SKIP",
+                    "debounce phrase=" + phrase);
+            return;
+        }
 
         lastTtsPhrase = phrase;
         lastTtsSpeakMs = now;
+
+        logManager.recordEvent(now, "VOICE_SPOKEN",
+                phrase + " angle=" + (int)thermalAngle + " dist=" + (int)distanceMeters);
 
         if (android.os.Build.VERSION.SDK_INT >= 21) {
             tts.speak(phrase, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null);
@@ -1289,16 +1357,40 @@ public class MainActivity extends Activity {
             int h = getHeight();
             if (w <= 0 || h <= 0) return;
 
-            // Blind mode: чёрный экран, минимум UI, только голосовые подсказки
+            // Blind mode: минимальный UI, минимум яркости, но видно
             if (blindModeEnabled) {
-                canvas.drawColor(Color.BLACK);
+                canvas.drawColor(Color.rgb(5, 5, 5));
                 Paint bp = new Paint(Paint.ANTI_ALIAS_FLAG);
-                bp.setColor(Color.argb(40, 0, 255, 0));
-                bp.setTextSize(32);
+                bp.setColor(Color.argb(180, 0, 255, 0)); // ярче
+                bp.setTextSize(48);
                 bp.setTypeface(android.graphics.Typeface.MONOSPACE);
                 bp.setTextAlign(Paint.Align.CENTER);
+                bp.setFakeBoldText(true);
                 String status = flightStateMachine.isFlying() ? "Слепой полёт" : "Ожидание...";
-                canvas.drawText(status, w/2f, h/2f, bp);
+                canvas.drawText(status, w/2f, h/3f, bp);
+
+                // В слепом режиме показываем ключевые данные: варио, высоту, время
+                bp.setTextSize(36);
+                bp.setFakeBoldText(false);
+                bp.setColor(Color.argb(160, 100, 200, 255)); // голубой
+                float varioVal = sensorController.getVario();
+                String varioStr = String.format(java.util.Locale.US, "%s%.1f м/с", varioVal >= 0 ? "+" : "", varioVal);
+                canvas.drawText(varioStr, w/2f, h/2f, bp);
+
+                bp.setColor(Color.argb(120, 255, 255, 255));
+                bp.setTextSize(28);
+                float alt = gpsManager.getAltitude();
+                float startAlt = gpsManager.getStartAltitude();
+                float agl = gpsManager.isAltitudeInitialized() ? (alt - startAlt) : 0f;
+                canvas.drawText(String.format(java.util.Locale.US, "%.0f м MSL  +%.0f м AGL", alt, agl), w/2f, h/2f + 60, bp);
+
+                // Время полёта
+                if (logManager.isLogging()) {
+                    long flightSec = (System.currentTimeMillis() - logManager.getFlightStartMs()) / 1000;
+                    long hh = flightSec / 3600, mm = (flightSec % 3600) / 60, ss = flightSec % 60;
+                    bp.setColor(Color.argb(100, 255, 255, 255));
+                    canvas.drawText(String.format("%02d:%02d:%02d", hh, mm, ss), w/2f, h/2f + 100, bp);
+                }
                 return;
             }
 
@@ -1314,7 +1406,48 @@ public class MainActivity extends Activity {
             // Push GPS cache to LogManager (1 Гц данные, пишутся в каждом сэмпле)
             logManager.updateGpsCache(
                 gpsManager.getLat(), gpsManager.getLon(),
-                gpsManager.getAltitude(), gpsManager.getSpeed(), gpsManager.getHeading());
+                gpsManager.getAltitude(), gpsManager.getSpeed(), gpsManager.getHeading(),
+                gpsManager.getAccuracy(), gpsManager.getFixAgeMs());
+
+            // Circling manager: gyroZ, heading, vario, GPS lat/lon, speed/course
+            long cmNow = System.currentTimeMillis();
+            circlingManager.update(
+                sensorController.getGyroZ(),
+                getCompassHeading(),
+                sensorController.getVario(),
+                gpsManager.getLat(),
+                gpsManager.getLon(),
+                gpsManager.getSpeed(),
+                gpsManager.getHeading(),
+                cmNow);
+
+            // Track circling/label/wind state transitions for event log
+            boolean nowCircling = circlingManager.isCircling();
+            boolean nowLabel = circlingManager.isShowThermalLabel();
+            if (nowCircling && !prevCirclingState) {
+                logManager.recordEvent(cmNow, "CIRCLING_START", "circling confirmed");
+            } else if (!nowCircling && prevCirclingState) {
+                logManager.recordEvent(cmNow, "CIRCLING_END", "circling stopped");
+            }
+            prevCirclingState = nowCircling;
+
+            if (nowLabel && !prevLabelState) {
+                logManager.recordEvent(cmNow, "THERMAL_LABEL_ON", "540 deg reached");
+            } else if (!nowLabel && prevLabelState) {
+                logManager.recordEvent(cmNow, "THERMAL_LABEL_OFF", "label hidden");
+            }
+            prevLabelState = nowLabel;
+
+            float wf = circlingManager.getWindFromDeg();
+            float ws = circlingManager.getDisplayWindSpeed();
+            if (wf >= 0 && ws > 0) {
+                if (Math.abs(wf - prevWindFrom) > 10f || Math.abs(ws - prevWindSpd) > 0.5f) {
+                    logManager.recordEvent(cmNow, "WIND_UPDATE",
+                            String.format(java.util.Locale.US, "%.0fdeg %.1fm/s", wf, ws));
+                    prevWindFrom = wf;
+                    prevWindSpd = ws;
+                }
+            }
 
             // MaxSnr periodic reset (каждые 5 мин)
             long nowMs2 = System.currentTimeMillis();
@@ -1331,18 +1464,19 @@ public class MainActivity extends Activity {
                         + sensorController.getMountTiltDeg() + "°");
             }
 
-            // Яркость: макс в полёте при записи лога, средняя в остальное время
-            if (flightStateMachine.isFlying() && logManager.isLogging()) {
+            // Яркость: макс в полёте при записи лога или в солнечном режиме
+            boolean sunMode = prefs.getBoolean("sunlight_mode", false);
+            if ((flightStateMachine.isFlying() && logManager.isLogging()) || sunMode) {
                 android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
                 if (lp.screenBrightness < 1.0f) {
                     lp.screenBrightness = 1.0f;
                     getWindow().setAttributes(lp);
                 }
             } else if (blindModeEnabled) {
-                // Blind mode: экран почти погашен
+                // Blind mode: 15% яркости для экономии заряда
                 android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
-                if (lp.screenBrightness > 0.02f) {
-                    lp.screenBrightness = 0.01f;
+                if (lp.screenBrightness > 0.16f || lp.screenBrightness < 0.14f) {
+                    lp.screenBrightness = 0.15f;
                     getWindow().setAttributes(lp);
                 }
             }
@@ -1376,7 +1510,15 @@ public class MainActivity extends Activity {
                         synchronized (thermalLock) {
                             Iterator<ThermalBlip> it = thermals.iterator();
                             while (it.hasNext()) {
-                                if (!it.next().isAlive(now)) it.remove();
+                                ThermalBlip expired = it.next();
+                                if (!expired.isAlive(now)) {
+                                    it.remove();
+                                    logManager.recordEvent(now, "THERMAL_REMOVED",
+                                            "bornMs=" + expired.bornMs
+                                            + " angle=" + (int)expired.angle
+                                            + " dist=" + (int)expired.distance
+                                            + " strength=" + String.format(java.util.Locale.US, "%.1f", expired.strength));
+                                }
                             }
                             boolean found = false;
                             for (ThermalBlip tb : thermals) {
@@ -1392,6 +1534,11 @@ public class MainActivity extends Activity {
                             if (!found && detBlip.bornMs != lastAddedBlipBornMs) {
                                 lastAddedBlipBornMs = detBlip.bornMs;
                                 thermals.add(detBlip);
+                                logManager.recordEvent(now, "THERMAL_NEW",
+                                        "bornMs=" + detBlip.bornMs
+                                        + " angle=" + (int)detBlip.angle
+                                        + " dist=" + (int)detBlip.distance
+                                        + " strength=" + String.format(java.util.Locale.US, "%.1f", detBlip.strength));
                                 // TTS: голосовая подсказка направления на новый термик
                                 if (voicePromptsEnabled && ttsReady) {
                                     speakThermalDirection(detBlip.angle, detBlip.distance);
@@ -1423,6 +1570,17 @@ public class MainActivity extends Activity {
             uiManager.drawVario(canvas, cx, 130, sensorController.getVario());
             uiManager.drawStatus(canvas, cx, currentStatus);
 
+            // "крутим термик" — по центру, если накрутили 540°
+            if (circlingManager.isShowThermalLabel()) {
+                Paint thermalLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+                thermalLabelPaint.setColor(Color.argb(220, 255, 193, 7));  // золотой
+                thermalLabelPaint.setTextSize(42);
+                thermalLabelPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+                thermalLabelPaint.setTextAlign(Paint.Align.CENTER);
+                float labelY = h / 2f;
+                canvas.drawText("крутим термик", cx, labelY, thermalLabelPaint);
+            }
+
             if (testMode) updateTestFeedback();
 
             // Info panel
@@ -1447,6 +1605,71 @@ public class MainActivity extends Activity {
             float leftMargin = w * 0.05f;
             float rightMargin = w * 0.95f;
             uiManager.drawAltitude(canvas, leftMargin, rightMargin, altY, gpsAlt, altAgl);
+
+            // Стрелка ветра на радаре
+            float windFrom = circlingManager.getWindFromDeg();
+            float windSpd = circlingManager.getDisplayWindSpeed();
+            if (windFrom >= 0f && windSpd > 0f) {
+                float cy = radarCy;
+                float R = radarR;
+                double aRad = Math.toRadians(windFrom);
+                // Точка на краю радара в направлении, ОТКУДА дует ветер
+                float ex = cx + (float)(R * Math.sin(aRad));
+                float ey = cy - (float)(R * Math.cos(aRad));
+                // Внутренняя точка (70% к центру)
+                float ix = cx + (float)(R * 0.3f * Math.sin(aRad));
+                float iy = cy - (float)(R * 0.3f * Math.cos(aRad));
+
+                Paint windLine = new Paint(Paint.ANTI_ALIAS_FLAG);
+                windLine.setStrokeWidth(3);
+                windLine.setColor(Color.argb(200, 100, 200, 255));
+                windLine.setStyle(Paint.Style.STROKE);
+                canvas.drawLine(ex, ey, ix, iy, windLine);
+
+                // Наконечник стрелки (треугольник у центра)
+                float tipAngle = 0.5f; // рад
+                float tipLen = 14f;
+                float dx = cx - ex;
+                float dy = cy - ey;
+                float len = (float) Math.sqrt(dx*dx + dy*dy);
+                if (len > 1f) {
+                    float ux = dx / len;
+                    float uy = dy / len;
+                    float px = ix;
+                    float py = iy;
+                    float ax = px + tipLen * (float)(Math.cos(Math.PI - tipAngle) * ux - Math.sin(Math.PI - tipAngle) * uy);
+                    float ay = py + tipLen * (float)(Math.sin(Math.PI - tipAngle) * ux + Math.cos(Math.PI - tipAngle) * uy);
+                    float bx = px + tipLen * (float)(Math.cos(Math.PI + tipAngle) * ux - Math.sin(Math.PI + tipAngle) * uy);
+                    float by = py + tipLen * (float)(Math.sin(Math.PI + tipAngle) * ux + Math.cos(Math.PI + tipAngle) * uy);
+
+                    Paint windFill = new Paint(Paint.ANTI_ALIAS_FLAG);
+                    windFill.setStyle(Paint.Style.FILL);
+                    windFill.setColor(Color.argb(200, 100, 200, 255));
+                    android.graphics.Path arrowPath = new android.graphics.Path();
+                    arrowPath.moveTo(px, py);
+                    arrowPath.lineTo(ax, ay);
+                    arrowPath.lineTo(bx, by);
+                    arrowPath.close();
+                    canvas.drawPath(arrowPath, windFill);
+                }
+
+                // Подпись скорости ветра
+                Paint windLabel = new Paint(Paint.ANTI_ALIAS_FLAG);
+                windLabel.setColor(Color.argb(200, 100, 200, 255));
+                windLabel.setTextSize(22);
+                windLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
+                windLabel.setTextAlign(Paint.Align.CENTER);
+                // Текст — рядом со стрелкой, со смещением от края
+                float labelAngle = (float) Math.toRadians(windFrom);
+                float lx = cx + (float)((R + 50) * Math.sin(labelAngle));
+                float ly = cy - (float)((R + 50) * Math.cos(labelAngle));
+                // Не даём вылезти за экран
+                if (lx < 30) lx = 30;
+                if (lx > w - 30) lx = w - 30;
+                if (ly < 30) ly = 30;
+                if (ly > h - 10) ly = h - 10;
+                canvas.drawText(String.format(java.util.Locale.US, "ветер %.1fм/с", windSpd), lx, ly, windLabel);
+            }
 
             // Test button
             canvas.drawRoundRect(testBtnRect, 12, 12, testBtnBgPaint);
@@ -1516,9 +1739,7 @@ public class MainActivity extends Activity {
                 if (logManager.isLogging()) {
                     logLabelPaint.setTextSize(27f * density);
                     float labelY = dataY - 35f * density;
-                    logLabelPaint.setColor(flightStateMachine.isFlying()
-                            ? Color.argb(220, 255, 80, 80)
-                            : Color.argb(200, 33, 150, 243));
+                    logLabelPaint.setColor(Color.argb(220, 33, 150, 243)); // всегда синяя
                     float shiftRight = logLabelPaint.measureText("пише");
                     canvas.drawText("пишем лог", dataX + 5f + shiftRight, labelY, logLabelPaint);
                 }
@@ -1665,7 +1886,7 @@ public class MainActivity extends Activity {
                     startActivity(new Intent(MainActivity.this, SettingsActivity.class));
                     return true;
                 }
-                // СТАРТ: тап = старт лога, долгое нажатие = сброс калибровки
+                // СТАРТ: тап = старт лога (только старт, не стоп!), долгое нажатие = сброс калибровки
                 if (calibBtnRect.contains(touchX, touchY)) {
                     if (touchDuration > 600) {
                         resetCalibration();
@@ -1673,12 +1894,12 @@ public class MainActivity extends Activity {
                                 "Калибровка сброшена (долгое нажатие)",
                                 android.widget.Toast.LENGTH_SHORT).show();
                     } else {
-                        toggleManualLogging();
+                        startManualLogging();
                     }
                     return true;
                 }
                 if (startBtnRect.contains(touchX, touchY)) {
-                    if (logManager.isLogging()) toggleManualLogging();
+                    if (logManager.isLogging()) confirmStopLogging();
                     return true;
                 }
                 if (testBtnRect.contains(touchX, touchY)) {

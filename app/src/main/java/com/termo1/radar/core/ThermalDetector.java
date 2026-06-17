@@ -22,7 +22,7 @@ public class ThermalDetector {
 
     // Пороги (в g) — согласованы с формулой dist = 150 × sqrt(0.05 / rmsMs²)
     //   0.005g (0.05 м/с²) → 150м, 0.020g (0.20 м/с²) → 75м, 0.080g (0.80 м/с²) → 37.5м
-    private static final float TH_SUSPECT    = 0.005f;  // ~0.05 м/с² → 150м (обнаружение)
+    private static final float TH_SUSPECT    = 0.020f;  // ~0.20 м/с² → 75м (обнаружение)
     private static final float TH_THERMAL    = 0.020f;  // ~0.20 м/с² → 75м (уверенный сигнал)
     private static final float TH_INSIDE     = 0.080f;  // ~0.80 м/с² → 37.5м (внутри термика)
 
@@ -99,6 +99,15 @@ public class ThermalDetector {
         float level = signalProcessor.process(ax, ay);
         float snr = signalProcessor.getSnr();
         float nf = signalProcessor.getNoiseFloor();
+
+        // Фильтр SNR: чистое снижение даёт SNR 0.5–1.3, термик — 5–500
+        if (snr <= 3f) {
+            status = STATUS_SEARCH;
+            aboveThresholdCount = 0;
+            directionReady = false;
+            currentBlip = null;
+            return;
+        }
 
         // Адаптивные пороги: базовые static thresholds × noiseFloor
         float suspectThresh  = Math.max(TH_SUSPECT,  nf * 3f);

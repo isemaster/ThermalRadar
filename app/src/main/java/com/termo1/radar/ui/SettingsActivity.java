@@ -90,6 +90,10 @@ public class SettingsActivity extends Activity {
         CheckBox voiceCb = createCheckBox("Голосовые подсказки", "voice_prompts", true);
         root.addView(voiceCb);
 
+        // 2d. Sunlight mode checkbox
+        CheckBox sunCb = createCheckBox("Солнечный режим (яркие цвета)", "sunlight_mode", false);
+        root.addView(sunCb);
+
         // Spacer
         View spacerVib = new View(this);
         spacerVib.setLayoutParams(new LinearLayout.LayoutParams(

@@ -2,6 +2,7 @@ package com.termo1.radar.logging;
 
 import android.os.Handler;
 import android.os.HandlerThread;
+import android.os.SystemClock;
 import android.util.Log;
 
 import java.io.BufferedOutputStream;
@@ -15,73 +16,46 @@ import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
-/**
- * LogManager — логирование полёта с нарезкой по 10 минут.
- *
- * Особенности:
- * - Запись 50 Гц (каждый сэмпл LINEAR_ACCEL)
- * - Нарезка по 10 минут: Start → Flight → Flight → ... → Finish
- * - Per-chunk ZIP в памяти (ByteArrayOutputStream → ZipOutputStream)
- * - Без заголовков и концовок внутри файлов
- * - GPS cache (push model — обновляется 1 Гц из MainActivity)
- * - Формат имени: {Prefix}{yyyyMMddHHmmss}-{yyyyMMddHHmmss}.zip
- *
- * Имена чанков:
- *   Start{ts}-{ts}.zip   — первый чанк полёта
- *   Flight{ts}-{ts}.zip  — серединные чанки (каждые 10 мин)
- *   Finish{ts}-{ts}.zip  — последний чанк (при остановке)
- *
- * GPS-данные повторяются 50 раз в секунду (обновляются 1 Гц),
- * ZIP level 9 отлично сжимает повторы.
- */
 public class LogManager {
 
     private static final String TAG = "TERMO1_LOG";
 
-    // ========================================================================
-    // Константы
-    // ========================================================================
-
-    private static final int SAMPLE_DECIMATION = 1;               // 1 = 50 Гц
-    private static final long CHUNK_DURATION_MS = 10 * 60 * 1000L; // 10 мин
-
-    // ========================================================================
-    // Состояние
-    // ========================================================================
+    private static final int SAMPLE_DECIMATION = 1;
+    private static final long CHUNK_DURATION_MS = 10 * 60 * 1000L;
 
     private boolean isLogging;
     private StringBuilder logBuffer;
-    private long flightStartMs;          // время начала всей сессии
-    private long chunkStartMs;           // время начала текущего чанка
-    private int chunkIndex;              // 0 = Start, 1+ = Flight
+    private StringBuilder eventBuffer;
+
+    // Временная шкала: dtMs = elapsedRealtime - elapsedStartMs (монотонно, без скачков)
+    private long elapsedStartMs;          // SystemClock.elapsedRealtime() при старте лога
+    private long wallStartMs;             // System.currentTimeMillis() при старте (для привязки к реальному времени)
+    private long chunkStartElapsed;       // elapsedRealtime начала текущего чанка
+    private int chunkIndex;
     private int sampleCounter;
     private String externalLogDir;
 
-    // I/O thread
     private HandlerThread ioThread;
     private Handler ioHandler;
-
-    // ========================================================================
-    // GPS cache (push model — обновляется 1 Гц из MainActivity)
-    // ========================================================================
 
     private volatile double cachedGpsLat;
     private volatile double cachedGpsLon;
     private volatile float cachedGpsAlt;
     private volatile float cachedGpsSpeed;
     private volatile float cachedGpsHeading;
+    private volatile float cachedGpsAccuracy;
+    private volatile long cachedGpsFixAge;
 
-    public void updateGpsCache(double lat, double lon, float alt, float speed, float heading) {
+    public void updateGpsCache(double lat, double lon, float alt, float speed, float heading,
+                                float accuracy, long fixAgeMs) {
         cachedGpsLat = lat;
         cachedGpsLon = lon;
         cachedGpsAlt = alt;
         cachedGpsSpeed = speed;
         cachedGpsHeading = heading;
+        cachedGpsAccuracy = accuracy;
+        cachedGpsFixAge = fixAgeMs;
     }
-
-    // ========================================================================
-    // Коллбэк для получения данных датчиков
-    // ========================================================================
 
     private LogDataProvider dataProvider;
 
@@ -99,15 +73,14 @@ public class LogManager {
         float getPitch();
         float getRoll();
         float getLogHeading();
+        float getVario();
+        int getDetectStatus();
         String getThermalLogSuffix();
     }
 
-    // ========================================================================
-    // Init
-    // ========================================================================
-
     public LogManager() {
         logBuffer = new StringBuilder(65536);
+        eventBuffer = new StringBuilder(4096);
         ioThread = new HandlerThread("termo1-log-io");
         ioThread.start();
         ioHandler = new Handler(ioThread.getLooper());
@@ -121,35 +94,30 @@ public class LogManager {
         this.externalLogDir = dir;
     }
 
-    // ========================================================================
-    // Lifecycle
-    // ========================================================================
-
-    /**
-     * Начать запись. Первый чанк получит префикс "Start".
-     */
     public void startLogging() {
         if (isLogging) return;
         isLogging = true;
-        long now = System.currentTimeMillis();
-        flightStartMs = now;
-        chunkStartMs = now;
+
+        elapsedStartMs = SystemClock.elapsedRealtime();  // монотонная шкала
+        wallStartMs = System.currentTimeMillis();        // для привязки к реальному времени
+
+        chunkStartElapsed = elapsedStartMs;
         chunkIndex = 0;
         sampleCounter = 0;
         logBuffer.setLength(0);
-        Log.i(TAG, "Logging STARTED");
+        eventBuffer.setLength(0);
+
+        // Первое событие — точка привязки к реальному времени
+        eventBuffer.append("0,WALL_START,").append(wallStartMs).append('\n');
+
+        Log.i(TAG, "Logging STARTED wall=" + wallStartMs + " elapsed=" + elapsedStartMs);
     }
 
-    /**
-     * Остановить запись. Текущий чанк финализируется как "Finish".
-     */
     public void stopLogging() {
         if (!isLogging) return;
         isLogging = false;
-
-        long nowMs = System.currentTimeMillis();
-        finalizeChunk(nowMs, true); // isFinish=true
-
+        long wallNow = System.currentTimeMillis();
+        finalizeChunk(wallNow, true);
         Log.i(TAG, "Logging STOPPED");
     }
 
@@ -162,33 +130,28 @@ public class LogManager {
         }
     }
 
-    // ========================================================================
-    // Запись сэмпла (вызывается из сенсорного потока ~50 Гц)
-    // ========================================================================
-
     public void recordSample() {
         if (!isLogging || dataProvider == null) return;
-
         sampleCounter++;
         if (sampleCounter % SAMPLE_DECIMATION != 0) return;
 
-        long now = System.currentTimeMillis();
-        long dtMs = now - flightStartMs;
+        long elapsedNow = SystemClock.elapsedRealtime();
+        long dtMs = elapsedNow - elapsedStartMs;
 
-        // Проверка: нужно ли начать новый чанк (каждые 10 мин)
-        if (now - chunkStartMs >= CHUNK_DURATION_MS) {
-            rotateChunk(now);
+        // Проверка ротации чанка по elapsed-времени
+        if (elapsedNow - chunkStartElapsed >= CHUNK_DURATION_MS) {
+            rotateChunk(elapsedNow);
         }
 
-        // Формат: dtMs,gpsSpeed,gpsHeading,gpsLat,gpsLon,gpsAlt,
-        //   ax,ay,az,gx,gy,gz,mx,my,mz,pressure,pitch,roll,heading,
-        //   thermalAngle,thermalStrength,thermalDist,thermalSource,snr,noiseFloor
         logBuffer.append(dtMs).append(',');
         logBuffer.append(cachedGpsSpeed).append(',');
         logBuffer.append(cachedGpsHeading).append(',');
         logBuffer.append(String.format(Locale.US, "%.6f", cachedGpsLat)).append(',');
         logBuffer.append(String.format(Locale.US, "%.6f", cachedGpsLon)).append(',');
         logBuffer.append(cachedGpsAlt).append(',');
+        logBuffer.append(cachedGpsFixAge).append(',');
+        logBuffer.append(cachedGpsAccuracy).append(',');
+        logBuffer.append(dataProvider.getVario()).append(',');
         logBuffer.append(dataProvider.getAccelX() * 1000f).append(',');
         logBuffer.append(dataProvider.getAccelY() * 1000f).append(',');
         logBuffer.append(dataProvider.getAccelZ() * 1000f).append(',');
@@ -203,22 +166,47 @@ public class LogManager {
         logBuffer.append(dataProvider.getRoll()).append(',');
         logBuffer.append(dataProvider.getLogHeading());
         logBuffer.append(dataProvider.getThermalLogSuffix());
+        logBuffer.append(',');
+        logBuffer.append(dataProvider.getDetectStatus());
         logBuffer.append('\n');
     }
 
-    // ========================================================================
-    // Нарезка: ротация чанков
-    // ========================================================================
+    public void recordEvent(long tsMs, String eventType, String details) {
+        if (!isLogging) return;
+        // tsMs — может быть System.currentTimeMillis() от вызывающего кода.
+        // Преобразуем в elapsed-шкалу: flightStartMs = wallStartMs,
+        // elapsedStartMs — соответствующая elapsed-метка.
+        // dtElapsed = tsMs - wallStartMs + (elapsed... нет, так нельзя.
+        //
+        // Правильно: вызывающий передаёт tsMs = System.currentTimeMillis().
+        // Преобразуем: dtElapsed = elapsedStartMs + (tsMs - wallStartMs) — неверно,
+        // т.к. между wallStartMs и elapsedStartMs нет постоянного соотношения.
+        //
+        // Лучшее решение: хранить и elapsed-время в вызывающем коде.
+        // Но чтобы не ломать API, вычисляем через wall-clock разницу с поправкой на дрейф.
+        // На практике в полёте (без NTP-скачков) разница wall-elapsed стабильна.
 
-    /** Закрыть текущий чанк, начать новый */
-    private void rotateChunk(long nowMs) {
-        finalizeChunk(nowMs, false);
-        chunkStartMs = nowMs;
+        long elapsedNow = SystemClock.elapsedRealtime();
+        long wallNow = System.currentTimeMillis();
+
+        // Вычисляем dtMs через elapsed (монотонно)
+        long dtMs = elapsedNow - elapsedStartMs;
+
+        eventBuffer.append(dtMs).append(',');
+        eventBuffer.append(eventType).append(',');
+        String safe = details.replace(',', ';').replace('\n', ' ').replace('\r', ' ');
+        eventBuffer.append(safe).append('\n');
+    }
+
+    private void rotateChunk(long elapsedNow) {
+        // Для имени файла нужны wall-clock метки. Берём их сейчас.
+        long wallNow = System.currentTimeMillis();
+        finalizeChunk(wallNow, false);
+        chunkStartElapsed = elapsedNow;
         chunkIndex++;
     }
 
-    /** Финализировать чанк: ZIP в памяти → запись на диск */
-    private void finalizeChunk(long nowMs, boolean isFinish) {
+    private void finalizeChunk(long wallNow, boolean isFinish) {
         if (logBuffer.length() == 0) return;
 
         String prefix;
@@ -230,53 +218,56 @@ public class LogManager {
             prefix = "Flight";
         }
 
-        final String data = logBuffer.toString();
+        final String csvData = logBuffer.toString();
         logBuffer.setLength(0);
 
-        final String finalPrefix = prefix;
-        final long startTs = chunkStartMs;
-        final long endTs = nowMs;
+        final String eventsData = eventBuffer.toString();
+        eventBuffer.setLength(0);
 
-        ioHandler.post(() -> writeZipChunk(finalPrefix, startTs, endTs, data));
+        final String finalPrefix = prefix;
+        // Имя файла — по wall-clock (человекочитаемо)
+        final long startWall = wallStartMs + (chunkStartElapsed - elapsedStartMs);
+        final long endWall = wallNow;
+
+        ioHandler.post(() -> writeZipChunk(finalPrefix, startWall, endWall, csvData, eventsData));
     }
 
-    // ========================================================================
-    // ZIP-сжатие в памяти → запись на диск
-    // ========================================================================
-
-    /**
-     * Сжать CSV-данные в ZIP в памяти, записать на диск одной операцией.
-     * Файл: {prefix}{startTs}-{endTs}.zip, внутри .csv с тем же именем.
-     */
-    private void writeZipChunk(String prefix, long startMs, long endMs, String csvData) {
+    private void writeZipChunk(String prefix, long startWallMs, long endWallMs,
+                                String csvData, String eventsData) {
         if (externalLogDir == null) {
             Log.e(TAG, "External storage not available");
             return;
         }
-
         File logDir = new File(externalLogDir, "logs");
         if (!logDir.exists()) logDir.mkdirs();
-
         SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US);
-        String startStr = sdf.format(new Date(startMs));
-        String endStr = sdf.format(new Date(endMs));
+        String startStr = sdf.format(new Date(startWallMs));
+        String endStr = sdf.format(new Date(endWallMs));
         String baseName = prefix + startStr + "-" + endStr;
 
         try {
-            // Сжимаем CSV в ZIP в памяти
             byte[] csvBytes = csvData.getBytes("UTF-8");
-            ByteArrayOutputStream baos = new ByteArrayOutputStream(csvBytes.length / 2);
+            byte[] eventsBytes = eventsData.getBytes("UTF-8");
+            ByteArrayOutputStream baos = new ByteArrayOutputStream(
+                    (csvBytes.length + eventsBytes.length) / 2);
             ZipOutputStream zos = new ZipOutputStream(baos);
             zos.setLevel(9);
 
-            ZipEntry entry = new ZipEntry(baseName + ".csv");
-            entry.setSize(csvBytes.length);
-            zos.putNextEntry(entry);
+            ZipEntry samplesEntry = new ZipEntry(baseName + ".csv");
+            samplesEntry.setSize(csvBytes.length);
+            zos.putNextEntry(samplesEntry);
             zos.write(csvBytes);
             zos.closeEntry();
-            zos.close();
 
-            // Пишем ZIP на диск одной операцией
+            if (eventsBytes.length > 0) {
+                ZipEntry eventsEntry = new ZipEntry(baseName + "_events.csv");
+                eventsEntry.setSize(eventsBytes.length);
+                zos.putNextEntry(eventsEntry);
+                zos.write(eventsBytes);
+                zos.closeEntry();
+            }
+
+            zos.close();
             byte[] zipBytes = baos.toByteArray();
             File zipFile = new File(logDir, baseName);
             FileOutputStream fos = new FileOutputStream(zipFile);
@@ -287,7 +278,7 @@ public class LogManager {
 
             double ratio = (double) zipBytes.length / csvBytes.length * 100.0;
             Log.i(TAG, String.format(Locale.US,
-                    "Chunk saved: %s (%d KB → %d KB, %.0f%%)",
+                    "Chunk saved: %s (%d KB -> %d KB, %.0f%%)",
                     baseName, csvBytes.length / 1024, zipBytes.length / 1024, ratio));
 
         } catch (IOException e) {
@@ -295,10 +286,8 @@ public class LogManager {
         }
     }
 
-    // ========================================================================
-    // Состояние
-    // ========================================================================
-
     public boolean isLogging() { return isLogging; }
-    public long getFlightStartMs() { return flightStartMs; }
+
+    /** Время старта лога по wall-clock (System.currentTimeMillis) — для UI */
+    public long getFlightStartMs() { return wallStartMs; }
 }
