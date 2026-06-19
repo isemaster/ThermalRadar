@@ -31,7 +31,7 @@ public class BlindFlightMode {
     // Пороги (g)
     // ========================================================================
 
-    private static final float TH_SUSPECT = 0.020f;
+    private static final float TH_SUSPECT = 0.010f;
     private static final float TH_THERMAL = 0.020f;
     private static final float TH_INSIDE  = 0.080f;
     private static final int DIR_STABLE_COUNT = 25; // ~0.5 с при 50 Гц

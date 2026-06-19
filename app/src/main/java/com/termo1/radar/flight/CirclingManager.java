@@ -167,6 +167,7 @@ public class CirclingManager {
                        double gpsLat, double gpsLon,
                        float gpsSpeed, float gpsCourse,
                        long nowMs) {
+        synchronized (stateLock) {
 
         // ================================================================
         // 1. Детекция крутки по гироскопу Z
@@ -342,6 +343,7 @@ public class CirclingManager {
                 }
             }
         }
+}
     }
 
     // ========================================================================
@@ -435,38 +437,37 @@ public class CirclingManager {
     // Состояние для UI
     // ========================================================================
 
+    private final Object stateLock = new Object();
+
     public boolean isCircling() {
-        return circlingConfirmed;
+        synchronized (stateLock) { return circlingConfirmed; }
     }
 
     public boolean isShowThermalLabel() {
-        return showLabel;
+        synchronized (stateLock) { return showLabel; }
     }
 
-    /** Направление ветра ОТКУДА (градусы, 0-360), -1 если неизвестно */
     public float getWindFromDeg() {
-        return windFromDeg;
+        synchronized (stateLock) { return windFromDeg; }
     }
 
-    /** Скорость ветра (м/с), -1 если неизвестна */
     public float getWindSpeedMs() {
-        return windSpeedMs;
+        synchronized (stateLock) { return windSpeedMs; }
     }
 
-    /** Достоверность оценки ветра (число замеров по спиралям) */
     public int getWindConfidence() {
-        return windConfidence;
+        synchronized (stateLock) { return windConfidence; }
     }
 
-    /** Скорость ветра по GPS-скорости на прямой (м/с), -1 если недоступна */
     public float getWindSpeedFromGps() {
-        return windSpeedFromGps;
+        synchronized (stateLock) { return windSpeedFromGps; }
     }
 
-    /** Итоговая скорость ветра для отображения */
     public float getDisplayWindSpeed() {
-        if (windSpeedMs > 0) return windSpeedMs;
-        if (windSpeedFromGps > 0) return windSpeedFromGps;
-        return -1f;
+        synchronized (stateLock) {
+            if (windSpeedMs > 0) return windSpeedMs;
+            if (windSpeedFromGps > 0) return windSpeedFromGps;
+            return -1f;
+        }
     }
 }

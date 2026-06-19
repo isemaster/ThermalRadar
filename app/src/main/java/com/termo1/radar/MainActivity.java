@@ -356,10 +356,14 @@ public class MainActivity extends Activity {
         super.onPause();
         running = false;
         stopRendering();
-        sensorController.unregisterSensors();
-        releaseWakeLock();
-        gpsManager.stopGps();
-        if (varioSoundManager != null) varioSoundManager.stop();
+        // При активной записи лога — не убиваем сенсоры/GPS/ваклок
+        // чтобы прибор продолжал работать при выключенном экране
+        if (!logManager.isLogging()) {
+            sensorController.unregisterSensors();
+            releaseWakeLock();
+            gpsManager.stopGps();
+            if (varioSoundManager != null) varioSoundManager.stop();
+        }
         stopTestMode();
     }
 
@@ -662,7 +666,11 @@ public class MainActivity extends Activity {
             wakeLock = powerManager.newWakeLock(
                     PowerManager.PARTIAL_WAKE_LOCK, "TERMO1:RadarLock");
             if (wakeLock != null) {
-                wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
+                if (logManager != null && logManager.isLogging()) {
+                    wakeLock.acquire(); // без таймаута — на весь полёт
+                } else {
+                    wakeLock.acquire(WAKE_LOCK_TIMEOUT_MS);
+                }
                 lastWakeLockRefreshMs = System.currentTimeMillis();
             }
         }
@@ -1246,6 +1254,8 @@ public class MainActivity extends Activity {
 
         // Logging label
         private final Paint logLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        // Thermal label "крутим термик" (cached)
+        private final Paint thermalLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         // Sensor data
         private final Paint sensorDataPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
@@ -1318,6 +1328,11 @@ public class MainActivity extends Activity {
             logLabelPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
             logLabelPaint.setTextAlign(Paint.Align.CENTER);
             logLabelPaint.setColor(Color.argb(200, 33, 150, 243));
+
+            thermalLabelPaint.setColor(Color.argb(220, 255, 193, 7));
+            thermalLabelPaint.setTextSize(42);
+            thermalLabelPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            thermalLabelPaint.setTextAlign(Paint.Align.CENTER);
 
             sensorDataPaint.setAntiAlias(true);
             sensorDataPaint.setTextSize(20);
@@ -1561,6 +1576,11 @@ public class MainActivity extends Activity {
                 thermalsCopy.clear();
                 thermalsCopy.addAll(thermals);
             }
+            // Wind data for radar renderer
+            radarRenderer.setWindData(
+                circlingManager.getWindFromDeg(),
+                circlingManager.getDisplayWindSpeed());
+
             radarRenderer.draw(canvas, nowMs, thermalsCopy,
                     getCompassHeading(), sensorController.getVario(), currentStatus,
                     sensorController.getMaxSnr(), thermalsCopy.size());
@@ -1572,11 +1592,6 @@ public class MainActivity extends Activity {
 
             // "крутим термик" — по центру, если накрутили 540°
             if (circlingManager.isShowThermalLabel()) {
-                Paint thermalLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                thermalLabelPaint.setColor(Color.argb(220, 255, 193, 7));  // золотой
-                thermalLabelPaint.setTextSize(42);
-                thermalLabelPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-                thermalLabelPaint.setTextAlign(Paint.Align.CENTER);
                 float labelY = h / 2f;
                 canvas.drawText("крутим термик", cx, labelY, thermalLabelPaint);
             }
@@ -1605,71 +1620,6 @@ public class MainActivity extends Activity {
             float leftMargin = w * 0.05f;
             float rightMargin = w * 0.95f;
             uiManager.drawAltitude(canvas, leftMargin, rightMargin, altY, gpsAlt, altAgl);
-
-            // Стрелка ветра на радаре
-            float windFrom = circlingManager.getWindFromDeg();
-            float windSpd = circlingManager.getDisplayWindSpeed();
-            if (windFrom >= 0f && windSpd > 0f) {
-                float cy = radarCy;
-                float R = radarR;
-                double aRad = Math.toRadians(windFrom);
-                // Точка на краю радара в направлении, ОТКУДА дует ветер
-                float ex = cx + (float)(R * Math.sin(aRad));
-                float ey = cy - (float)(R * Math.cos(aRad));
-                // Внутренняя точка (70% к центру)
-                float ix = cx + (float)(R * 0.3f * Math.sin(aRad));
-                float iy = cy - (float)(R * 0.3f * Math.cos(aRad));
-
-                Paint windLine = new Paint(Paint.ANTI_ALIAS_FLAG);
-                windLine.setStrokeWidth(3);
-                windLine.setColor(Color.argb(200, 100, 200, 255));
-                windLine.setStyle(Paint.Style.STROKE);
-                canvas.drawLine(ex, ey, ix, iy, windLine);
-
-                // Наконечник стрелки (треугольник у центра)
-                float tipAngle = 0.5f; // рад
-                float tipLen = 14f;
-                float dx = cx - ex;
-                float dy = cy - ey;
-                float len = (float) Math.sqrt(dx*dx + dy*dy);
-                if (len > 1f) {
-                    float ux = dx / len;
-                    float uy = dy / len;
-                    float px = ix;
-                    float py = iy;
-                    float ax = px + tipLen * (float)(Math.cos(Math.PI - tipAngle) * ux - Math.sin(Math.PI - tipAngle) * uy);
-                    float ay = py + tipLen * (float)(Math.sin(Math.PI - tipAngle) * ux + Math.cos(Math.PI - tipAngle) * uy);
-                    float bx = px + tipLen * (float)(Math.cos(Math.PI + tipAngle) * ux - Math.sin(Math.PI + tipAngle) * uy);
-                    float by = py + tipLen * (float)(Math.sin(Math.PI + tipAngle) * ux + Math.cos(Math.PI + tipAngle) * uy);
-
-                    Paint windFill = new Paint(Paint.ANTI_ALIAS_FLAG);
-                    windFill.setStyle(Paint.Style.FILL);
-                    windFill.setColor(Color.argb(200, 100, 200, 255));
-                    android.graphics.Path arrowPath = new android.graphics.Path();
-                    arrowPath.moveTo(px, py);
-                    arrowPath.lineTo(ax, ay);
-                    arrowPath.lineTo(bx, by);
-                    arrowPath.close();
-                    canvas.drawPath(arrowPath, windFill);
-                }
-
-                // Подпись скорости ветра
-                Paint windLabel = new Paint(Paint.ANTI_ALIAS_FLAG);
-                windLabel.setColor(Color.argb(200, 100, 200, 255));
-                windLabel.setTextSize(22);
-                windLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
-                windLabel.setTextAlign(Paint.Align.CENTER);
-                // Текст — рядом со стрелкой, со смещением от края
-                float labelAngle = (float) Math.toRadians(windFrom);
-                float lx = cx + (float)((R + 50) * Math.sin(labelAngle));
-                float ly = cy - (float)((R + 50) * Math.cos(labelAngle));
-                // Не даём вылезти за экран
-                if (lx < 30) lx = 30;
-                if (lx > w - 30) lx = w - 30;
-                if (ly < 30) ly = 30;
-                if (ly > h - 10) ly = h - 10;
-                canvas.drawText(String.format(java.util.Locale.US, "ветер %.1fм/с", windSpd), lx, ly, windLabel);
-            }
 
             // Test button
             canvas.drawRoundRect(testBtnRect, 12, 12, testBtnBgPaint);

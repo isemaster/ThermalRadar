@@ -30,6 +30,13 @@ public class RadarRenderer {
     private final Paint cardTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint nsewPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
+    // Wind arrow (cached paints — не создаём в onDraw)
+    private final Paint windLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint windFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint windLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private float windFromDeg = -1f;
+    private float windSpeedMs = -1f;
+
     private final DashPathEffect dash125 = new DashPathEffect(new float[]{6, 8}, 0);
     private final DashPathEffect thermalDash = new DashPathEffect(new float[]{3, 5}, 0);
 
@@ -94,6 +101,20 @@ public class RadarRenderer {
         nsewPaint.setTextAlign(Paint.Align.CENTER);
         nsewPaint.setTypeface(Typeface.MONOSPACE);
         nsewPaint.setFakeBoldText(true);
+
+        // wind arrow paints
+        windLinePaint.setStyle(Paint.Style.STROKE);
+        windLinePaint.setStrokeWidth(3);
+        windLinePaint.setColor(Color.argb(200, 100, 200, 255));
+
+        windFillPaint.setStyle(Paint.Style.FILL);
+        windFillPaint.setColor(Color.argb(200, 100, 200, 255));
+
+        windLabelPaint.setAntiAlias(true);
+        windLabelPaint.setColor(Color.argb(200, 100, 200, 255));
+        windLabelPaint.setTextSize(22);
+        windLabelPaint.setTypeface(Typeface.MONOSPACE);
+        windLabelPaint.setTextAlign(Paint.Align.CENTER);
     }
 
     /** Called when view size changes. */
@@ -104,6 +125,12 @@ public class RadarRenderer {
         cy = h / 2f;
         r = Math.min(cx, cy) - 4;
         thermalMaxDist = r * 5f / 6f;
+    }
+
+    /** Set wind data for the wind arrow. Call before draw(). */
+    public void setWindData(float fromDeg, float speedMs) {
+        this.windFromDeg = fromDeg;
+        this.windSpeedMs = speedMs;
     }
 
     /**
@@ -135,6 +162,7 @@ public class RadarRenderer {
         drawTickMarks(canvas);
         drawThermals(canvas, nowMs, thermals);
         drawPilot(canvas, nowMs);
+        drawWindArrow(canvas);
 
         canvas.restore(); // restore un-rotated state
 
@@ -227,6 +255,52 @@ public class RadarRenderer {
         float pulse = 7 + (float) Math.sin(nowMs / 300.0) * 3;
         pilotPulsePaint.setColor(Color.argb(50, 0, 255, 0));
         c.drawCircle(cx, cy, pulse, pilotPulsePaint);
+    }
+
+    private void drawWindArrow(Canvas c) {
+        if (windFromDeg < 0 || windSpeedMs <= 0) return;
+
+        double aRad = Math.toRadians(windFromDeg);
+        // Точка на краю радара в направлении, ОТКУДА дует ветер
+        float ex = cx + (float)(r * Math.sin(aRad));
+        float ey = cy - (float)(r * Math.cos(aRad));
+        // Внутренняя точка (70% к центру)
+        float ix = cx + (float)(r * 0.3f * Math.sin(aRad));
+        float iy = cy - (float)(r * 0.3f * Math.cos(aRad));
+
+        c.drawLine(ex, ey, ix, iy, windLinePaint);
+
+        // Наконечник стрелки (треугольник у центра)
+        float tipAngle = 0.5f;
+        float tipLen = 14f;
+        float dx = cx - ex;
+        float dy = cy - ey;
+        float len = (float) Math.sqrt(dx*dx + dy*dy);
+        if (len > 1f) {
+            float ux = dx / len;
+            float uy = dy / len;
+            float px = ix;
+            float py = iy;
+            float ax = px + tipLen * (float)(Math.cos(Math.PI - tipAngle) * ux - Math.sin(Math.PI - tipAngle) * uy);
+            float ay = py + tipLen * (float)(Math.sin(Math.PI - tipAngle) * ux + Math.cos(Math.PI - tipAngle) * uy);
+            float bx = px + tipLen * (float)(Math.cos(Math.PI + tipAngle) * ux - Math.sin(Math.PI + tipAngle) * uy);
+            float by = py + tipLen * (float)(Math.sin(Math.PI + tipAngle) * ux + Math.cos(Math.PI + tipAngle) * uy);
+
+            Path arrowPath = new Path();
+            arrowPath.moveTo(px, py);
+            arrowPath.lineTo(ax, ay);
+            arrowPath.lineTo(bx, by);
+            arrowPath.close();
+            c.drawPath(arrowPath, windFillPaint);
+        }
+
+        // Подпись скорости ветра снаружи радара (в rotated системе!)
+        float lx = cx + (float)((r + 50) * Math.sin(aRad));
+        float ly = cy - (float)((r + 50) * Math.cos(aRad));
+        // Не даём вылезти за край экрана
+        if (lx < 30) lx = 30; if (lx > baseW - 30) lx = baseW - 30;
+        if (ly < 30) ly = 30; if (ly > baseH - 10) ly = baseH - 10;
+        c.drawText(String.format(java.util.Locale.US, "ветер %.1fм/с", windSpeedMs), lx, ly, windLabelPaint);
     }
 
     private void drawThermals(Canvas c, long nowMs, List<ThermalBlip> thermals) {

@@ -22,7 +22,7 @@ public class ThermalDetector {
 
     // Пороги (в g) — согласованы с формулой dist = 150 × sqrt(0.05 / rmsMs²)
     //   0.005g (0.05 м/с²) → 150м, 0.020g (0.20 м/с²) → 75м, 0.080g (0.80 м/с²) → 37.5м
-    private static final float TH_SUSPECT    = 0.020f;  // ~0.20 м/с² → 75м (обнаружение)
+    private static final float TH_SUSPECT    = 0.010f;  // ~0.10 м/с² → 106м (обнаружение)
     private static final float TH_THERMAL    = 0.020f;  // ~0.20 м/с² → 75м (уверенный сигнал)
     private static final float TH_INSIDE     = 0.080f;  // ~0.80 м/с² → 37.5м (внутри термика)
 
