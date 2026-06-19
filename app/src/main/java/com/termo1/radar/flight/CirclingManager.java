@@ -51,8 +51,8 @@ public class CirclingManager {
     private static final float WIND_SPEED_EMA_ALPHA = 0.3f;
     /** Коэффициент EMA для направления ветра */
     private static final float WIND_DIR_EMA_ALPHA = 0.3f;
-    /** Воздушная скорость параплана в ламинаре (м/с) */
-    private static final float AIRSPEED_MS = 9.5f;
+    /** Воздушная скорость параплана в ламинаре (м/с) — настраивается */
+    private float airspeedMs = 9.5f;
 
     // ========================================================================
     // Состояние крутки
@@ -330,7 +330,7 @@ public class CirclingManager {
         // ================================================================
         if (!circlingConfirmed && gpsSpeed > 3f) {
             // По разнице GPS-скорости и воздушной скорости оцениваем компоненту ветра вдоль курса
-            float windComponent = gpsSpeed - AIRSPEED_MS;
+            float windComponent = gpsSpeed - airspeedMs;
             if (Math.abs(windComponent) > 0.5f) {
                 // Если дрейфуем — уточняем
                 float drift = heading - gpsCourse;
@@ -462,12 +462,17 @@ public class CirclingManager {
     public float getWindSpeedFromGps() {
         synchronized (stateLock) { return windSpeedFromGps; }
     }
-
+    /** Итоговая скорость ветра для отображения */
     public float getDisplayWindSpeed() {
         synchronized (stateLock) {
             if (windSpeedMs > 0) return windSpeedMs;
             if (windSpeedFromGps > 0) return windSpeedFromGps;
             return -1f;
         }
+    }
+
+    /** Установить воздушную скорость (м/с) для оценки ветра */
+    public void setAirspeed(float ms) {
+        this.airspeedMs = Math.max(8f, Math.min(15f, ms));
     }
 }

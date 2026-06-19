@@ -94,6 +94,38 @@ public class SettingsActivity extends Activity {
         CheckBox sunCb = createCheckBox("Солнечный режим (яркие цвета)", "sunlight_mode", false);
         root.addView(sunCb);
 
+        // 2e. Airspeed slider
+        TextView airspeedLabel = new TextView(this);
+        airspeedLabel.setText("Воздушная скорость");
+        airspeedLabel.setTextSize(14);
+        airspeedLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
+        airspeedLabel.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
+        airspeedLabel.setPadding(0, 16, 0, 8);
+        root.addView(airspeedLabel);
+
+        final android.widget.TextView airspeedValue = new android.widget.TextView(this);
+        float currentAirspeed = prefs.getFloat("airspeed_ms", 9.5f);
+        airspeedValue.setText(String.format(java.util.Locale.US, "%.1f м/с", currentAirspeed));
+        airspeedValue.setTextSize(13);
+        airspeedValue.setTypeface(android.graphics.Typeface.MONOSPACE);
+        airspeedValue.setTextColor(android.graphics.Color.argb(255, 255, 255, 0));
+        airspeedValue.setPadding(0, 0, 0, 8);
+        root.addView(airspeedValue);
+
+        android.widget.SeekBar airspeedSeek = new android.widget.SeekBar(this);
+        airspeedSeek.setMax(70); // 8.0..15.0 → (15-8)*10 = 70
+        airspeedSeek.setProgress((int)((currentAirspeed - 8f) * 10f));
+        airspeedSeek.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) {
+                float value = 8f + progress * 0.1f;
+                airspeedValue.setText(String.format(java.util.Locale.US, "%.1f м/с", value));
+                prefs.edit().putFloat("airspeed_ms", value).apply();
+            }
+            public void onStartTrackingTouch(android.widget.SeekBar seekBar) {}
+            public void onStopTrackingTouch(android.widget.SeekBar seekBar) {}
+        });
+        root.addView(airspeedSeek);
+
         // Spacer
         View spacerVib = new View(this);
         spacerVib.setLayoutParams(new LinearLayout.LayoutParams(

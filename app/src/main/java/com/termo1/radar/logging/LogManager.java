@@ -119,7 +119,15 @@ public class LogManager {
         synchronized (bufferLock) {
             logBuffer.setLength(0);
             eventBuffer.setLength(0);
+            // Первое событие — точка привязки к реальному времени
             eventBuffer.append("0,WALL_START,").append(wallStartMs).append('\n');
+
+            // Заголовок Samples CSV
+            logBuffer.append("dtMs,gpsSpeed,gpsHeading,gpsLat,gpsLon,gpsAlt,");
+            logBuffer.append("gpsFixAge,gpsAccuracy,vario,");
+            logBuffer.append("ax,ay,az,gx,gy,gz,mx,my,mz,pressure,pitch,roll,heading,");
+            logBuffer.append("thermalAngle,thermalStrength,thermalDist,thermalSource,snr,noiseFloor,");
+            logBuffer.append("detectStatus\n");
         }
 
         // Periodic flush каждые 5 с
@@ -218,7 +226,7 @@ public class LogManager {
         }
     }
 
-    public void recordEvent(long tsMs, String eventType, String details) {
+    public void recordEvent(String eventType, String details) {
         if (!isLogging) return;
         long elapsedNow = SystemClock.elapsedRealtime();
         long dtMs = elapsedNow - elapsedStartMs;

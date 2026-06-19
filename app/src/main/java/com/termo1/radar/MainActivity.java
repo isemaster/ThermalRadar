@@ -237,13 +237,14 @@ public class MainActivity extends Activity {
 
         // Circling manager
         circlingManager = new CirclingManager();
+        circlingManager.setAirspeed(prefs.getFloat("airspeed_ms", 9.5f));
         circlingManager.setVoiceCallback(text -> {
             if (ttsReady && voicePromptsEnabled) {
                 long now = System.currentTimeMillis();
                 if (now - lastTtsSpeakMs > 8000) {
                     lastTtsPhrase = text;
                     lastTtsSpeakMs = now;
-                    logManager.recordEvent(now, "CIRCLE_GUIDANCE", text);
+                    logManager.recordEvent("CIRCLE_GUIDANCE", text);
                     if (android.os.Build.VERSION.SDK_INT >= 21) {
                         tts.speak(text, android.speech.tts.TextToSpeech.QUEUE_FLUSH, null, null);
                     } else {
@@ -296,7 +297,7 @@ public class MainActivity extends Activity {
             simMode = true;
             simulation = new SimulationManager();
             simulation.start();
-            simStartMs = System.currentTimeMillis();
+            simStartMs = SystemClock.elapsedRealtime();
             lastThermalBeepMs = simStartMs;
             startSimLoop();
         }
@@ -326,6 +327,11 @@ public class MainActivity extends Activity {
         // Обновить настройки из SharedPreferences (могли измениться в Settings)
         blindModeEnabled = prefs.getBoolean("blind_mode", false);
         voicePromptsEnabled = prefs.getBoolean("voice_prompts", true);
+
+        // Airspeed update
+        if (circlingManager != null) {
+            circlingManager.setAirspeed(prefs.getFloat("airspeed_ms", 9.5f));
+        }
 
         // Sound + vibration settings
         boolean soundEnabled = prefs.getBoolean("sound_enabled", true);
@@ -1159,7 +1165,7 @@ public class MainActivity extends Activity {
         String phrase;
         if (rel < -112.5f || rel > 112.5f) {
             // Задние сектора — молчим, но логируем
-            logManager.recordEvent(System.currentTimeMillis(), "VOICE_SKIP",
+            logManager.recordEvent("VOICE_SKIP",
                     "rear_sector angle=" + (int)thermalAngle + " rel=" + (int)rel);
             return;
         }
@@ -1178,7 +1184,7 @@ public class MainActivity extends Activity {
         // Дебаунс: не повторять ту же фразу чаще чем раз в 8 секунд
         long now = System.currentTimeMillis();
         if (phrase.equals(lastTtsPhrase) && now - lastTtsSpeakMs < 8000) {
-            logManager.recordEvent(now, "VOICE_SKIP",
+            logManager.recordEvent("VOICE_SKIP",
                     "debounce phrase=" + phrase);
             return;
         }
@@ -1186,7 +1192,7 @@ public class MainActivity extends Activity {
         lastTtsPhrase = phrase;
         lastTtsSpeakMs = now;
 
-        logManager.recordEvent(now, "VOICE_SPOKEN",
+        logManager.recordEvent("VOICE_SPOKEN",
                 phrase + " angle=" + (int)thermalAngle + " dist=" + (int)distanceMeters);
 
         if (android.os.Build.VERSION.SDK_INT >= 21) {
@@ -1461,16 +1467,16 @@ public class MainActivity extends Activity {
             boolean nowCircling = circlingManager.isCircling();
             boolean nowLabel = circlingManager.isShowThermalLabel();
             if (nowCircling && !prevCirclingState) {
-                logManager.recordEvent(cmNow, "CIRCLING_START", "circling confirmed");
+                logManager.recordEvent("CIRCLING_START", "circling confirmed");
             } else if (!nowCircling && prevCirclingState) {
-                logManager.recordEvent(cmNow, "CIRCLING_END", "circling stopped");
+                logManager.recordEvent("CIRCLING_END", "circling stopped");
             }
             prevCirclingState = nowCircling;
 
             if (nowLabel && !prevLabelState) {
-                logManager.recordEvent(cmNow, "THERMAL_LABEL_ON", "540 deg reached");
+                logManager.recordEvent("THERMAL_LABEL_ON", "540 deg reached");
             } else if (!nowLabel && prevLabelState) {
-                logManager.recordEvent(cmNow, "THERMAL_LABEL_OFF", "label hidden");
+                logManager.recordEvent("THERMAL_LABEL_OFF", "label hidden");
             }
             prevLabelState = nowLabel;
 
@@ -1478,7 +1484,7 @@ public class MainActivity extends Activity {
             float ws = circlingManager.getDisplayWindSpeed();
             if (wf >= 0 && ws > 0) {
                 if (Math.abs(wf - prevWindFrom) > 10f || Math.abs(ws - prevWindSpd) > 0.5f) {
-                    logManager.recordEvent(cmNow, "WIND_UPDATE",
+                    logManager.recordEvent("WIND_UPDATE",
                             String.format(java.util.Locale.US, "%.0fdeg %.1fm/s", wf, ws));
                     prevWindFrom = wf;
                     prevWindSpd = ws;
@@ -1550,7 +1556,7 @@ public class MainActivity extends Activity {
                                 ThermalBlip expired = it.next();
                                 if (!expired.isAlive(now)) {
                                     it.remove();
-                                    logManager.recordEvent(now, "THERMAL_REMOVED",
+                                    logManager.recordEvent("THERMAL_REMOVED",
                                             "bornMs=" + expired.bornMs
                                             + " angle=" + (int)expired.angle
                                             + " dist=" + (int)expired.distance
@@ -1571,7 +1577,7 @@ public class MainActivity extends Activity {
                             if (!found && detBlip.bornMs != lastAddedBlipBornMs) {
                                 lastAddedBlipBornMs = detBlip.bornMs;
                                 thermals.add(detBlip);
-                                logManager.recordEvent(now, "THERMAL_NEW",
+                                logManager.recordEvent("THERMAL_NEW",
                                         "bornMs=" + detBlip.bornMs
                                         + " angle=" + (int)detBlip.angle
                                         + " dist=" + (int)detBlip.distance
@@ -1729,7 +1735,7 @@ public class MainActivity extends Activity {
             // Flight time
             long flightTimeMs;
             if (simMode) {
-                flightTimeMs = System.currentTimeMillis() - simStartMs;
+                flightTimeMs = SystemClock.elapsedRealtime() - simStartMs;
             } else if (logManager.isLogging()) {
                 flightTimeMs = System.currentTimeMillis() - logManager.getFlightStartMs();
             } else {

@@ -24,11 +24,11 @@ public class GpsManager {
     private volatile float gpsSpeed;
     private volatile float gpsHeading;
     private volatile boolean gpsReady;
-    private float gpsAltitude;
-    private float startAltitude;
-    private boolean altitudeInitialized;
-    private double gpsLat;
-    private double gpsLon;
+    private volatile float gpsAltitude;
+    private volatile float startAltitude;
+    private volatile boolean altitudeInitialized;
+    private volatile double gpsLat;
+    private volatile double gpsLon;
     private volatile float gpsAccuracy = 999f;
     private volatile long lastFixMs;
 
@@ -56,7 +56,8 @@ public class GpsManager {
                     gpsLon = location.getLongitude();
                     gpsAccuracy = location.hasAccuracy() ? location.getAccuracy() : 999f;
                     lastFixMs = System.currentTimeMillis();
-                    if (location.hasAltitude()) {
+                    // Отсев неточных фиксов для стартовой высоты
+                    if (location.hasAltitude() && gpsAccuracy < 25f) {
                         gpsAltitude = (float) location.getAltitude();
                         if (!altitudeInitialized) {
                             startAltitude = gpsAltitude;

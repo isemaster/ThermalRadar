@@ -244,7 +244,7 @@ public class SensorController implements SensorEventListener {
         if (gyroscope != null)
             sensorManager.registerListener(this, gyroscope, SensorManager.SENSOR_DELAY_GAME);
         if (magnetometer != null)
-            sensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_NORMAL);
+            sensorManager.registerListener(this, magnetometer, SensorManager.SENSOR_DELAY_GAME);
     }
 
     public void unregisterSensors() {
