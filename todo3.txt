@@ -1,0 +1,225 @@
+# ThermalRadar — TODO (что надо сделать)
+
+## 🔴 КРИТИЧЕСКИЕ БАГИ (известные)
+
+### TODO-1. Стрелка ветра "приклеена к смартфону"
+**Файлы:** `MainActivity.java:1609–1622`, `RadarRenderer.java:128–139`
+
+**Причина:** Радар рисуется в компас-фрейме (canvas поворачивается на `-heading`, север всегда сверху географически). А стрелка ветра рисуется в `MainActivity.RadarView.onDraw()` **после** `radarRenderer.draw()` — то есть на **не-повёрнутом** canvas, при этом угол берётся напрямую как `windFrom` (истинный пеленг). Получается: pilot крутит телефон → радар крутится под ним → стрелка остаётся на том же экранном месте.
+
+**Что сделать (вариант A — правильный):** Перенести блок отрисовки стрелки ветра в `RadarRenderer.draw()` **между** `canvas.save()/rotate(-heading)` и `canvas.restore()`, передав `windFrom`/`windSpd` параметрами. Тогда `sin(windFrom)/cos(windFrom)` даст корректную позицию в компас-фрейме.
+
+**Вариант B (минимальная правка):**
+```java
+double aRad = Math.toRadians(windFrom - getCompassHeading());
+```
+
+### TODO-2. Прибор не работает после нажатия кнопки включения
+**Файлы:** `MainActivity.java:354–364` (onPause), `AndroidManifest.xml`
+
+**Причина:** **В проекте вообще нет Service.** Вся логика (сенсоры, GPS, variо-звук, TTS, логирование) привязана к `MainActivity.onResume/onPause`. При нажатии power → `onPause()`:
+- `sensorController.unregisterSensors()` → акселерометр/гиро/маг/баро выключены → нет семплов → нет логов, нет TTS-подсказок
+- `releaseWakeLock()` → CPU может уснуть
+- `gpsManager.stopGps()` → GPS выключен
+- `varioSoundManager.stop()` → AudioTrack убит → звук варьо замолкает
+- `stopRendering()` → `onDraw` больше не вызывается → не работает `circlingManager.update()`, `flightStateMachine.update()`, brightness, вибрация
+
+TTS-движок формально живёт (создан в `onCreate`,shutdown только в `onDestroy`), но **труба данных, которая его кормит, мертва** — некому вызывать `tts.speak(...)`.
+
+В манифесте также **нет** `FOREGROUND_SERVICE` и `FOREGROUND_SERVICE_LOCATION` разрешений и нет ни одного `<service>`.
+
+**Что сделать:**
+1. Создать `ThermalRadarService extends Service` — в нём живут `SensorController`, `GpsManager`, `VarioManager`, `ThermalDetector`, `CirclingManager`, `LogManager`, `VarioSoundManager`, TTS.
+2. В `onCreate` сервиса: `acquireWakeLock(PARTIAL_WAKE_LOCK)` (без timeout или с отдельным refresh-Handler'ом), регистрация сенсоров, старт GPS, старт variо-аудио, инициализация TTS.
+3. В `onStartCommand`: `startForeground(NOTIF_ID, notification)` с каналом (API 26+), `foregroundServiceType=location` (API 29+), вернуть `START_STICKY`.
+4. В `onDestroy` сервиса: unregister/stop/release всего.
+5. MainActivity оставить только UI и bind к сервису — **не останавливать** сенсоры в `onPause`.
+6. В манифест добавить:
+   ```xml
+   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+   <service android:name=".ThermalRadarService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+   ```
+7. Стартовать сервис из `MainActivity.onCreate` через `ContextCompat.startForegroundService(...)`.
+
+Это закроет и "логи продолжаются" и "голосовые подсказки работают" одним ударом.
+
+---
+
+## 🟠 ВЫСОКИЙ ПРИОРИТЕТ
+
+### TODO-3. Настройки "Звук при термике" и "Вибрация" — мёртвый код
+- `SettingsActivity.java:78` пишет `sound_enabled`, но `VarioSoundManager.setSoundEnabled()` **никогда не вызывается** → звук варьо всегда включён.
+- `MainActivity.java:1488–1502` — вибрация при смене статуса не обёрнута в `if (prefs.getBoolean("vibrate_enabled", true))` → вибрация всегда срабатывает.
+
+**Сделать:** В `onResume` (или в сервисе) читать `sound_enabled` и `vibrate_enabled` и применять; перечитывать после возврата из Settings.
+
+### TODO-4. Кнопки "Лог полёта СТАРТ/СТОП" в SettingsActivity — полностью сломаны
+`SettingsActivity.java:228–257` пишет `flight_log_enabled`/`flight_log_start_ms` и шлёт Intent с `stop_flight_log=true`. **Никто это не читает.** Toast врёт про "автостарт по варио > 1 м/с" — такого автостарта нет.
+
+**Сделать:** либо завязать Intent extras в `MainActivity.onNewIntent`, либо удалить кнопки (на главном экране уже есть рабочие СТАРТ/СТОП).
+
+### TODO-5. `FlightStateMachine.STATE_FINISHED` — тупик
+`FlightStateMachine.java:84`: `if (state == STATE_FINISHED) return;` — после авторестарта при посадке (5 мин без движения) состояние навсегда застревает. Pilot снова взлетает → **автостарт не сработает, логи не начнутся**.
+
+**Сделать:** переход `FINISHED → FLYING` в `checkStart` если `delta > START_ALTITUDE_DELTA` (или `FINISHED → ON_GROUND` после cooldown).
+
+### TODO-6. Смешивание wall-clock и elapsedRealtime в одних и тех же вычислениях
+README v0.1.0 хвастается "монотонное время — все dtMs на `elapsedRealtime`". На деле только `LogManager` это соблюдает. Используется `System.currentTimeMillis()` в:
+- `SignalProcessor.java:85,152,180` (частота перехода через ноль)
+- `VarioManager.java:127` (скользящее окно 750 мс)
+- `MainActivity.java:561` (FSM update с гейтом "1 секунда")
+- `MainActivity.java:1413` (CirclingManager update — hysteresis 4/5/8 c)
+- `MainActivity.java:1389,1760,1762` (отображение времени полёта)
+
+Любой NTP-скачок или смена часового пояса во время полёта → неверные показания варьо, ложные триггеры термиков, "прыгающее" время полёта.
+
+**Сделать:** везде внутри DSP/FSM/Circling перейти на `SystemClock.elapsedRealtime()`. Wall-clock оставить только для имён файлов и маркера WALL_START.
+
+### TODO-7. `LogManager.recordEvent` игнорирует параметр `tsMs`
+`LogManager.java:174–199` — параметр `tsMs` объявлен, но **вообще не используется**. Все события пишутся с "сейчас", а не когда реально произошли. 15-строчный комментарий в коде показывает, что кто-то пытался это починить и сдался.
+
+**Сделать:** сменить сигнатуру на `recordEvent(String eventType, String details)` и всегда использовать `elapsedRealtime - elapsedStartMs`. Или передавать elapsed-метку с call-site.
+
+### TODO-8. `LogManager` race condition + нет flush при краше
+`LogManager.java:27–28, 133–172, 209–233` — `logBuffer`/`eventBuffer` это `StringBuilder` (не synchronized). Пишутся из sensor-потока, читаются+чистятся из `finalizeChunk`, который может быть вызван из `stopLogging` на **UI-потоке** → `ArrayIndexOutOfBoundsException` или порванные строки. Плюс данные копятся в памяти до 10 минут — при краше (что вероятно на телефонах с агрессивной экономией батареи, см. TODO-2) теряется до 10 мин полёта.
+
+**Сделать:** (a) `synchronized` на всех доступах к буферам (или `ConcurrentLinkedQueue`); (b) flush на диск каждые ~5 c через `ioHandler.postDelayed`; (c) `join` I/O-потока в `stopLogging`.
+
+### TODO-9. `TH_SUSPECT == TH_THERMAL == 0.020f` → статус "ПОДОЗРЕНИЕ" недостижим
+`ThermalDetector.java:25–26` (и `BlindFlightMode.java:34–35`). Поскольку `thermalThresh == suspectThresh == 0.020f`, ветка `STATUS_SUSPECT` практически никогда не срабатывает. README врёт про `0.005g`.
+
+**Сделать:** `TH_SUSPECT = 0.005f` (или `0.010f`). Обновить таблицу порогов в README.
+
+### TODO-10. Магнитное склонение не применяется нигде
+`SensorController.java:353–391` — `getRotationMatrix` + `getOrientation` дают **магнитный** азимут, `GeomagneticField` нигде не используется. Зато `CirclingManager.windFromDeg` — **истинный** пеленг (от GPS-bearing). Сравнения в `CirclingManager.getCircleGuidance` (магнитный с истинным) и отрисовка стрелки ветра на радаре с магнитным `heading` — везде систематическая ошибка на величину склонения (5–15° в Европе/России, до 30°+ в некоторых регионах).
+
+**Сделать:** вычислять `GeomagneticField` раз в минуту/на каждом GPS-fix, добавлять склонение ко всем магнитным курсам перед сравнением/отрисовкой/записью в лог. Документировать выбор фрейма.
+
+### TODO-11. `CirclingManager` воздух. скорость захардкожена 9.5 м/с
+`CirclingManager.java:55,332`. Реально 8–12+ м/с в зависимости от крыла. Ошибка 1 м/с прямо транслируется в оценку скорости ветра.
+
+**Сделать:** слайдер "Воздушная скорость" (8–15 м/с, шаг 0.5) в Settings, передавать в `CirclingManager.setAirspeed()`.
+
+### TODO-12. Обнаружение направления спирали отсутствует
+`CirclingManager.java:174, 257–259`. `gyroEma` хранит yaw rate (знак = направление), но:
+1. Направление (лево/право) нигде не сохраняется и не репортится.
+2. При смене направления в середине круга `circleOffset` может зависнуть у 360°.
+3. `totalAngle >= 540°` для показа метки — при реверсе `totalAngle` вычитается, и 270° право + 270° лево = 0° → метка не покажется никогда.
+
+**Сделать:** хранить `lastTurnDirection = signum(gyroEma)`; при смене знака сбрасывать `circleOffset` (и опционально `totalAngle`); репортить направление в CIRCLING_START.
+
+---
+
+## 🟡 СРЕДНИЙ ПРИОРИТЕТ
+
+### TODO-13. GPS bearing молча становится 0 при недоступности
+`GpsManager.java:53,99` — `gpsHeading = hasBearing() ? getBearing() : 0.0f`. 0° = север. На земле или сразу после старта `hasBearing()==false` → радар думает, что pilot смотрит на север; `drift = heading - gpsCourse` портится; fallback `getCompassHeading()` всегда возвращает 0.
+
+**Сделать:** `Float.NaN` + метод `hasBearing()`; callers обязаны проверять.
+
+### TODO-14. Точность GPS не проверяется
+`GpsManager.java:57,60–64` — `gpsAccuracy` пишется в лог, но **не используется для отсева**. Фикс с точностью 100 м попадает в усреднение центра спирали → сдвиг на десятки метров → мусорные оценки ветра. `startAltitude = gpsAltitude` тоже берётся с первого фикса без проверки точности.
+
+**Сделать:** отсев `gpsAccuracy > 25 m`; для `startAltitude` ждать фикс с `accuracy < 10 m` или усреднять первые N хороших.
+
+### TODO-15. `GpsManager` поля не volatile
+`GpsManager.java:27–31` — `gpsAltitude`, `startAltitude`, `altitudeInitialized`, `gpsLat`, `gpsLon` без `volatile`. Пока GPS колбэк на main looper — норм, но при переносе GPS в фоновый поток (что нужно сделать вместе с TODO-2) сразу сломается.
+
+**Сделать:** пометить все пять полей `volatile`.
+
+### TODO-16. `SensorController.onPressureSample()` — мёртвый код
+`SensorController.java:397–471` — `private`, никогда не вызывается. Реально давление уходит в `varioManager.processPressureSample()` (строка 264). Поля `vario`, `altFiltered`, `varioBuf[]`, `hpBuf[]`, `recentSnr`, `maxSnr`, `baselinePressure` и т.д. — мёртвые. `resetCalibration()` имеет недостижимую `else`-ветку.
+
+**Сделать:** удалить мёртвый метод и мёртвые поля; `SensorController` должен управлять только регистрацией сенсоров и компас-фузией.
+
+### TODO-17. `Paint` создаётся в `onDraw` каждый кадр
+`MainActivity.java:1363,1575,1623,1645,1657` — 4–5 `new Paint()` + `new Path()` за кадр при 30 FPS = 120–150 аллокаций/с → GC-паузы → заикание варьо.
+
+**Сделать:** вынести в поля `RadarView`, инициализировать в конструкторе.
+
+### TODO-18. `getLogHeading` возвращает inconsistent фрейм И диапазон
+`SensorController.java:536–542` — магнитный [-180, 180) при наличии магнетометра, истинный [0, 360) без него. Офлайн-анализ логов мучителен.
+
+**Сделать:** нормализовать к [0, 360), зафиксировать один фрейм (см. TODO-10), документировать в CSV-заголовке (которого сейчас тоже нет — см. TODO-22).
+
+### TODO-19. Коэффициенты Butterworth захардкожены под fs=50 Гц
+`SignalProcessor.java:23–34, 215–247` — biquad-коэффициенты предвычислены для 50 Гц. А `SENSOR_DELAY_GAME` это "примерно 50 Гц" — на многих устройствах 100 или 200 Гц. Полоса 0.25–2.5 Гц сдвигается, RMS-окно 64 семпла = 0.32 с вместо 1.3 с, частота по zero-crossing тоже едёт.
+
+**Сделать:** либо реcемплинг к 50 Гц перед фильтрацией, либо пересчёт коэффициентов в runtime по фактическому `dt`.
+
+### TODO-20. Тяжёлая работа в `onDraw` на UI-потоке
+`MainActivity.java:1397–1485` — `onDraw` ~30 раз/с делает `processSample()`, `circlingManager.update()`, `flightStateMachine.update()`, `logManager.updateGpsCache()`, несколько `recordEvent` с StringBuilder, `saveMountTilt` (запись на диск), `setAttributes` (WindowManager IPC, дважды за яркостью), thermal-blip lifecycle под `synchronized`. 5–15 мс/кадр + I/O → на слабых телефонах роняет FPS, варьо заикается.
+
+**Сделать:** перенести обработку данных в фоновый таймер 10 Гц (или в сервис из TODO-2); `onDraw` должен только читать снапшоты и рисовать.
+
+### TODO-21. `BlindFlightMode.yHoriz = ayHoriz + azHoriz` — геометрически сомнительно
+`BlindFlightMode.java:96–102` — корректно проецирует (ay,az) на плоскость ⊥ гравитации, но потом **складывает** две компоненты в скаляр. Это осмысленно только если Y-ось устройства полностью лежит в Y-Z плоскости гравитации, т.е. ось X горизонтальна. В подвесной системе с боковым наклоном телефона — неверно.
+
+**Сделать:** либо использовать полную rotation matrix из `SensorController`, либо добавить проверку `|gravityX| > 0.3g` → предупреждение "телефон завалён вбок, blind-mode ненадёжна".
+
+### TODO-22. Полёта время отображается по wall-clock
+`MainActivity.java:1389,1760,1762` — `System.currentTimeMillis() - logManager.getFlightStartMs()`. Смена часового пояса/NTP в полёте → время скачет.
+
+**Сделать:** `LogManager.getFlightStartElapsedMs()` возвращать `elapsedStartMs`, считать как `SystemClock.elapsedRealtime() - flightStartElapsed`.
+
+### TODO-23. В CSV нет заголовка
+В логах нет строки с названиями колонок — разобрать потом можно только заглядывая в код. `getLogHeading` ещё и фрейм не задокументирован (TODO-18).
+
+**Сделать:** писать заголовок первой строкой в файл, обновлять при изменении схемы, фиксировать версию схемы.
+
+---
+
+## 🟢 НИЗКИЙ ПРИОРИТЕТ
+
+### TODO-24. Магнетометр на `SENSOR_DELAY_NORMAL` (~5 Гц)
+`SensorController.java:244` — между обновлениями rotation matrix акселерометр (50 Гц) крутится устаревшей матрицей → лаг в направлении термника в динамичном развороте.
+
+**Сделать:** `SENSOR_DELAY_GAME` для мага (батарея не пострадает).
+
+### TODO-25. `activity_settings.xml` мёртвый
+UI настроек строится программно в `SettingsActivity.buildLayout()`. XML не инфлейтится и рассинхронизирован с Java (нет blind-mode/voice/sunlight чекбоксов, кнопок лога, слайдера сглаживания).
+
+**Сделать:** либо удалить XML, либо переписать на inflation и добить недостающие виджеты.
+
+### TODO-26. `MainActivity` без `launchMode`
+`AndroidManifest.xml:23–32` — default `standard`. `startActivity(MainActivity)` из SettingsActivity + `FLAG_ACTIVITY_NEW_TASK` в `startSimLoop` (строка 720) могут создавать **дубликаты** MainActivity с собственными сенсорами и wake-lock'ами.
+
+**Сделать:** `android:launchMode="singleTask"`.
+
+### TODO-27. `VarioSoundManager` AUDIO_ATTRIBUTES противоречивы
+`VarioSoundManager.java:90–101` — `USAGE_ALARM` + `CONTENT_TYPE_MUSIC` конфликтуют. Нет `requestAudioFocus` → другие звуки вмешиваются. Нет A2DP-роутинга на шлемофон.
+
+**Сделать:** `USAGE_MEDIA` + `CONTENT_TYPE_SONIFICATION`; `requestAudioFocus` в `start()`, abandon в `stop()`; опционально явный роутинг на BT.
+
+### TODO-28. `UiManager.drawVario` красит 0.0 в зелёный
+`UiManager.java:211,214` — `vario >= 0` → зелёный. `VarioManager` выдаёт ровно 0.0 при `|vario|<0.05`. Получается зелёный "+0.0" — визуально вводит в заблуждение (нейтральное варьо должно быть нейтральным).
+
+**Сделать:** `vario > 0.05` → зелёный, `vario < -0.05` → красный, иначе серый/белый.
+
+### TODO-29. `ThermalBlip.lifeLeft()` deprecated, но всё ещё вызывается
+`RadarRenderer.java:234` — результат `life` не используется, только `brightness`. Мёртвый вызов.
+
+**Сделать:** удалить строку 234.
+
+### TODO-30. Время симуляции на wall-clock
+`SimulationManager`/`MainActivity.startSimLoop` — `now - simStartMs` использует `System.currentTimeMillis()`. Для 75-сек демо не критично, но для консистентности перейти на `elapsedRealtime`.
+
+---
+
+## Рекомендуемый порядок работ
+
+1. **TODO-2** (foreground Service) — фундамент. Без него blind-mode, фоновые логи и TTS в кармане мертвы. Заодно разблокирует TODO-20 (разгрузка UI-потока).
+2. **TODO-1** (стрелка ветра) — 10 строк после того, как определитесь с вариантом A/B.
+3. **TODO-8** (LogManager thread safety + flush) — предотвращает потерю данных и крэши.
+4. **TODO-3, TODO-4, TODO-5** — быстрые wins, user-facing.
+5. **TODO-6** (время) — системный проход, делать одним коммитом.
+6. **TODO-10** (магнитное склонение) — нужно, чтобы TODO-1 и TTS-направления стали правильными.
+7. **TODO-9, TODO-28, TODO-29** — по одной строке.
+8. Остальное по мере сил.
+
+**Архитектурная заметка:** обе жалобы пользователя — симптомы одной болезни — **всё живет в MainActivity, никакого Service нет**. После TODO-2 большинство других багов либо исчезнет, либо станет тривиальным однострочным фиксом.
+
+---

@@ -73,6 +73,9 @@ public class MainActivity extends Activity {
     private boolean voicePromptsEnabled;
     private CirclingManager circlingManager;
 
+    // ThermalRadarService (singleton, без binding)
+    private ThermalRadarService radarService;
+
     // ========================================================================
     // Core
     // ========================================================================
@@ -282,6 +285,9 @@ public class MainActivity extends Activity {
 
         // Wire VarioManager to thermal detector for adaptive alpha
         varioManager.setThermalDetector(thermalDetector);
+
+        // Start foreground service (WakeLock + notification)
+        startForegroundService(new Intent(this, ThermalRadarService.class));
 
         // Simulation mode
         Intent intent = getIntent();
@@ -1414,6 +1420,12 @@ public class MainActivity extends Activity {
                 varioSoundManager.update(sensorController.getVario());
             }
             refreshWakeLock();
+
+            // Update foreground service notification
+            ThermalRadarService svc = ThermalRadarService.getInstance();
+            if (svc != null) {
+                svc.updateNotification(logManager.isLogging(), sensorController.getVario());
+            }
 
             // Process sample for flight state + sound
             processSample();
