@@ -208,8 +208,15 @@ public class UiManager {
     public void drawVario(Canvas c, float cx, float y, float vario) {
         if (Float.isNaN(vario) || Float.isInfinite(vario)) vario = 0f;
 
-        boolean isUp = vario >= 0;
-        int color = isUp ? colorGreen : colorRed;
+        boolean isUp = vario > 0.05;
+        int color;
+        if (vario > 0.05) {
+            color = colorGreen;
+        } else if (vario < -0.05) {
+            color = colorRed;
+        } else {
+            color = colorTextMuted; // нейтральный
+        }
 
         String text = String.format("%s%.1f", isUp ? "+" : "", vario);
 

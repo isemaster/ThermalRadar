@@ -17,6 +17,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -326,6 +327,14 @@ public class MainActivity extends Activity {
         blindModeEnabled = prefs.getBoolean("blind_mode", false);
         voicePromptsEnabled = prefs.getBoolean("voice_prompts", true);
 
+        // Sound + vibration settings
+        boolean soundEnabled = prefs.getBoolean("sound_enabled", true);
+        if (varioSoundManager != null) {
+            varioSoundManager.setSoundEnabled(soundEnabled);
+        }
+        boolean vibrateEnabled = prefs.getBoolean("vibrate_enabled", true);
+        // сохраняем для использования в коде вибрации
+
         // GPS: всегда включён для логирования координат в лог
         gpsManager.startGps();
         try {
@@ -568,7 +577,7 @@ public class MainActivity extends Activity {
         if (!testMode && !simMode) {
             float alt = gpsManager.isAltitudeInitialized()
                     ? gpsManager.getAltitude() : sensorController.getAltitudeRaw();
-            flightStateMachine.update(alt, System.currentTimeMillis());
+            flightStateMachine.update(alt, SystemClock.elapsedRealtime());
         }
     }
 
@@ -1407,7 +1416,7 @@ public class MainActivity extends Activity {
 
                 // Время полёта
                 if (logManager.isLogging()) {
-                    long flightSec = (System.currentTimeMillis() - logManager.getFlightStartMs()) / 1000;
+                    long flightSec = (SystemClock.elapsedRealtime() - logManager.getFlightStartMs()) / 1000;
                     long hh = flightSec / 3600, mm = (flightSec % 3600) / 60, ss = flightSec % 60;
                     bp.setColor(Color.argb(100, 255, 255, 255));
                     canvas.drawText(String.format("%02d:%02d:%02d", hh, mm, ss), w/2f, h/2f + 100, bp);
@@ -1437,7 +1446,7 @@ public class MainActivity extends Activity {
                 gpsManager.getAccuracy(), gpsManager.getFixAgeMs());
 
             // Circling manager: gyroZ, heading, vario, GPS lat/lon, speed/course
-            long cmNow = System.currentTimeMillis();
+            long cmNow = SystemClock.elapsedRealtime();
             circlingManager.update(
                 sensorController.getGyroZ(),
                 getCompassHeading(),
@@ -1514,8 +1523,9 @@ public class MainActivity extends Activity {
             // Вибрация при смене статуса на термик/набор
             if (!currentStatus.equals(previousStatus)) {
                 previousStatus = currentStatus;
-                if (currentStatus.equals(UiManager.STATUS_THERMAL)
-                        || currentStatus.equals(UiManager.STATUS_CLIMB)) {
+                if ((currentStatus.equals(UiManager.STATUS_THERMAL)
+                        || currentStatus.equals(UiManager.STATUS_CLIMB))
+                        && prefs.getBoolean("vibrate_enabled", true)) {
                     android.os.Vibrator vib = (android.os.Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
                     if (vib != null && vib.hasVibrator()) {
                         if (android.os.Build.VERSION.SDK_INT >= 26) {

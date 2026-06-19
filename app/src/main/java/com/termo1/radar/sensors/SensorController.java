@@ -88,6 +88,9 @@ public class SensorController implements SensorEventListener {
     private volatile float roll = 0.0f;
     private volatile float rawHeading = 0.0f;
     private volatile boolean compassReady = false;
+    // Магнитное склонение (обновляется по GPS)
+    private float magneticDeclination = 0f;
+    private long lastDeclinationUpdateMs = 0;
 
     // ========================================================================
     // Barometer / variometer
@@ -557,4 +560,29 @@ public class SensorController implements SensorEventListener {
 
     public boolean hasBarometer() { return barometer != null; }
     public boolean hasMagnetometer() { return magnetometer != null; }
+
+    /** Обновить магнитное склонение по GPS-координатам */
+    public void updateDeclination(double lat, double lon) {
+        long now = System.currentTimeMillis();
+        if (now - lastDeclinationUpdateMs < 60000) return; // раз в минуту
+        lastDeclinationUpdateMs = now;
+        try {
+            android.hardware.GeomagneticField gf = new android.hardware.GeomagneticField(
+                    (float) lat, (float) lon, 0f, now);
+            magneticDeclination = gf.getDeclination();
+        } catch (Exception e) {
+            // ignore
+        }
+    }
+
+    /** Магнитное склонение (градусы) */
+    public float getMagneticDeclination() { return magneticDeclination; }
+
+    /** Истинный курс (магнитный heading + склонение) */
+    public float getTrueHeading() {
+        float h = heading + magneticDeclination;
+        if (h < 0) h += 360f;
+        if (h >= 360f) h -= 360f;
+        return h;
+    }
 }

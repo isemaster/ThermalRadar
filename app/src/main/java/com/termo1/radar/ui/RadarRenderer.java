@@ -305,7 +305,6 @@ public class RadarRenderer {
 
     private void drawThermals(Canvas c, long nowMs, List<ThermalBlip> thermals) {
         for (ThermalBlip t : thermals) {
-            float life = t.lifeLeft(nowMs);
             float brightness = t.getBrightness(nowMs);
             if (brightness <= 0f) continue;
 

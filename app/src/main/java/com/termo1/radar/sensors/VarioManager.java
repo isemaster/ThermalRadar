@@ -124,7 +124,7 @@ public class VarioManager {
             float rawVario = (altRaw - prevAltRaw) * 1000f / (float) dtMs;
             prevAltRaw = altRaw;
 
-            long nowMs = System.currentTimeMillis();
+            long nowMs = SystemClock.elapsedRealtime();
             varioBuf[varioHead] = rawVario;
             varioTimeBuf[varioHead] = nowMs;
             varioHead = (varioHead + 1) % VARIO_BUF_SIZE;

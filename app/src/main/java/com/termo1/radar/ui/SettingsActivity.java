@@ -224,38 +224,6 @@ public class SettingsActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, 24));
         root.addView(spacer4);
 
-        // 6b. Flight log START button (auto-log by vario)
-        final Button flightLogStartBtn = createButton(getString(R.string.settings_flight_log_start));
-        flightLogStartBtn.setOnClickListener(v -> {
-            prefs.edit()
-                .putBoolean("flight_log_enabled", true)
-                .putLong("flight_log_start_ms", System.currentTimeMillis())
-                .apply();
-            Toast.makeText(this, getString(R.string.toast_flight_log_start),
-                    Toast.LENGTH_LONG).show();
-        });
-        root.addView(flightLogStartBtn);
-
-        // 6c. Flight log STOP button
-        Button flightLogStopBtn = createButton(getString(R.string.settings_flight_log_stop));
-        flightLogStopBtn.setOnClickListener(v -> {
-            new AlertDialog.Builder(this)
-                    .setTitle(getString(R.string.dialog_stop_recording_title))
-                    .setPositiveButton(getString(R.string.exit_dialog_yes), (dialog, w) -> {
-                        prefs.edit().putBoolean("flight_log_enabled", false).apply();
-                        // Signal MainActivity to stop via intent extra
-                        Intent intent = new Intent(this, MainActivity.class);
-                        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-                        intent.putExtra("stop_flight_log", true);
-                        startActivity(intent);
-                        Toast.makeText(this, getString(R.string.toast_recording_stopped),
-                                Toast.LENGTH_SHORT).show();
-                    })
-                    .setNegativeButton(getString(R.string.exit_dialog_no), null)
-                    .show();
-        });
-        root.addView(flightLogStopBtn);
-
         // Spacer
         View spacer5 = new View(this);
         spacer5.setLayoutParams(new LinearLayout.LayoutParams(

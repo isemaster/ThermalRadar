@@ -1,5 +1,7 @@
 package com.termo1.radar.core;
 
+import android.os.SystemClock;
+
 /**
  * SignalProcessor — детекция микрораскачки параплана.
  *
@@ -82,7 +84,7 @@ public class SignalProcessor {
 
     public SignalProcessor() {
         reset();
-        zcTimerMs = System.currentTimeMillis();
+        zcTimerMs = SystemClock.elapsedRealtime();
     }
 
     /**
@@ -149,7 +151,7 @@ public class SignalProcessor {
         prevBpX = prevBpY = 0f;
         zcCountX = zcCountY = 0;
         dominantFreq = 1.0f;
-        zcTimerMs = System.currentTimeMillis();
+        zcTimerMs = SystemClock.elapsedRealtime();
         bpOutX = bpOutY = 0f;
     }
 
@@ -177,10 +179,9 @@ public class SignalProcessor {
         prevBpY = bpOutY;
 
         // Раз в секунду обновляем частоту
-        long now = System.currentTimeMillis();
+        long now = SystemClock.elapsedRealtime();
         if (now - zcTimerMs >= ZC_WINDOW_MS) {
             int totalZc = zcCountX + zcCountY;
-            // Каждое пересечение = половина периода. Частота = crossings / 2 / время(с)
             float measuredFreq = (totalZc / 2f) / ((now - zcTimerMs) / 1000f);
             // Ограничиваем полосой фильтра
             if (measuredFreq < BP_MIN_FREQ) measuredFreq = BP_MIN_FREQ;

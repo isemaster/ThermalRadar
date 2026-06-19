@@ -16,27 +16,38 @@ import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+/**
+ * LogManager — потокобезопасное логирование 50 Гц + события (Events.csv).
+ * - synchronized на всех доступах к буферам
+ * - periodic flush каждые ~5 с (для предотвращения потери данных при краше)
+ * - I/O на выделенном HandlerThread
+ */
 public class LogManager {
 
     private static final String TAG = "TERMO1_LOG";
 
     private static final int SAMPLE_DECIMATION = 1;
     private static final long CHUNK_DURATION_MS = 10 * 60 * 1000L;
+    private static final long FLUSH_INTERVAL_MS = 5000L;
 
     private boolean isLogging;
+    private final Object bufferLock = new Object();
     private StringBuilder logBuffer;
     private StringBuilder eventBuffer;
 
-    // Временная шкала: dtMs = elapsedRealtime - elapsedStartMs (монотонно, без скачков)
-    private long elapsedStartMs;          // SystemClock.elapsedRealtime() при старте лога
-    private long wallStartMs;             // System.currentTimeMillis() при старте (для привязки к реальному времени)
-    private long chunkStartElapsed;       // elapsedRealtime начала текущего чанка
+    private long elapsedStartMs;
+    private long wallStartMs;
+    private long chunkStartElapsed;
     private int chunkIndex;
     private int sampleCounter;
     private String externalLogDir;
 
     private HandlerThread ioThread;
     private Handler ioHandler;
+
+    // Periodic flush timer
+    private Handler flushHandler;
+    private Runnable flushTask;
 
     private volatile double cachedGpsLat;
     private volatile double cachedGpsLon;
@@ -84,6 +95,7 @@ public class LogManager {
         ioThread = new HandlerThread("termo1-log-io");
         ioThread.start();
         ioHandler = new Handler(ioThread.getLooper());
+        flushHandler = new Handler(ioThread.getLooper());
     }
 
     public void setDataProvider(LogDataProvider provider) {
@@ -98,24 +110,52 @@ public class LogManager {
         if (isLogging) return;
         isLogging = true;
 
-        elapsedStartMs = SystemClock.elapsedRealtime();  // монотонная шкала
-        wallStartMs = System.currentTimeMillis();        // для привязки к реальному времени
-
+        elapsedStartMs = SystemClock.elapsedRealtime();
+        wallStartMs = System.currentTimeMillis();
         chunkStartElapsed = elapsedStartMs;
         chunkIndex = 0;
         sampleCounter = 0;
-        logBuffer.setLength(0);
-        eventBuffer.setLength(0);
 
-        // Первое событие — точка привязки к реальному времени
-        eventBuffer.append("0,WALL_START,").append(wallStartMs).append('\n');
+        synchronized (bufferLock) {
+            logBuffer.setLength(0);
+            eventBuffer.setLength(0);
+            eventBuffer.append("0,WALL_START,").append(wallStartMs).append('\n');
+        }
+
+        // Periodic flush каждые 5 с
+        flushTask = () -> {
+            if (!isLogging) return;
+            flushPartialChunk();
+            flushHandler.postDelayed(flushTask, FLUSH_INTERVAL_MS);
+        };
+        flushHandler.postDelayed(flushTask, FLUSH_INTERVAL_MS);
 
         Log.i(TAG, "Logging STARTED wall=" + wallStartMs + " elapsed=" + elapsedStartMs);
+    }
+
+    /** Сброс текущих данных в неполный чанк (защита от потери при краше) */
+    private void flushPartialChunk() {
+        synchronized (bufferLock) {
+            if (logBuffer.length() == 0) return;
+            long nowElapsed = SystemClock.elapsedRealtime();
+            long nowWall = System.currentTimeMillis();
+            final String csvData = logBuffer.toString();
+            final String eventsData = eventBuffer.toString();
+            logBuffer.setLength(0);
+            eventBuffer.setLength(0);
+            final String prefix = "Partial";
+            final long startWall = wallStartMs + (chunkStartElapsed - elapsedStartMs);
+            ioHandler.post(() -> writeZipChunk(prefix, startWall, nowWall, csvData, eventsData));
+        }
     }
 
     public void stopLogging() {
         if (!isLogging) return;
         isLogging = false;
+        if (flushTask != null) {
+            flushHandler.removeCallbacks(flushTask);
+            flushTask = null;
+        }
         long wallNow = System.currentTimeMillis();
         finalizeChunk(wallNow, true);
         Log.i(TAG, "Logging STOPPED");
@@ -125,8 +165,14 @@ public class LogManager {
         stopLogging();
         if (ioThread != null) {
             ioThread.quitSafely();
+            try {
+                ioThread.join(1000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
             ioThread = null;
             ioHandler = null;
+            flushHandler = null;
         }
     }
 
@@ -138,75 +184,68 @@ public class LogManager {
         long elapsedNow = SystemClock.elapsedRealtime();
         long dtMs = elapsedNow - elapsedStartMs;
 
-        // Проверка ротации чанка по elapsed-времени
         if (elapsedNow - chunkStartElapsed >= CHUNK_DURATION_MS) {
             rotateChunk(elapsedNow);
         }
 
-        logBuffer.append(dtMs).append(',');
-        logBuffer.append(cachedGpsSpeed).append(',');
-        logBuffer.append(cachedGpsHeading).append(',');
-        logBuffer.append(String.format(Locale.US, "%.6f", cachedGpsLat)).append(',');
-        logBuffer.append(String.format(Locale.US, "%.6f", cachedGpsLon)).append(',');
-        logBuffer.append(cachedGpsAlt).append(',');
-        logBuffer.append(cachedGpsFixAge).append(',');
-        logBuffer.append(cachedGpsAccuracy).append(',');
-        logBuffer.append(dataProvider.getVario()).append(',');
-        logBuffer.append(dataProvider.getAccelX() * 1000f).append(',');
-        logBuffer.append(dataProvider.getAccelY() * 1000f).append(',');
-        logBuffer.append(dataProvider.getAccelZ() * 1000f).append(',');
-        logBuffer.append(dataProvider.getGyroX() * 1000f).append(',');
-        logBuffer.append(dataProvider.getGyroY() * 1000f).append(',');
-        logBuffer.append(dataProvider.getGyroZ() * 1000f).append(',');
-        logBuffer.append(dataProvider.getMagX()).append(',');
-        logBuffer.append(dataProvider.getMagY()).append(',');
-        logBuffer.append(dataProvider.getMagZ()).append(',');
-        logBuffer.append(dataProvider.getPressure()).append(',');
-        logBuffer.append(dataProvider.getPitch()).append(',');
-        logBuffer.append(dataProvider.getRoll()).append(',');
-        logBuffer.append(dataProvider.getLogHeading());
-        logBuffer.append(dataProvider.getThermalLogSuffix());
-        logBuffer.append(',');
-        logBuffer.append(dataProvider.getDetectStatus());
-        logBuffer.append('\n');
+        synchronized (bufferLock) {
+            logBuffer.append(dtMs).append(',');
+            logBuffer.append(cachedGpsSpeed).append(',');
+            logBuffer.append(cachedGpsHeading).append(',');
+            logBuffer.append(String.format(Locale.US, "%.6f", cachedGpsLat)).append(',');
+            logBuffer.append(String.format(Locale.US, "%.6f", cachedGpsLon)).append(',');
+            logBuffer.append(cachedGpsAlt).append(',');
+            logBuffer.append(cachedGpsFixAge).append(',');
+            logBuffer.append(cachedGpsAccuracy).append(',');
+            logBuffer.append(dataProvider.getVario()).append(',');
+            logBuffer.append(dataProvider.getAccelX() * 1000f).append(',');
+            logBuffer.append(dataProvider.getAccelY() * 1000f).append(',');
+            logBuffer.append(dataProvider.getAccelZ() * 1000f).append(',');
+            logBuffer.append(dataProvider.getGyroX() * 1000f).append(',');
+            logBuffer.append(dataProvider.getGyroY() * 1000f).append(',');
+            logBuffer.append(dataProvider.getGyroZ() * 1000f).append(',');
+            logBuffer.append(dataProvider.getMagX()).append(',');
+            logBuffer.append(dataProvider.getMagY()).append(',');
+            logBuffer.append(dataProvider.getMagZ()).append(',');
+            logBuffer.append(dataProvider.getPressure()).append(',');
+            logBuffer.append(dataProvider.getPitch()).append(',');
+            logBuffer.append(dataProvider.getRoll()).append(',');
+            logBuffer.append(dataProvider.getLogHeading());
+            logBuffer.append(dataProvider.getThermalLogSuffix());
+            logBuffer.append(',');
+            logBuffer.append(dataProvider.getDetectStatus());
+            logBuffer.append('\n');
+        }
     }
 
     public void recordEvent(long tsMs, String eventType, String details) {
         if (!isLogging) return;
-        // tsMs — может быть System.currentTimeMillis() от вызывающего кода.
-        // Преобразуем в elapsed-шкалу: flightStartMs = wallStartMs,
-        // elapsedStartMs — соответствующая elapsed-метка.
-        // dtElapsed = tsMs - wallStartMs + (elapsed... нет, так нельзя.
-        //
-        // Правильно: вызывающий передаёт tsMs = System.currentTimeMillis().
-        // Преобразуем: dtElapsed = elapsedStartMs + (tsMs - wallStartMs) — неверно,
-        // т.к. между wallStartMs и elapsedStartMs нет постоянного соотношения.
-        //
-        // Лучшее решение: хранить и elapsed-время в вызывающем коде.
-        // Но чтобы не ломать API, вычисляем через wall-clock разницу с поправкой на дрейф.
-        // На практике в полёте (без NTP-скачков) разница wall-elapsed стабильна.
-
         long elapsedNow = SystemClock.elapsedRealtime();
-        long wallNow = System.currentTimeMillis();
-
-        // Вычисляем dtMs через elapsed (монотонно)
         long dtMs = elapsedNow - elapsedStartMs;
-
-        eventBuffer.append(dtMs).append(',');
-        eventBuffer.append(eventType).append(',');
         String safe = details.replace(',', ';').replace('\n', ' ').replace('\r', ' ');
-        eventBuffer.append(safe).append('\n');
+        synchronized (bufferLock) {
+            eventBuffer.append(dtMs).append(',');
+            eventBuffer.append(eventType).append(',');
+            eventBuffer.append(safe).append('\n');
+        }
     }
 
     private void rotateChunk(long elapsedNow) {
-        // Для имени файла нужны wall-clock метки. Берём их сейчас.
         long wallNow = System.currentTimeMillis();
-        finalizeChunk(wallNow, false);
+        synchronized (bufferLock) {
+            finalizeChunkLocked(wallNow, false);
+        }
         chunkStartElapsed = elapsedNow;
         chunkIndex++;
     }
 
     private void finalizeChunk(long wallNow, boolean isFinish) {
+        synchronized (bufferLock) {
+            finalizeChunkLocked(wallNow, isFinish);
+        }
+    }
+
+    private void finalizeChunkLocked(long wallNow, boolean isFinish) {
         if (logBuffer.length() == 0) return;
 
         String prefix;
@@ -220,16 +259,13 @@ public class LogManager {
 
         final String csvData = logBuffer.toString();
         logBuffer.setLength(0);
-
         final String eventsData = eventBuffer.toString();
         eventBuffer.setLength(0);
 
         final String finalPrefix = prefix;
-        // Имя файла — по wall-clock (человекочитаемо)
         final long startWall = wallStartMs + (chunkStartElapsed - elapsedStartMs);
-        final long endWall = wallNow;
 
-        ioHandler.post(() -> writeZipChunk(finalPrefix, startWall, endWall, csvData, eventsData));
+        ioHandler.post(() -> writeZipChunk(finalPrefix, startWall, wallNow, csvData, eventsData));
     }
 
     private void writeZipChunk(String prefix, long startWallMs, long endWallMs,
@@ -287,7 +323,5 @@ public class LogManager {
     }
 
     public boolean isLogging() { return isLogging; }
-
-    /** Время старта лога по wall-clock (System.currentTimeMillis) — для UI */
     public long getFlightStartMs() { return wallStartMs; }
 }

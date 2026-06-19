@@ -81,7 +81,12 @@ public class FlightStateMachine {
      * @param nowMs текущее время
      */
     public void update(float altitudeMsl, long nowMs) {
-        if (state == STATE_FINISHED) return;
+        if (state == STATE_FINISHED) {
+            // Из FINISHED можно снова взлететь — переходим в ON_GROUND и проверяем старт
+            state = STATE_ON_GROUND;
+            lastCheckMs = 0;
+            // не return — выполняем checkStart ниже
+        }
 
         // Добавляем точку в историю
         altitudeHistory[histHead] = altitudeMsl;
