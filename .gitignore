@@ -1,1 +1,22 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# IDE
+.idea/
+*.iml
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Secrets
 .github_token.sh
+
+# APKs
+*.apk
+
+# Temp
+._release_body*
+release_body_v014.txt
