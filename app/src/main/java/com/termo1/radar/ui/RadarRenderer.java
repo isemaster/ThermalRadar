@@ -104,8 +104,11 @@ public class RadarRenderer {
 
         // wind arrow paints
         windLinePaint.setStyle(Paint.Style.STROKE);
-        windLinePaint.setStrokeWidth(3);
+        windLinePaint.setStrokeWidth(15);
         windLinePaint.setColor(Color.argb(200, 100, 200, 255));
+        windLinePaint.setStrokeCap(Paint.Cap.ROUND);
+        windLinePaint.setStrokeJoin(Paint.Join.ROUND);
+        windLinePaint.setShadowLayer(6, 0, 0, Color.argb(80, 100, 200, 255));
 
         windFillPaint.setStyle(Paint.Style.FILL);
         windFillPaint.setColor(Color.argb(200, 100, 200, 255));
@@ -264,15 +267,17 @@ public class RadarRenderer {
         // Точка на краю радара в направлении, ОТКУДА дует ветер
         float ex = cx + (float)(r * Math.sin(aRad));
         float ey = cy - (float)(r * Math.cos(aRad));
-        // Внутренняя точка (70% к центру)
-        float ix = cx + (float)(r * 0.3f * Math.sin(aRad));
-        float iy = cy - (float)(r * 0.3f * Math.cos(aRad));
+        // Внутренняя точка (короче в 3 раза: 0.7r/3 ≈ 0.23r от края)
+        // 0.767r от центра = r - 0.23r
+        float innerDist = r * 0.767f;
+        float ix = cx + (float)(innerDist * Math.sin(aRad));
+        float iy = cy - (float)(innerDist * Math.cos(aRad));
 
         c.drawLine(ex, ey, ix, iy, windLinePaint);
 
-        // Наконечник стрелки (треугольник у центра)
-        float tipAngle = 0.5f;
-        float tipLen = 14f;
+        // Наконечник стрелки (толще пропорционально)
+        float tipAngle = 0.6f;
+        float tipLen = 20f;
         float dx = cx - ex;
         float dy = cy - ey;
         float len = (float) Math.sqrt(dx*dx + dy*dy);

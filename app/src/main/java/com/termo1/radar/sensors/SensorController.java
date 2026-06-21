@@ -27,7 +27,7 @@ public class SensorController implements SensorEventListener {
     private static final int VARIO_BUF_SIZE = 64;
     private static final long VARIO_WINDOW_MS = 750;
     private static final float NOISE_FLOOR_FIXED = 3.5f;
-    private static final float HEADING_EMA_ALPHA = 0.3f;
+    private static final float HEADING_EMA_ALPHA = 0.15f; // было 0.3 — больше сглаживание
     private static final int HP_BUF_SIZE = 64;
 
     // ========================================================================

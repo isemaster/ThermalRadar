@@ -135,6 +135,10 @@ public class MainActivity extends Activity {
     private volatile boolean running;
     private Handler renderHandler = new Handler(Looper.getMainLooper());
     private Runnable renderTask;
+    // Фоновый таймер 10 Гц для обработки (работает при выкл экране)
+    private Handler bgHandler = new Handler(Looper.getMainLooper());
+    private Runnable bgTask;
+    private static final long BG_INTERVAL_MS = 100L;
 
     // ========================================================================
     // Power
@@ -153,10 +157,13 @@ public class MainActivity extends Activity {
     private String testFeedback = "";
     private int testFeedbackColor;
     private boolean testStepCorrect;
-    private long testStepStartMs;
-    private long testCorrectStartMs;
     private long testLastBeepMs;
+    private long testCorrectStartMs;
+    private long testStepStartMs;
     private boolean testBeepPlaying;
+    // Термик-бип: не чаще раза в 6 секунд (было ~2с, уменьшили в 3 раза)
+    private static final long THERMAL_BEEP_INTERVAL_MS = 6000L;
+    private long lastThermalBeepRealMs;
     private Handler testHandler = new Handler(Looper.getMainLooper());
     private Runnable testTask;
 
@@ -369,6 +376,7 @@ public class MainActivity extends Activity {
         getWindow().setAttributes(lp);
 
         startRendering();
+        startBgProcessing(); // фоновая обработка (лог, FSM, circling) — не останавливается при выкл экране
         if (varioSoundManager != null) varioSoundManager.start();
     }
 
@@ -735,6 +743,35 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void startBgProcessing() {
+        bgTask = new Runnable() {
+            @Override
+            public void run() {
+                // Обновляем FSM, circlingManager, лог — всё что нужно для TTS/лога
+                processSample();
+                long bgNow = SystemClock.elapsedRealtime();
+                circlingManager.update(
+                    sensorController.getGyroZ(),
+                    getCompassHeading(),
+                    sensorController.getVario(),
+                    gpsManager.getLat(),
+                    gpsManager.getLon(),
+                    gpsManager.getSpeed(),
+                    gpsManager.getHeading(),
+                    bgNow);
+                bgHandler.postDelayed(this, BG_INTERVAL_MS);
+            }
+        };
+        bgHandler.postDelayed(bgTask, BG_INTERVAL_MS);
+    }
+
+    private void stopBgProcessing() {
+        if (bgTask != null) {
+            bgHandler.removeCallbacks(bgTask);
+            bgTask = null;
+        }
+    }
+
     // ========================================================================
     // Simulation loop
     // ========================================================================
@@ -768,7 +805,10 @@ public class MainActivity extends Activity {
                     thermalDetector.processSample(simulation.getAccelX(), simulation.getAccelY());
                     if (thermalDetector.isBlipConfirmed()) {
                         if (now - lastThermalBeepMs > 3000) {
-                            if (varioSoundManager != null) varioSoundManager.playThermalBeep();
+                            if (varioSoundManager != null && SystemClock.elapsedRealtime() - lastThermalBeepRealMs >= THERMAL_BEEP_INTERVAL_MS) {
+                                lastThermalBeepRealMs = SystemClock.elapsedRealtime();
+                                varioSoundManager.playThermalBeep();
+                            }
                             lastThermalBeepMs = now;
                         }
                     }
@@ -1250,6 +1290,10 @@ public class MainActivity extends Activity {
         private final Paint exitXPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final RectF exitRect = new RectF();
 
+        // Blind mode exit button
+        private final Paint blindExitPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final RectF blindExitRect = new RectF();
+
         // SIM badge
         private final Paint simPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint simBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -1591,7 +1635,10 @@ public class MainActivity extends Activity {
                         }
                         long nowMs = System.currentTimeMillis();
                         if (nowMs - lastThermalBeepMs > 3000) {
-                            if (varioSoundManager != null) varioSoundManager.playThermalBeep();
+                            if (varioSoundManager != null && SystemClock.elapsedRealtime() - lastThermalBeepRealMs >= THERMAL_BEEP_INTERVAL_MS) {
+                                lastThermalBeepRealMs = SystemClock.elapsedRealtime();
+                                varioSoundManager.playThermalBeep();
+                            }
                             lastThermalBeepMs = nowMs;
                         }
                     }
@@ -1731,6 +1778,17 @@ public class MainActivity extends Activity {
                 btnTextPaint.setColor(Color.argb(60, 255, 80, 80));
             }
             canvas.drawText("СТОП", startBtnRect.centerX(), startBtnRect.centerY() + 9, btnTextPaint);
+
+            // Ветер м/с под кнопкой СТОП
+            float windDeg = circlingManager.getWindFromDeg();
+            float windSpdMs = circlingManager.getDisplayWindSpeed();
+            if (windDeg >= 0 && windSpdMs > 0) {
+                sensorDataPaint.setColor(Color.argb(160, 100, 200, 255));
+                sensorDataPaint.setTextSize(16f * getResources().getDisplayMetrics().density);
+                sensorDataPaint.setTextAlign(Paint.Align.CENTER);
+                canvas.drawText(String.format(java.util.Locale.US, "ветер %.1f м/с", windSpdMs),
+                        startBtnRect.centerX(), startBtnRect.bottom + 22, sensorDataPaint);
+            }
 
             // Flight time
             long flightTimeMs;
