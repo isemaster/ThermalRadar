@@ -495,16 +495,41 @@ public class MainActivity extends Activity {
             }
 
             if (thermalDetector != null && !simMode && !scenarioMode) {
-                if (compassReady) {
-                    worldAccelOut[0] = rotMatrix[0] * axG * 9.81f
-                            + rotMatrix[1] * ayG * 9.81f
-                            + rotMatrix[2] * azG * 9.81f;
-                    worldAccelOut[1] = rotMatrix[3] * axG * 9.81f
-                            + rotMatrix[4] * ayG * 9.81f
-                            + rotMatrix[5] * azG * 9.81f;
+                // Выбор источника rotation для преобразования accel в мировые координаты
+                float[] effectiveRot = rotMatrix;
+                boolean useWorldTransform = false;
+
+                if (compassReady && sensorController.isMagAccurate()) {
+                    // Штатный режим: магнитометр + гравитация (точный компас)
+                    useWorldTransform = true;
+                } else if (gpsManager.isReady() && gpsManager.getSpeed() > 2f
+                        && gpsManager.getFixAgeMs() < 5000) {
+                    // Fallback: магнитометр не калиброван, но есть GPS-курс
+                    // Строим rotation из GPS heading + gravity (с учётом наклона)
+                    SensorController.buildRotationFromGpsHeading(
+                            gpsManager.getHeading(),
+                            sensorController.getGravityX(),
+                            sensorController.getGravityY(),
+                            sensorController.getGravityZ(),
+                            worldAccelOut);  // переиспользуем массив как временный
+                    // Копируем в локальный массив для transform
+                    float[] gpsRot = new float[9];
+                    System.arraycopy(worldAccelOut, 0, gpsRot, 0, 9);
+                    effectiveRot = gpsRot;
+                    useWorldTransform = true;
+                }
+
+                if (useWorldTransform) {
+                    worldAccelOut[0] = effectiveRot[0] * axG * 9.81f
+                            + effectiveRot[1] * ayG * 9.81f
+                            + effectiveRot[2] * azG * 9.81f;
+                    worldAccelOut[1] = effectiveRot[3] * axG * 9.81f
+                            + effectiveRot[4] * ayG * 9.81f
+                            + effectiveRot[5] * azG * 9.81f;
                     thermalDetector.processSample(worldAccelOut[0] / 9.81f,
                             worldAccelOut[1] / 9.81f);
                 } else {
+                    // Нет компаса и нет GPS — используем raw (телефонные координаты)
                     thermalDetector.processSample(axG, ayG);
                 }
             }
@@ -517,9 +542,29 @@ public class MainActivity extends Activity {
                                          float headingDeg, float[] rotMatrix,
                                          boolean compassReady) {
             if (!sensorController.hasLinearAccel() && thermalDetector != null && !simMode && !scenarioMode) {
-                if (compassReady) {
-                    worldAccelOut[0] = rotMatrix[0] * axMs2 + rotMatrix[1] * ayMs2 + rotMatrix[2] * azMs2;
-                    worldAccelOut[1] = rotMatrix[3] * axMs2 + rotMatrix[4] * ayMs2 + rotMatrix[5] * azMs2;
+                // Выбор источника rotation (как в onLinearAccelSample)
+                float[] effectiveRot = rotMatrix;
+                boolean useWorldTransform = false;
+
+                if (compassReady && sensorController.isMagAccurate()) {
+                    useWorldTransform = true;
+                } else if (gpsManager.isReady() && gpsManager.getSpeed() > 2f
+                        && gpsManager.getFixAgeMs() < 5000) {
+                    SensorController.buildRotationFromGpsHeading(
+                            gpsManager.getHeading(),
+                            sensorController.getGravityX(),
+                            sensorController.getGravityY(),
+                            sensorController.getGravityZ(),
+                            worldAccelOut);
+                    float[] gpsRot = new float[9];
+                    System.arraycopy(worldAccelOut, 0, gpsRot, 0, 9);
+                    effectiveRot = gpsRot;
+                    useWorldTransform = true;
+                }
+
+                if (useWorldTransform) {
+                    worldAccelOut[0] = effectiveRot[0] * axMs2 + effectiveRot[1] * ayMs2 + effectiveRot[2] * azMs2;
+                    worldAccelOut[1] = effectiveRot[3] * axMs2 + effectiveRot[4] * ayMs2 + effectiveRot[5] * azMs2;
                     thermalDetector.processSample(worldAccelOut[0] / 9.81f,
                             worldAccelOut[1] / 9.81f);
                 } else {

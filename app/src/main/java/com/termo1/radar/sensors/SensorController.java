@@ -173,6 +173,8 @@ public class SensorController implements SensorEventListener {
     private volatile boolean sensorBaroAvailable;
     private volatile boolean sensorGyroAvailable;
     private volatile boolean sensorMagAvailable;
+    /** Точность магнитометра (SENSOR_STATUS_ACCURACY_*) */
+    private volatile int magAccuracy = android.hardware.SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM;
 
     // ========================================================================
     // Callback для оповещения о новых данных (thermal detector etc.)
@@ -346,7 +348,9 @@ public class SensorController implements SensorEventListener {
 
     @Override
     public void onAccuracyChanged(Sensor sensor, int accuracy) {
-        // Not used
+        if (sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
+            magAccuracy = accuracy;
+        }
     }
 
     // ========================================================================
@@ -586,5 +590,85 @@ public class SensorController implements SensorEventListener {
         if (h < 0) h += 360f;
         if (h >= 360f) h -= 360f;
         return h;
+    }
+
+    /** Магнитометр достаточно точен для компаса? */
+    public boolean isMagAccurate() {
+        return magAccuracy >= android.hardware.SensorManager.SENSOR_STATUS_ACCURACY_MEDIUM;
+    }
+
+    /**
+     * Построить rotation matrix из GPS-курса + гравитации.
+     * Используется как fallback, когда магнитометр не откалиброван.
+     * Матрица: right (X=East), up (Z=up), forward (Y=North) с учётом pitch/roll от gravity.
+     *
+     * @param gpsHeadingDeg курс по GPS (градусы, 0=N, 90=E)
+     * @param gravX гравитация X (raw accel, m/s²)
+     * @param gravY гравитация Y
+     * @param gravZ гравитация Z
+     * @param rotOut выходной массив float[9]
+     */
+    public static void buildRotationFromGpsHeading(float gpsHeadingDeg,
+                                                     float gravX, float gravY, float gravZ,
+                                                     float[] rotOut) {
+        // Нормализуем gravity
+        float g = (float) Math.sqrt(gravX * gravX + gravY * gravY + gravZ * gravZ);
+        if (g < 0.1f) {
+            // Нет гравитации — единичная матрица (без коррекции наклона)
+            float rad = (float) Math.toRadians(gpsHeadingDeg);
+            float c = (float) Math.cos(rad), s = (float) Math.sin(rad);
+            rotOut[0] = c; rotOut[1] = -s; rotOut[2] = 0;
+            rotOut[3] = s; rotOut[4] = c;  rotOut[5] = 0;
+            rotOut[6] = 0; rotOut[7] = 0;  rotOut[8] = 1;
+            return;
+        }
+
+        // G = нормализованный вектор гравитации (указывает вниз)
+        float gx = gravX / g, gy = gravY / g, gz = gravZ / g;
+
+        // В мировых координатах гравитация указывает в -Z (вниз).
+        // Наклон телефона (pitch/roll) — это отклонение gravity от оси Z телефона.
+        // Строим ортонормированную матрицу: Y = forward (North), X = right (East), Z = up
+
+        // Сначала ось Z (up) = -gravity (телефон смотрит вверх)
+        float upX = -gx, upY = -gy, upZ = -gz;
+
+        // Ось Y (North) = проекция GPS-курса на горизонтальную плоскость
+        float headingRad = (float) Math.toRadians(gpsHeadingDeg);
+        // В магнитных координатах: North = (0,1,0), East = (1,0,0)
+        // Вращение heading: East = sin(h), North = cos(h)
+        float northX = (float) Math.sin(headingRad);
+        float northY = (float) Math.cos(headingRad);
+        float northZ = 0f;
+
+        // Проецируем north на плоскость, перпендикулярную up
+        // forward = north - (north · up) × up
+        float dot = northX * upX + northY * upY + northZ * upZ;
+        float fwdX = northX - dot * upX;
+        float fwdY = northY - dot * upY;
+        float fwdZ = northZ - dot * upZ;
+
+        // Нормализуем forward
+        float f = (float) Math.sqrt(fwdX * fwdX + fwdY * fwdY + fwdZ * fwdZ);
+        if (f < 0.01f) {
+            // Смотрим прямо вверх — fallback
+            fwdX = (float) Math.sin(headingRad);
+            fwdY = (float) Math.cos(headingRad);
+            fwdZ = 0;
+            f = (float) Math.sqrt(fwdX * fwdX + fwdY * fwdY);
+        }
+        fwdX /= f; fwdY /= f; fwdZ /= f;
+
+        // Ось X (East/right) = forward × up (right-hand system)
+        float rightX = fwdY * upZ - fwdZ * upY;
+        float rightY = fwdZ * upX - fwdX * upZ;
+        float rightZ = fwdX * upY - fwdY * upX;
+
+        // Заполняем rotationMatrix (row-major: R[0..2]=X, R[3..5]=Y, R[6..8]=Z)
+        // getRotationMatrix формат: [0]=Xx, [1]=Xy, [2]=Xz, [3]=Yx, [4]=Yy, [5]=Yz, [6]=Zx, [7]=Zy, [8]=Zz
+        // где X=East, Y=North, Z=up
+        rotOut[0] = rightX; rotOut[1] = rightY; rotOut[2] = rightZ;
+        rotOut[3] = fwdX;   rotOut[4] = fwdY;   rotOut[5] = fwdZ;
+        rotOut[6] = upX;    rotOut[7] = upY;    rotOut[8] = upZ;
     }
 }
