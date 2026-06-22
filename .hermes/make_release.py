@@ -17,8 +17,8 @@ if not TOKEN:
         TOKEN = m.group(1)
 
 OWNER_REPO = 'isemaster/ThermalRadar'
-TAG = 'v0.1.9'
-APK_PATH = 'D:/tradar/ThermalRadar-v0.1.9.apk'
+TAG = 'v0.1.10'
+APK_PATH = 'D:/tradar/ThermalRadar-v0.1.10.apk'
 
 def api(method, path, data=None):
     url = f'https://api.github.com/repos/{OWNER_REPO}{path}'
@@ -92,22 +92,24 @@ if not release_id:
     # Create release
     release_data = {
         'tag_name': TAG,
-        'name': 'v0.1.9',
-        'body': '## v0.1.9 — Сглаживание компаса, определение ветра, Vario-детекция\n\n' +
-                '### 🧭 Priority 3: Heading/Compass Smoothing\n' +
-                '- **HeadingFilter**: полный пайплайн Clamp → Median(3) → Alpha-Beta(α=0.6, β=0.2) + Deadband\n' +
-                '- Заменил простую EMA в `SensorController` на профессиональный фильтр\n' +
-                '- Подавление импульсных помех (медиана), предсказание поворота (Alpha-Beta)\n\n' +
-                '### 💨 Priority 2: Wind Detection\n' +
-                '- **WindEKF** — фильтр Калмана для оценки ветра на прямых участках (state: wind_u, wind_v, scale_factor)\n' +
-                '- **WindStore** — хранение измерений ветра по слоям высоты (100м) с взвешенным средним по quality×age\n' +
-                '- Интеграция в CirclingManager: оба источника (спирали + прямые) пишут в WindStore\n\n' +
-                '### 📊 Priority 1: Vario-детекция термика\n' +
-                '- **VarioThermalDetector** — отслеживает baseline снижения (30s окно), детектирует аномалию подъёма\n' +
-                '- Ползунок в настройках: «Порог Vario-термика» (-1..+2 м/с, по умолчанию +0.5)\n' +
-                '- Статус **«ВАРИО ТЕРМИК»** при vario > baseline + threshold\n\n' +
+        'name': 'v0.1.10',
+        'body': '## v0.1.10 — GPS fallback для компаса\n\n' +
+                '### 🧭 Проблема: блипы кучковались в одном секторе\n' +
+                'При ходьбе по земле с неоткалиброванным магнитометром все блипы ' +
+                'показывали одно направление (NE), потому что rotation matrix была неверной.\n\n' +
+                '### 🔧 Решение: fallback на GPS-курс\n' +
+                '- **SensorController**: теперь отслеживает точность магнитометра ' +
+                '(SENSOR_STATUS_ACCURACY_LOW → fallback)\n' +
+                '- **buildRotationFromGpsHeading()**: строит rotation matrix из GPS-курса + ' +
+                'вектора гравитации (с учётом наклона телефона — tilt-compensated)\n' +
+                '- При `isMagAccurate() == false` и наличии GPS (скорость >2 м/с, fix <5 сек) ' +
+                'используется GPS-based rotation для преобразования акселерометра в мировые координаты\n' +
+                '- Если нет ни компаса, ни GPS — raw (телефонные координаты), как было\n\n' +
+                '### 🎯 Результат\n' +
+                'При ходьбе с некалиброванным магнитометром блипы будут показывать ' +
+                'реальное направление движения (по GPS), а не кучковаться в одном секторе.\n\n' +
                 '### 🔧 Сборка\n' +
-                '- versionCode 15, versionName 0.1.9',
+                '- versionCode 16, versionName 0.1.10',
         'draft': False,
         'prerelease': False
     }
