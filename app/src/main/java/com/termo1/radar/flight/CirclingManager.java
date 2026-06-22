@@ -101,7 +101,7 @@ public class CirclingManager {
     // ========================================================================
     // Оценка ветра (результат)
     // ========================================================================
-
+    // Оценка ветра (результат)
     /** Направление, ОТКУДА дует ветер (градусы, магнитный). -1 = неизвестно */
     private float windFromDeg = -1f;
     /** Скорость ветра (м/с). -1 = неизвестно */
@@ -110,6 +110,12 @@ public class CirclingManager {
     private int windConfidence;
     /** Скорость ветра, оценённая по GPS-скорости на прямой (м/с) */
     private float windSpeedFromGps = -1f;
+
+    // WindEKF — оценка ветра на прямых участках
+    private final WindEKF windEKF = new WindEKF();
+
+    // WindStore — хранение по высоте
+    private final WindStore windStore = new WindStore();
 
     // ========================================================================
     // Коллбэк для голоса
@@ -166,7 +172,7 @@ public class CirclingManager {
     public void update(float gyroZ, float heading, float vario,
                        double gpsLat, double gpsLon,
                        float gpsSpeed, float gpsCourse,
-                       long nowMs) {
+                       float altMsl, long nowMs) {
         synchronized (stateLock) {
 
         // ================================================================
@@ -292,6 +298,11 @@ public class CirclingManager {
                                 windSpeedMs += WIND_SPEED_EMA_ALPHA * (driftSpeedMs - windSpeedMs);
                                 windConfidence++;
                             }
+                            // Сохраняем в WindStore (по высоте спирали)
+                            if (windConfidence >= 2 && windSpeedMs > 0.3f) {
+                                windStore.addMeasurement(windFromDeg, windSpeedMs,
+                                        Math.min(5, windConfidence), altMsl, nowMs);
+                            }
                         }
                     }
 
@@ -326,20 +337,41 @@ public class CirclingManager {
         }
 
         // ================================================================
-        // 4. Оценка ветра по GPS-скорости на прямой (дополнительно)
+        // 4. Оценка ветра по EKF на прямых участках + WindStore
         // ================================================================
-        if (!circlingConfirmed && gpsSpeed > 3f) {
-            // По разнице GPS-скорости и воздушной скорости оцениваем компоненту ветра вдоль курса
-            float windComponent = gpsSpeed - airspeedMs;
-            if (Math.abs(windComponent) > 0.5f) {
-                // Если дрейфуем — уточняем
-                float drift = heading - gpsCourse;
-                if (drift > 180f) drift -= 360f;
-                else if (drift < -180f) drift += 360f;
+        if (!circlingConfirmed && gpsSpeed > 3f && gpsLat != 0.0 && gpsLon != 0.0) {
+            // GPS-вектор скорости (оси: X=East, Y=North)
+            double gpsRad = Math.toRadians(gpsCourse);
+            double gpsVx = gpsSpeed * Math.sin(gpsRad);
+            double gpsVy = gpsSpeed * Math.cos(gpsRad);
 
-                if (Math.abs(drift) < 20f) {
-                    // Летим почти прямо по курсу — ветер вдоль или против
-                    windSpeedFromGps = Math.abs(windComponent);
+            // Обновляем EKF
+            windEKF.update(airspeedMs, gpsVx, gpsVy);
+
+            // Если EKF дал качественную оценку — сохраняем
+            if (windEKF.getQuality() >= 2) {
+                double ekfSpeed = windEKF.getWindSpeed();
+                double ekfDir = windEKF.getWindDirectionDeg();
+                if (ekfSpeed > 0.5f) {
+                    // Плавное обновление отображаемого ветра (если circling не дал своего)
+                    if (windConfidence < 2) {
+                        // Смешиваем с существующей оценкой от спиралей
+                        float newFrom = (float) ekfDir;
+                        if (windFromDeg < 0) {
+                            windFromDeg = newFrom;
+                            windSpeedMs = (float) ekfSpeed;
+                        } else {
+                            float wdiff = newFrom - windFromDeg;
+                            if (wdiff > 180f) wdiff -= 360f;
+                            else if (wdiff < -180f) wdiff += 360f;
+                            windFromDeg += WIND_DIR_EMA_ALPHA * 0.5f * wdiff;
+                            if (windFromDeg < 0f) windFromDeg += 360f;
+                            if (windFromDeg >= 360f) windFromDeg -= 360f;
+                            windSpeedMs += WIND_SPEED_EMA_ALPHA * 0.5f * ((float)ekfSpeed - windSpeedMs);
+                        }
+                    }
+                    // Сохраняем в WindStore
+                    windStore.addEKFMeasurement(windEKF, altMsl, nowMs);
                 }
             }
         }
@@ -474,5 +506,25 @@ public class CirclingManager {
     /** Установить воздушную скорость (м/с) для оценки ветра */
     public void setAirspeed(float ms) {
         this.airspeedMs = Math.max(8f, Math.min(15f, ms));
+    }
+
+    /**
+     * Получить ветер на заданной высоте из WindStore (по всем источникам).
+     * @return WindStore.WindMeasurement или null
+     */
+    public WindStore.WindMeasurement getWindAtAltitude(float altMsl, long nowMs) {
+        return windStore.getWindAt(altMsl, nowMs);
+    }
+
+    /** Получить WindEKF для доступа к качеству */
+    public WindEKF getWindEKF() {
+        return windEKF;
+    }
+
+    /** Полный сброс с очисткой WindStore и WindEKF */
+    public void fullReset() {
+        reset();
+        windEKF.reset();
+        windStore.reset();
     }
 }

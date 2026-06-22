@@ -30,6 +30,7 @@ import com.termo1.radar.core.SignalProcessor;
 import com.termo1.radar.core.ThermalDetector;
 import com.termo1.radar.flight.FlightStateMachine;
 import com.termo1.radar.flight.BlindFlightMode;
+import com.termo1.radar.flight.VarioThermalDetector;
 import com.termo1.radar.flight.CirclingManager;
 import com.termo1.radar.gps.GpsManager;
 import com.termo1.radar.logging.LogManager;
@@ -81,6 +82,8 @@ public class MainActivity extends Activity {
     private boolean blindModeEnabled;
     private boolean voicePromptsEnabled;
     private CirclingManager circlingManager;
+    private VarioThermalDetector varioThermalDetector;
+    private float varioThreshold = 0.5f;
 
     // ThermalRadarService (singleton, без binding)
     private ThermalRadarService radarService;
@@ -275,6 +278,11 @@ public class MainActivity extends Activity {
                 }
             }
         });
+
+        // VarioThermal detector
+        varioThermalDetector = new VarioThermalDetector();
+        varioThreshold = prefs.getFloat("vario_threshold", 0.5f);
+        varioThermalDetector.setThreshold(varioThreshold);
 
         // Renderer + UI
         radarRenderer = new RadarRenderer();
@@ -662,7 +670,19 @@ public class MainActivity extends Activity {
         }
         float level = thermalDetector.getSignalProcessor().getTurbulenceMs2();
 
-        if (vario > 1.0f && level > 0.3f) {
+        // VarioThermal detector
+        boolean varioThermal = false;
+        if (varioThermalDetector != null && !simMode && !scenarioMode && !trackMode) {
+            long now = SystemClock.elapsedRealtime();
+            varioThermalDetector.update(vario, now);
+            varioThreshold = prefs.getFloat("vario_threshold", 0.5f);
+            varioThermalDetector.setThreshold(varioThreshold);
+            varioThermal = varioThermalDetector.isThermalDetected();
+        }
+
+        if (varioThermal) {
+            currentStatus = "ВАРИО ТЕРМИК";
+        } else if (vario > 1.0f && level > 0.3f) {
             currentStatus = UiManager.STATUS_CLIMB;
         } else if (thermalDetector.getStatus() == ThermalDetector.STATUS_INSIDE) {
             currentStatus = UiManager.STATUS_CLIMB;
@@ -790,6 +810,7 @@ public class MainActivity extends Activity {
                     gpsManager.getLon(),
                     gpsManager.getSpeed(),
                     gpsManager.getHeading(),
+                    gpsManager.getAltitude(),
                     bgNow);
                 bgHandler.postDelayed(this, BG_INTERVAL_MS);
             }
@@ -1792,6 +1813,7 @@ public class MainActivity extends Activity {
                 gpsManager.getLon(),
                 gpsManager.getSpeed(),
                 gpsManager.getHeading(),
+                gpsManager.getAltitude(),
                 cmNow);
 
             // Track circling/label/wind state transitions for event log

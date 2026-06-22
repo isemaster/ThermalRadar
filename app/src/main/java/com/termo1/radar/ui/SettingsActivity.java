@@ -126,6 +126,38 @@ public class SettingsActivity extends Activity {
         });
         root.addView(airspeedSeek);
 
+        // 2f. VarioThermal threshold slider
+        TextView varioThreshLabel = new TextView(this);
+        varioThreshLabel.setText("Порог Vario-термика");
+        varioThreshLabel.setTextSize(14);
+        varioThreshLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
+        varioThreshLabel.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
+        varioThreshLabel.setPadding(0, 16, 0, 8);
+        root.addView(varioThreshLabel);
+
+        final android.widget.TextView varioThreshValue = new android.widget.TextView(this);
+        float currentVarioThresh = prefs.getFloat("vario_threshold", 0.5f);
+        varioThreshValue.setText(String.format(java.util.Locale.US, "%+.1f м/с", currentVarioThresh));
+        varioThreshValue.setTextSize(13);
+        varioThreshValue.setTypeface(android.graphics.Typeface.MONOSPACE);
+        varioThreshValue.setTextColor(android.graphics.Color.argb(255, 255, 255, 0));
+        varioThreshValue.setPadding(0, 0, 0, 8);
+        root.addView(varioThreshValue);
+
+        android.widget.SeekBar varioThreshSeek = new android.widget.SeekBar(this);
+        varioThreshSeek.setMax(300); // -1.0..+2.0 → (2 - (-1)) * 100 = 300
+        varioThreshSeek.setProgress((int)((currentVarioThresh + 1f) * 100f));
+        varioThreshSeek.setOnSeekBarChangeListener(new android.widget.SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(android.widget.SeekBar seekBar, int progress, boolean fromUser) {
+                float value = -1f + progress * 0.01f;
+                varioThreshValue.setText(String.format(java.util.Locale.US, "%+.2f м/с", value));
+                prefs.edit().putFloat("vario_threshold", value).apply();
+            }
+            public void onStartTrackingTouch(android.widget.SeekBar seekBar) {}
+            public void onStopTrackingTouch(android.widget.SeekBar seekBar) {}
+        });
+        root.addView(varioThreshSeek);
+
         // Spacer
         View spacerVib = new View(this);
         spacerVib.setLayoutParams(new LinearLayout.LayoutParams(

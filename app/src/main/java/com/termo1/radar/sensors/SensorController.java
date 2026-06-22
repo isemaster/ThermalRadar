@@ -75,19 +75,19 @@ public class SensorController implements SensorEventListener {
     public void setVarioManager(VarioManager vm) { this.varioManager = vm; }
 
     // ========================================================================
-    // Compass fusion
-    // ===== Compass fusion =====
-
+    // Компасная fusion
     private final float[] rotationMatrix = new float[9];
     private final float[] orientationVals = new float[3];
-    private final float[] gravBuf = new float[3];     // reusable — без new float[3]!
-    private final float[] geomBuf = new float[3];     // reusable
+    private final float[] gravBuf = new float[3];
+    private final float[] geomBuf = new float[3];
     private final float[] worldAccelOut = new float[3];
     private volatile float heading = 0.0f;
     private volatile float pitch = 0.0f;
     private volatile float roll = 0.0f;
     private volatile float rawHeading = 0.0f;
     private volatile boolean compassReady = false;
+    // Heading filter (Медиана 3 + Alpha-Beta, из algo.md раздел 12)
+    private final HeadingFilter headingFilter = new HeadingFilter();
     // Магнитное склонение (обновляется по GPS)
     private float magneticDeclination = 0f;
     private long lastDeclinationUpdateMs = 0;
@@ -373,12 +373,14 @@ public class SensorController implements SensorEventListener {
 
             if (!compassReady) {
                 heading = newHeading;
+                headingFilter.reset();
                 compassReady = true;
             } else {
-                float diff = newHeading - heading;
-                if (diff > 180f) diff -= 360f;
-                else if (diff < -180f) diff += 360f;
-                heading = (heading + diff * HEADING_EMA_ALPHA + 360f) % 360f;
+                // Применяем полный пайплайн: Clamp → Median(3) → Alpha-Beta + Deadband
+                double filtered = headingFilter.update(newHeading, SystemClock.elapsedRealtime());
+                if (!Double.isNaN(filtered)) {
+                    heading = (float) filtered;
+                }
             }
         } else if (magnetometer == null) {
             // Нет магнитометра — pitch/roll из гравитации
