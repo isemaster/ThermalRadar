@@ -168,20 +168,37 @@ public class SettingsActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, 40));
         root.addView(spacer1);
 
-        // 4. Simulation button
-        Button simulateBtn = createButton(getString(R.string.settings_simulate));
+        // 4. Flight test button (replaces old simulation)
+        Button simulateBtn = createButton("✈️ Тест полёта (100с)");
         simulateBtn.setOnClickListener(v -> {
             Intent intent = new Intent(this, MainActivity.class);
-            intent.putExtra("simulate", true);
+            intent.putExtra("flight_test", true);
+            intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
             startActivity(intent);
         });
         root.addView(simulateBtn);
+
+        // 4b. Track replay button (сим2)
+        Button trackBtn = createButton("Сим2: трек полёта (2x)");
+        trackBtn.setOnClickListener(v -> {
+            Intent intent = new Intent(this, MainActivity.class);
+            intent.putExtra("track_replay", true);
+            intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+            startActivity(intent);
+        });
+        root.addView(trackBtn);
 
         // Spacer
         View spacer2 = new View(this);
         spacer2.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 24));
         root.addView(spacer2);
+
+        // Spacer before calibration
+        View spacerVario = new View(this);
+        spacerVario.setLayoutParams(new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 24));
+        root.addView(spacerVario);
 
         // 5a. Vario smoothing slider (5-100 samples)
         TextView smoothLabel = new TextView(this);
@@ -215,11 +232,11 @@ public class SettingsActivity extends Activity {
         });
         root.addView(smoothSeek);
 
-        // Spacer
-        View spacer2b = new View(this);
-        spacer2b.setLayoutParams(new LinearLayout.LayoutParams(
+        // Spacer before cal reset
+        View spacerCal = new View(this);
+        spacerCal.setLayoutParams(new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 24));
-        root.addView(spacer2b);
+        root.addView(spacerCal);
 
         // 5. Calibration button — запоминает наклон крепления
         final float[] mountTiltDeg = {prefs.getFloat("mount_tilt_deg", 0f)};

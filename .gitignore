@@ -14,9 +14,20 @@ Thumbs.db
 # Secrets
 .github_token.sh
 
-# APKs
-*.apk
+# Local
+local.properties
+kimi.txt
 
 # Temp
 ._release_body*
 release_body_v014.txt
+
+# Dev scripts (not part of app)
+analyze_igc.py
+analyze_igc2.py
+analyze_track.py
+analyze_track2.py
+settings-screen.html
+
+# APKs
+*.apk

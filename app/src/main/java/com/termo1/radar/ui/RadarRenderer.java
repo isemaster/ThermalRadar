@@ -37,6 +37,20 @@ public class RadarRenderer {
     private float windFromDeg = -1f;
     private float windSpeedMs = -1f;
 
+    // GPS trail — тонкая жёлтая линия траектории
+    private final Paint trailPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    // Прозрачная тень для траектории (свечение)
+    private final Paint trailGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+    // Thermal core — красный круг при крутке термика
+    private final Paint thermalCoreFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint thermalCoreStrokePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint thermalCoreGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private boolean showThermalCore;
+    private float thermalCoreBearing;
+    private float thermalCoreDistance;
+    private float thermalCoreRadiusPx; // radius in pixels
+
     private final DashPathEffect dash125 = new DashPathEffect(new float[]{6, 8}, 0);
     private final DashPathEffect thermalDash = new DashPathEffect(new float[]{3, 5}, 0);
 
@@ -118,6 +132,33 @@ public class RadarRenderer {
         windLabelPaint.setTextSize(22);
         windLabelPaint.setTypeface(Typeface.MONOSPACE);
         windLabelPaint.setTextAlign(Paint.Align.CENTER);
+
+        // GPS trail paint — тонкая жёлтая линия
+        trailPaint.setStyle(Paint.Style.STROKE);
+        trailPaint.setStrokeWidth(2.5f);
+        trailPaint.setColor(Color.argb(180, 255, 235, 59)); // жёлтый (Amber 500)
+        trailPaint.setStrokeCap(Paint.Cap.ROUND);
+        trailPaint.setStrokeJoin(Paint.Join.ROUND);
+
+        // Свечение для трека
+        trailGlowPaint.setStyle(Paint.Style.STROKE);
+        trailGlowPaint.setStrokeWidth(5f);
+        trailGlowPaint.setColor(Color.argb(60, 255, 235, 59));
+        trailGlowPaint.setStrokeCap(Paint.Cap.ROUND);
+        trailGlowPaint.setStrokeJoin(Paint.Join.ROUND);
+
+        // Thermal core — красный круг (ядро термика)
+        thermalCoreGlowPaint.setStyle(Paint.Style.FILL);
+        thermalCoreGlowPaint.setColor(Color.RED);
+        thermalCoreGlowPaint.setShadowLayer(60, 0, 0, Color.RED);
+
+        thermalCoreFillPaint.setStyle(Paint.Style.FILL);
+        thermalCoreFillPaint.setColor(Color.argb(80, 255, 50, 50));
+
+        thermalCoreStrokePaint.setStyle(Paint.Style.STROKE);
+        thermalCoreStrokePaint.setStrokeWidth(3);
+        thermalCoreStrokePaint.setColor(Color.argb(220, 255, 50, 50));
+        thermalCoreStrokePaint.setPathEffect(new DashPathEffect(new float[]{8, 6}, 0));
     }
 
     /** Called when view size changes. */
@@ -136,6 +177,15 @@ public class RadarRenderer {
         this.windSpeedMs = speedMs;
     }
 
+    /** Set thermal core data for the red circle. Call before draw(). */
+    public void setThermalCore(boolean show, float bearing, float distance, float radiusMeters) {
+        this.showThermalCore = show;
+        this.thermalCoreBearing = bearing;
+        this.thermalCoreDistance = distance;
+        // convert meters to pixels: 150m = r px
+        this.thermalCoreRadiusPx = (radiusMeters / 150f) * r;
+    }
+
     /**
      * Main draw call. Rotates entire canvas by -heading.
      * @param canvas  the Canvas to draw on
@@ -146,10 +196,15 @@ public class RadarRenderer {
      * @param status  status string for debugging
      * @param maxSnr  current max SNR
      * @param count   thermal count
+     * @param trailPx  X pixel positions of GPS trail (in radar coordinates)
+     * @param trailPy  Y pixel positions of GPS trail
+     * @param trailBright  brightness 0..1 for each trail point (by age)
+     * @param trailCount  number of valid trail points
      */
     public void draw(Canvas canvas, long nowMs, List<ThermalBlip> thermals,
                      float heading, float vario, String status,
-                     float maxSnr, int count) {
+                     float maxSnr, int count,
+                     float[] trailPx, float[] trailPy, float[] trailBright, int trailCount) {
         if (baseW <= 0 || baseH <= 0) return;
 
         // --- black background ---
@@ -163,6 +218,8 @@ public class RadarRenderer {
         drawCross(canvas);
         drawCardinalPoints(canvas);
         drawTickMarks(canvas);
+        drawThermalCore(canvas);
+        drawTrail(canvas, trailPx, trailPy, trailBright, trailCount);
         drawThermals(canvas, nowMs, thermals);
         drawPilot(canvas, nowMs);
         drawWindArrow(canvas);
@@ -306,6 +363,61 @@ public class RadarRenderer {
         if (lx < 30) lx = 30; if (lx > baseW - 30) lx = baseW - 30;
         if (ly < 30) ly = 30; if (ly > baseH - 10) ly = baseH - 10;
         c.drawText(String.format(java.util.Locale.US, "ветер %.1fм/с", windSpeedMs), lx, ly, windLabelPaint);
+    }
+
+    /** Рисование трека полёта — тонкая жёлтая линия по точкам GPS. */
+    /** Рисование ядра термика — красный круг с пульсацией. */
+    private void drawThermalCore(Canvas c) {
+        if (!showThermalCore || thermalCoreDistance < 0) return;
+
+        // Pixel position from bearing/distance
+        float distPx = Math.min(thermalCoreDistance / 150f, 1f) * r;
+        float rad = (float) Math.toRadians(thermalCoreBearing);
+        float px = cx + (float) Math.sin(rad) * distPx;
+        float py = cy - (float) Math.cos(rad) * distPx;
+
+        if (distPx > r) return; // outside radar
+
+        float radius = Math.max(thermalCoreRadiusPx, 10f);
+
+        // Glow
+        thermalCoreGlowPaint.setAlpha(120);
+        c.drawCircle(px, py, radius * 2.5f, thermalCoreGlowPaint);
+
+        // Fill (semi-transparent red)
+        c.drawCircle(px, py, radius, thermalCoreFillPaint);
+
+        // Dashed border
+        c.drawCircle(px, py, radius, thermalCoreStrokePaint);
+
+        // Central dot
+        thermalCoreStrokePaint.setPathEffect(null);
+        thermalCoreStrokePaint.setStrokeWidth(2);
+        thermalCoreStrokePaint.setColor(Color.argb(200, 255, 50, 50));
+        c.drawCircle(px, py, 4, thermalCoreStrokePaint);
+    }
+
+    private void drawTrail(Canvas c, float[] px, float[] py, float[] bright, int count) {
+        if (count < 2) return;
+
+        // Сначала свечение (более толстая прозрачная линия под основной)
+        for (int i = 1; i < count; i++) {
+            // Яркость сегмента = меньшая из двух точек (старая тусклее)
+            float b = Math.min(bright[i-1], bright[i]);
+            if (b < 0.02f) continue;
+            int a = (int) (b * 60); // свечение: alpha до 60
+            trailGlowPaint.setAlpha(a);
+            c.drawLine(px[i-1], py[i-1], px[i], py[i], trailGlowPaint);
+        }
+
+        // Основная жёлтая линия — яркость от возраста точки
+        for (int i = 1; i < count; i++) {
+            float b = Math.min(bright[i-1], bright[i]);
+            if (b < 0.02f) continue;
+            int a = (int) (b * 200); // основная: alpha до 200
+            trailPaint.setAlpha(Math.min(255, a));
+            c.drawLine(px[i-1], py[i-1], px[i], py[i], trailPaint);
+        }
     }
 
     private void drawThermals(Canvas c, long nowMs, List<ThermalBlip> thermals) {

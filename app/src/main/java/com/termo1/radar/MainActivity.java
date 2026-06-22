@@ -13,6 +13,7 @@ import android.graphics.RectF;
 import android.hardware.Sensor;
 import android.hardware.SensorEvent;
 import android.hardware.SensorManager;
+import android.location.Location;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -22,7 +23,9 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 
+import com.termo1.radar.core.FlightSimulator;
 import com.termo1.radar.core.SimulationManager;
+import com.termo1.radar.core.TrackReplayer;
 import com.termo1.radar.core.SignalProcessor;
 import com.termo1.radar.core.ThermalDetector;
 import com.termo1.radar.flight.FlightStateMachine;
@@ -61,6 +64,11 @@ public class MainActivity extends Activity {
     private static final int THERMAL_LIMIT = 12;
     private static final float MAX_DISTANCE_M = 150.0f;
 
+    // GPS trail
+    private static final int GPS_TRAIL_MAX = 2000;
+    private static final long GPS_TRAIL_MAX_AGE_MS = 300_000L; // 5 минут
+    private static final long GPS_TRAIL_ADD_INTERVAL_MS = 1000L; // добавлять не чаще 1 раз/сек
+
     // ========================================================================
     // Modules
     // ========================================================================
@@ -98,6 +106,9 @@ public class MainActivity extends Activity {
     private final List<ThermalBlip> thermalsCopy = new ArrayList<>();
     private final Object thermalLock = new Object();
 
+    // GPS trail storage: [lat, lon, timeMs]
+    private final List<double[]> gpsTrail = new ArrayList<>();
+
     // ========================================================================
     // UI
     // ========================================================================
@@ -121,7 +132,11 @@ public class MainActivity extends Activity {
     // ========================================================================
 
     private boolean simMode;
+    private boolean scenarioMode;
+    private boolean trackMode;
     private SimulationManager simulation;
+    private FlightSimulator flightSim;
+    private TrackReplayer trackReplayer;
     private long simStartMs;
     private long lastThermalBeepMs;
     private long lastMaxSnrResetMs;
@@ -313,6 +328,16 @@ public class MainActivity extends Activity {
         if (intent != null && intent.getBooleanExtra("test_mode", false)) {
             startTestMode();
         }
+
+        // Flight scenario from settings
+        if (intent != null && intent.getBooleanExtra("flight_test", false)) {
+            radarView.post(() -> startFlightScenario());
+        }
+
+        // Track replay from settings (сим2)
+        if (intent != null && intent.getBooleanExtra("track_replay", false)) {
+            radarView.post(() -> startTrackReplay());
+        }
     }
 
     @Override
@@ -461,7 +486,7 @@ public class MainActivity extends Activity {
                 return; // в слепом режиме не кормим обычный детектор
             }
 
-            if (thermalDetector != null && !simMode) {
+            if (thermalDetector != null && !simMode && !scenarioMode) {
                 if (compassReady) {
                     worldAccelOut[0] = rotMatrix[0] * axG * 9.81f
                             + rotMatrix[1] * ayG * 9.81f
@@ -483,7 +508,7 @@ public class MainActivity extends Activity {
         public void onGravityAccelSample(float axMs2, float ayMs2, float azMs2,
                                          float headingDeg, float[] rotMatrix,
                                          boolean compassReady) {
-            if (!sensorController.hasLinearAccel() && thermalDetector != null && !simMode) {
+            if (!sensorController.hasLinearAccel() && thermalDetector != null && !simMode && !scenarioMode) {
                 if (compassReady) {
                     worldAccelOut[0] = rotMatrix[0] * axMs2 + rotMatrix[1] * ayMs2 + rotMatrix[2] * azMs2;
                     worldAccelOut[1] = rotMatrix[3] * axMs2 + rotMatrix[4] * ayMs2 + rotMatrix[5] * azMs2;
@@ -588,7 +613,7 @@ public class MainActivity extends Activity {
         }
 
         // Flight state machine (на основе высоты MSL)
-        if (!testMode && !simMode) {
+        if (!testMode && !simMode && !scenarioMode && !trackMode) {
             float alt = gpsManager.isAltitudeInitialized()
                     ? gpsManager.getAltitude() : sensorController.getAltitudeRaw();
             flightStateMachine.update(alt, SystemClock.elapsedRealtime());
@@ -627,7 +652,14 @@ public class MainActivity extends Activity {
             return;
         }
 
-        float vario = sensorController.getVario();
+        float vario;
+        if (scenarioMode && flightSim != null && flightSim.isRunning()) {
+            vario = flightSim.getVario();
+        } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+            vario = trackReplayer.getVario();
+        } else {
+            vario = sensorController.getVario();
+        }
         float level = thermalDetector.getSignalProcessor().getTurbulenceMs2();
 
         if (vario > 1.0f && level > 0.3f) {
@@ -1166,6 +1198,256 @@ public class MainActivity extends Activity {
         }
     }
 
+    // ========================================================================
+    // Flight Scenario Test
+    // ========================================================================
+
+    private Handler scenarioHandler = new Handler(Looper.getMainLooper());
+    private Runnable scenarioTask;
+    private long scenarioStartMs;
+
+    private void startFlightScenario() {
+        scenarioMode = true;
+        scenarioStartMs = SystemClock.elapsedRealtime();
+
+        // Clear old state
+        synchronized (thermalLock) {
+            thermals.clear();
+            thermalsCopy.clear();
+        }
+
+        flightSim = new FlightSimulator();
+        flightSim.start();
+
+        // Start scenario update loop (50 Hz)
+        scenarioTask = new Runnable() {
+            @Override
+            public void run() {
+                if (!scenarioMode || flightSim == null) return;
+                if (!flightSim.isRunning()) {
+                    stopFlightScenario();
+                    return;
+                }
+                long elapsed = SystemClock.elapsedRealtime() - scenarioStartMs;
+                flightSim.update(elapsed);
+
+                // Feed accel through thermal detector
+                if (thermalDetector != null && !testMode) {
+                    thermalDetector.processSample(flightSim.getAccelX(), flightSim.getAccelY());
+                    ThermalBlip detBlip = thermalDetector.getCurrentBlip();
+                    if (detBlip != null) {
+                        long now = System.currentTimeMillis();
+                        if (now - detBlip.bornMs < ThermalBlip.LIFE_MS) {
+                            synchronized (thermalLock) {
+                                boolean found = false;
+                                for (ThermalBlip tb : thermals) {
+                                    if (tb.bornMs == detBlip.bornMs) {
+                                        tb.distance = detBlip.distance;
+                                        tb.strength = detBlip.strength;
+                                        tb.angle = detBlip.angle;
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (!found) {
+                                    thermals.add(detBlip);
+                                    while (thermals.size() > THERMAL_LIMIT) thermals.remove(0);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Also add a persistent thermal blip from FlightSimulator
+                if (flightSim.isThermalVisible()) {
+                    long now = System.currentTimeMillis();
+                    synchronized (thermalLock) {
+                        // Remove expired
+                        Iterator<ThermalBlip> it = thermals.iterator();
+                        while (it.hasNext()) {
+                            if (!it.next().isAlive(now)) it.remove();
+                        }
+                        // Check if we already have a blip at similar bearing
+                        boolean hasBlip = false;
+                        for (ThermalBlip tb : thermals) {
+                            if (Math.abs(tb.angle - flightSim.getThermalBearing()) < 20f
+                                    && Math.abs(tb.distance - flightSim.getThermalDistance()) < 30f) {
+                                tb.distance = flightSim.getThermalDistance();
+                                tb.angle = flightSim.getThermalBearing();
+                                hasBlip = true;
+                                break;
+                            }
+                        }
+                        if (!hasBlip) {
+                            float strength = flightSim.isCircling() ? 8f : 4f;
+                            thermals.add(new ThermalBlip(
+                                    flightSim.getThermalBearing(),
+                                    strength,
+                                    flightSim.getThermalDistance(),
+                                    "scenario",
+                                    now
+                            ));
+                            while (thermals.size() > THERMAL_LIMIT) thermals.remove(0);
+                        }
+                    }
+                }
+
+                scenarioHandler.postDelayed(this, 20);
+            }
+        };
+        scenarioHandler.postDelayed(scenarioTask, 20);
+
+        android.widget.Toast.makeText(MainActivity.this,
+                "🧪 Сценарий полёта запущен (100с)", android.widget.Toast.LENGTH_SHORT).show();
+    }
+
+    private void stopFlightScenario() {
+        scenarioMode = false;
+        if (scenarioTask != null) {
+            scenarioHandler.removeCallbacks(scenarioTask);
+            scenarioTask = null;
+        }
+        if (flightSim != null) {
+            flightSim.stop();
+            flightSim = null;
+        }
+        // Clean thermal blips
+        synchronized (thermalLock) {
+            thermals.clear();
+            thermalsCopy.clear();
+        }
+        android.widget.Toast.makeText(MainActivity.this,
+                "✈️ Сценарий завершён", android.widget.Toast.LENGTH_SHORT).show();
+    }
+
+    // ========================================================================
+    // Track replay (сим2)
+    // ========================================================================
+
+    private Handler trackHandler = new Handler(Looper.getMainLooper());
+    private Runnable trackTask;
+    private long trackStartMs;
+    private long trackPrevFrameMs;
+
+    private void startTrackReplay() {
+        trackMode = true;
+        trackStartMs = SystemClock.elapsedRealtime();
+
+        synchronized (thermalLock) {
+            thermals.clear();
+            thermalsCopy.clear();
+        }
+
+        trackReplayer = new TrackReplayer();
+        trackReplayer.loadFromIGC(getResources().openRawResource(R.raw.track_replay));
+        trackReplayer.start();
+        trackPrevFrameMs = 0;
+
+        trackTask = new Runnable() {
+            @Override
+            public void run() {
+                if (!trackMode || trackReplayer == null) return;
+                if (trackReplayer.isFinished()) {
+                    stopTrackReplay();
+                    return;
+                }
+                long now = SystemClock.elapsedRealtime();
+                long realDeltaMs;
+                if (trackPrevFrameMs == 0) {
+                    realDeltaMs = 0;
+                } else {
+                    realDeltaMs = now - trackPrevFrameMs;
+                    if (realDeltaMs > 100) realDeltaMs = 50; // cap for pauses
+                }
+                trackPrevFrameMs = now;
+                trackReplayer.update(realDeltaMs);
+
+                // Feed accel through thermal detector
+                if (thermalDetector != null) {
+                    thermalDetector.processSample(trackReplayer.getAccelX(), trackReplayer.getAccelY());
+                    ThermalBlip detBlip = thermalDetector.getCurrentBlip();
+                    if (detBlip != null) {
+                        long nowMs = System.currentTimeMillis();
+                        if (nowMs - detBlip.bornMs < ThermalBlip.LIFE_MS) {
+                            synchronized (thermalLock) {
+                                boolean found = false;
+                                for (ThermalBlip tb : thermals) {
+                                    if (tb.bornMs == detBlip.bornMs) {
+                                        tb.distance = detBlip.distance;
+                                        tb.strength = detBlip.strength;
+                                        tb.angle = detBlip.angle;
+                                        found = true;
+                                        break;
+                                    }
+                                }
+                                if (!found) {
+                                    thermals.add(detBlip);
+                                    while (thermals.size() > THERMAL_LIMIT) thermals.remove(0);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Add persistent thermal blip from replayer
+                if (trackReplayer.isThermalActive()) {
+                    long nowMs = System.currentTimeMillis();
+                    synchronized (thermalLock) {
+                        Iterator<ThermalBlip> it = thermals.iterator();
+                        while (it.hasNext()) {
+                            if (!it.next().isAlive(nowMs)) it.remove();
+                        }
+                        boolean hasBlip = false;
+                        for (ThermalBlip tb : thermals) {
+                            if (Math.abs(tb.angle - trackReplayer.getThermalBearing()) < 20f
+                                    && Math.abs(tb.distance - trackReplayer.getThermalDistance()) < 30f) {
+                                tb.distance = trackReplayer.getThermalDistance();
+                                tb.angle = trackReplayer.getThermalBearing();
+                                hasBlip = true;
+                                break;
+                            }
+                        }
+                        if (!hasBlip) {
+                            float strength = trackReplayer.isShowRedCore() ? 8f : 4f;
+                            thermals.add(new ThermalBlip(
+                                    trackReplayer.getThermalBearing(),
+                                    strength,
+                                    trackReplayer.getThermalDistance(),
+                                    "track",
+                                    nowMs
+                            ));
+                            while (thermals.size() > THERMAL_LIMIT) thermals.remove(0);
+                        }
+                    }
+                }
+
+                trackHandler.postDelayed(this, 20);
+            }
+        };
+        trackHandler.postDelayed(trackTask, 20);
+
+        android.widget.Toast.makeText(MainActivity.this,
+                "Сим2: трек полёта (2x)", android.widget.Toast.LENGTH_SHORT).show();
+    }
+
+    private void stopTrackReplay() {
+        trackMode = false;
+        if (trackTask != null) {
+            trackHandler.removeCallbacks(trackTask);
+            trackTask = null;
+        }
+        if (trackReplayer != null) {
+            trackReplayer.stop();
+            trackReplayer = null;
+        }
+        synchronized (thermalLock) {
+            thermals.clear();
+            thermalsCopy.clear();
+        }
+        android.widget.Toast.makeText(MainActivity.this,
+                "Сим2 завершён", android.widget.Toast.LENGTH_SHORT).show();
+    }
+
     private void showTestCompleteDialog() {
         new AlertDialog.Builder(this)
                 .setTitle("Тест завершён!")
@@ -1327,6 +1609,11 @@ public class MainActivity extends Activity {
         private long lastAddedBlipBornMs = -1;
         private float touchX, touchY;
         private long touchDownTime;
+
+        // GPS trail render buffers (reused each frame)
+        private final float[] trailPxBuf = new float[GPS_TRAIL_MAX];
+        private final float[] trailPyBuf = new float[GPS_TRAIL_MAX];
+        private final float[] trailBrightBuf = new float[GPS_TRAIL_MAX]; // 0..1 по возрасту
 
         public RadarView(Context context) {
             super(context);
@@ -1589,7 +1876,7 @@ public class MainActivity extends Activity {
             }
 
             // Thermal blips from detector
-            if (!simMode && thermalDetector != null && !testMode) {
+            if (thermalDetector != null && !simMode && !scenarioMode && !trackMode) {
                 ThermalBlip detBlip = thermalDetector.getCurrentBlip();
                 if (detBlip != null) {
                     long now = System.currentTimeMillis();
@@ -1645,30 +1932,148 @@ public class MainActivity extends Activity {
                 }
             }
 
+            // ========================================================================
+            // GPS trail update + precompute pixel positions
+            // ========================================================================
+            float trailCy = h / 2f;
+            float trailR = Math.min(w / 2f, trailCy) - 4;
+            int trailCount = 0;
+            boolean gpsOk;
+            double pilotLat, pilotLon;
+            if (scenarioMode && flightSim != null && flightSim.isRunning()) {
+                gpsOk = true;
+                pilotLat = flightSim.getLat();
+                pilotLon = flightSim.getLon();
+            } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                gpsOk = true;
+                pilotLat = trackReplayer.getLat();
+                pilotLon = trackReplayer.getLon();
+            } else {
+                gpsOk = gpsManager.isReady() && gpsManager.getFixAgeMs() < 5000;
+                pilotLat = gpsManager.getLat();
+                pilotLon = gpsManager.getLon();
+            }
+
+            if (gpsOk) {
+                long now = System.currentTimeMillis();
+
+                // Добавляем точку с dedup: не чаще 1 раз/сек
+                if (gpsTrail.isEmpty()) {
+                    gpsTrail.add(new double[]{pilotLat, pilotLon, now});
+                } else {
+                    double[] last = gpsTrail.get(gpsTrail.size() - 1);
+                    long lastAge = now - (long) last[2];
+                    if (lastAge >= GPS_TRAIL_ADD_INTERVAL_MS) {
+                        gpsTrail.add(new double[]{pilotLat, pilotLon, now});
+                    }
+                }
+
+                // Фильтр: удаляем только точки старше 5 минут
+                // Точки НЕ удаляются по дистанции — при возвращении пилота они снова видны
+                Iterator<double[]> it = gpsTrail.iterator();
+                while (it.hasNext()) {
+                    double[] pt = it.next();
+                    long age = now - (long) pt[2];
+                    if (age > GPS_TRAIL_MAX_AGE_MS) { it.remove(); }
+                }
+                // Лимит буфера
+                while (gpsTrail.size() > GPS_TRAIL_MAX) gpsTrail.remove(0);
+
+                // Конвертация в пиксели радара Яркость от возраста (5 мин = 0 → 1.0)
+                for (double[] pt : gpsTrail) {
+                    long age = now - (long) pt[2];
+                    float brightness = 1.0f - (float) age / (float) GPS_TRAIL_MAX_AGE_MS;
+                    if (brightness < 0.01f) continue; // совсем старые — пропускаем
+
+                    float[] res = new float[2];
+                    Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], res);
+                    float dist = res[0];
+                    float bearingRad = (float) Math.toRadians(res[1]);
+
+                    // Масштаб: 150м = trailR пикселей
+                    float distPx = (dist / 150f) * trailR;
+                    if (distPx > trailR) continue; // за краем радара — не рисуем, но точку храним
+
+                    trailPxBuf[trailCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
+                    trailPyBuf[trailCount] = trailCy - (float) Math.cos(bearingRad) * distPx;
+                    trailBrightBuf[trailCount] = brightness;
+                    trailCount++;
+                }
+            } else {
+                // GPS lost — очищаем трек
+                gpsTrail.clear();
+            }
+
             // Draw radar
             long nowMs = System.currentTimeMillis();
             synchronized (thermalLock) {
                 thermalsCopy.clear();
                 thermalsCopy.addAll(thermals);
             }
-            // Wind data for radar renderer
-            radarRenderer.setWindData(
-                circlingManager.getWindFromDeg(),
-                circlingManager.getDisplayWindSpeed());
+            // Thermal core + wind for radar renderer
+            if (scenarioMode && flightSim != null && flightSim.isRunning()) {
+                radarRenderer.setThermalCore(
+                    flightSim.isShowRedCore(),
+                    flightSim.getThermalBearing(),
+                    flightSim.getThermalDistance(),
+                    flightSim.getThermalRadius());
+                radarRenderer.setWindData(
+                    flightSim.getWindFromDeg(),
+                    flightSim.getWindSpeedMs());
+            } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                radarRenderer.setThermalCore(
+                    trackReplayer.isShowRedCore(),
+                    trackReplayer.getThermalBearing(),
+                    trackReplayer.getThermalDistance(),
+                    trackReplayer.getThermalRadius());
+                radarRenderer.setWindData(
+                    trackReplayer.getWindFromDeg(),
+                    trackReplayer.getWindSpeedMs());
+            } else {
+                radarRenderer.setThermalCore(false, 0, 0, 0);
+                radarRenderer.setWindData(
+                    circlingManager.getWindFromDeg(),
+                    circlingManager.getDisplayWindSpeed());
+            }
 
+            float headingDisplay = getCompassHeading();
+            float varioDisplay = sensorController.getVario();
+            if (scenarioMode && flightSim != null && flightSim.isRunning()) {
+                headingDisplay = flightSim.getHeading();
+                varioDisplay = flightSim.getVario();
+            } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                headingDisplay = trackReplayer.getHeading();
+                varioDisplay = trackReplayer.getVario();
+            }
             radarRenderer.draw(canvas, nowMs, thermalsCopy,
-                    getCompassHeading(), sensorController.getVario(), currentStatus,
-                    sensorController.getMaxSnr(), thermalsCopy.size());
+                    headingDisplay, varioDisplay, currentStatus,
+                    sensorController.getMaxSnr(), thermalsCopy.size(),
+                    trailPxBuf, trailPyBuf, trailBrightBuf, trailCount);
 
             // HUD
             float cx = w / 2f;
-            uiManager.drawVario(canvas, cx, 130, sensorController.getVario());
+            uiManager.drawVario(canvas, cx, 130, varioDisplay);
             uiManager.drawStatus(canvas, cx, currentStatus);
 
             // "крутим термик" — по центру, если накрутили 540°
             if (circlingManager.isShowThermalLabel()) {
                 float labelY = h / 2f;
                 canvas.drawText("крутим термик", cx, labelY, thermalLabelPaint);
+            }
+
+            // Guidance text from flight scenario
+            boolean showGuide = (scenarioMode && flightSim != null && flightSim.isRunning())
+                    || (trackMode && trackReplayer != null && trackReplayer.isRunning());
+            if (showGuide) {
+                String guide = scenarioMode ? flightSim.getGuidanceText() : trackReplayer.getGuidanceText();
+                if (guide != null && guide.length() > 0) {
+                    float guideY = h / 2f + (scenarioMode && flightSim != null && flightSim.isCircling() ? 0 : -80);
+                    thermalLabelPaint.setColor(Color.argb(200, 255, 235, 59));
+                    thermalLabelPaint.setTextSize(36);
+                    canvas.drawText(guide, cx, guideY, thermalLabelPaint);
+                    thermalLabelPaint.setColor(Color.argb(220, 255, 193, 7));
+                    thermalLabelPaint.setTextSize(42);
+                }
             }
 
             if (testMode) updateTestFeedback();
@@ -1688,23 +2093,38 @@ public class MainActivity extends Activity {
             // Altitude
             float radarCy = h / 2f;
             float radarR = Math.min(w / 2f, radarCy) - 4;
-            float gpsAlt = gpsManager.getAltitude();
-            float startAlt = gpsManager.getStartAltitude();
-            float altAgl = gpsManager.isAltitudeInitialized() ? (gpsAlt - startAlt) : 0f;
+            float gpsAlt, startAlt, altAgl;
+            if (scenarioMode && flightSim != null && flightSim.isRunning()) {
+                gpsAlt = flightSim.getAltitudeMsl();
+                startAlt = 0f;
+                altAgl = gpsAlt;
+            } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                gpsAlt = trackReplayer.getAltitude();
+                startAlt = 0f;
+                altAgl = gpsAlt;
+            } else {
+                gpsAlt = gpsManager.getAltitude();
+                startAlt = gpsManager.getStartAltitude();
+                altAgl = gpsManager.isAltitudeInitialized() ? (gpsAlt - startAlt) : 0f;
+            }
             float altY = radarCy + radarR + 80;
             float leftMargin = w * 0.05f;
             float rightMargin = w * 0.95f;
             uiManager.drawAltitude(canvas, leftMargin, rightMargin, altY, gpsAlt, altAgl);
 
-            // Test button
-            canvas.drawRoundRect(testBtnRect, 12, 12, testBtnBgPaint);
-            testBtnTextPaint.setTextSize(28);
-            testBtnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
-            if (testMode) {
-                float blink = (float) Math.sin(nowMs / 300.0) * 0.3f + 0.7f;
-                testBtnTextPaint.setColor(Color.argb((int)(blink*220), 255, 193, 7));
+            // Stop buttons — показываем при активном сценарии или треке
+            if (!scenarioMode && !trackMode) {
+                testBtnBgPaint.setColor(Color.TRANSPARENT);
+            } else {
+                testBtnBgPaint.setColor(Color.argb(50, 255, 80, 80));
             }
-            canvas.drawText("ТЕСТ", testBtnRect.centerX(), testBtnRect.centerY() + 10, testBtnTextPaint);
+            canvas.drawRoundRect(testBtnRect, 12, 12, testBtnBgPaint);
+            if (scenarioMode || trackMode) {
+                testBtnTextPaint.setTextSize(26);
+                testBtnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
+                testBtnTextPaint.setColor(Color.argb(220, 255, 80, 80));
+                canvas.drawText("СТОП ТЕСТ", testBtnRect.centerX(), testBtnRect.centerY() + 10, testBtnTextPaint);
+            }
 
             // Кнопки СТАРТ (слева) и СТОП (справа)
             btnTextPaint.setTextSize(26);
@@ -1794,6 +2214,10 @@ public class MainActivity extends Activity {
             long flightTimeMs;
             if (simMode) {
                 flightTimeMs = SystemClock.elapsedRealtime() - simStartMs;
+            } else if (scenarioMode) {
+                flightTimeMs = SystemClock.elapsedRealtime() - scenarioStartMs;
+            } else if (trackMode) {
+                flightTimeMs = SystemClock.elapsedRealtime() - trackStartMs;
             } else if (logManager.isLogging()) {
                 flightTimeMs = System.currentTimeMillis() - logManager.getFlightStartMs();
             } else {
@@ -1806,14 +2230,15 @@ public class MainActivity extends Activity {
             uiManager.drawNightFilter(canvas, w, h);
 
             // SIM badge
-            if (simMode) {
+            if (simMode || scenarioMode || trackMode) {
                 float badgeX = 12f;
                 float badgeY = 190f;
-                float textW = simPaint.measureText("SIM");
+                String badgeText = scenarioMode ? "TEST" : (trackMode ? "TPEK" : "SIM");
                 float pad = 8f;
+                float textW = simPaint.measureText(badgeText);
                 canvas.drawRoundRect(badgeX, badgeY, badgeX + textW + pad * 2,
                         badgeY + 32 + pad, 8, 8, simBgPaint);
-                canvas.drawText("SIM", badgeX + pad, badgeY + 28, simPaint);
+                canvas.drawText(badgeText, badgeX + pad, badgeY + 28, simPaint);
             }
 
             drawExitButton(canvas);
@@ -1939,13 +2364,12 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 if (testBtnRect.contains(touchX, touchY)) {
-                    if (!testMode) startTestMode();
-                    else {
-                        stopTestMode();
-                        testMode = false;
-                        testInstruction = "";
-                        android.widget.Toast.makeText(MainActivity.this,
-                                "Тест отменён", android.widget.Toast.LENGTH_SHORT).show();
+                    if (scenarioMode) {
+                        stopFlightScenario();
+                    } else if (trackMode) {
+                        stopTrackReplay();
+                    } else if (!scenarioMode) {
+                        startFlightScenario();
                     }
                     return true;
                 }
