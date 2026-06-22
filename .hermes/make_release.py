@@ -17,8 +17,8 @@ if not TOKEN:
         TOKEN = m.group(1)
 
 OWNER_REPO = 'isemaster/ThermalRadar'
-TAG = 'v0.1.8'
-APK_PATH = 'D:/tradar/ThermalRadar-v0.1.8.apk'
+TAG = 'v0.1.9'
+APK_PATH = 'D:/tradar/ThermalRadar-v0.1.9.apk'
 
 def api(method, path, data=None):
     url = f'https://api.github.com/repos/{OWNER_REPO}{path}'
@@ -92,17 +92,22 @@ if not release_id:
     # Create release
     release_data = {
         'tag_name': TAG,
-        'name': 'v0.1.8',
-        'body': '## v0.1.8 — Исправление критических багов симуляции\n\n' +
-                '### 🐛 Баги\n' +
-                '- **Clock conflict**: `System.currentTimeMillis()` → `elapsedRealtime()`' +
-                ' в симуляции (симуляция умирала в первом кадре)\n' +
-                '- **Noise calibration**: первый puff отложен на 5с (калибровка на шуме, а не на термике)\n' +
-                '- **Puff geometry**: генерация по курсу полёта (а не случайно) — сигнал растёт, детектор подтверждает\n' +
-                '- **Zero-crossing**: убрано лишнее деление на 2 (частота была вдвое ниже)\n' +
-                '- **TH_SUSPECT**: 0.010 → 0.020g (синхронизация с README)\n\n' +
-                '### 📦 Сборка\n' +
-                '- versionCode 14, versionName 0.1.8',
+        'name': 'v0.1.9',
+        'body': '## v0.1.9 — Сглаживание компаса, определение ветра, Vario-детекция\n\n' +
+                '### 🧭 Priority 3: Heading/Compass Smoothing\n' +
+                '- **HeadingFilter**: полный пайплайн Clamp → Median(3) → Alpha-Beta(α=0.6, β=0.2) + Deadband\n' +
+                '- Заменил простую EMA в `SensorController` на профессиональный фильтр\n' +
+                '- Подавление импульсных помех (медиана), предсказание поворота (Alpha-Beta)\n\n' +
+                '### 💨 Priority 2: Wind Detection\n' +
+                '- **WindEKF** — фильтр Калмана для оценки ветра на прямых участках (state: wind_u, wind_v, scale_factor)\n' +
+                '- **WindStore** — хранение измерений ветра по слоям высоты (100м) с взвешенным средним по quality×age\n' +
+                '- Интеграция в CirclingManager: оба источника (спирали + прямые) пишут в WindStore\n\n' +
+                '### 📊 Priority 1: Vario-детекция термика\n' +
+                '- **VarioThermalDetector** — отслеживает baseline снижения (30s окно), детектирует аномалию подъёма\n' +
+                '- Ползунок в настройках: «Порог Vario-термика» (-1..+2 м/с, по умолчанию +0.5)\n' +
+                '- Статус **«ВАРИО ТЕРМИК»** при vario > baseline + threshold\n\n' +
+                '### 🔧 Сборка\n' +
+                '- versionCode 15, versionName 0.1.9',
         'draft': False,
         'prerelease': False
     }
