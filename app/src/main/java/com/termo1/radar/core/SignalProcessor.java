@@ -182,7 +182,7 @@ public class SignalProcessor {
         long now = SystemClock.elapsedRealtime();
         if (now - zcTimerMs >= ZC_WINDOW_MS) {
             int totalZc = zcCountX + zcCountY;
-            float measuredFreq = (totalZc / 2f) / ((now - zcTimerMs) / 1000f);
+            float measuredFreq = (float) totalZc / ((now - zcTimerMs) / 1000f);
             // Ограничиваем полосой фильтра
             if (measuredFreq < BP_MIN_FREQ) measuredFreq = BP_MIN_FREQ;
             if (measuredFreq > BP_MAX_FREQ) measuredFreq = BP_MAX_FREQ;

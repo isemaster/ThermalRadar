@@ -95,7 +95,7 @@ public class SimulationManager {
         simAy = 0f;
         noisePhase = 0.0;
         puffs.clear();
-        lastPuffMs = 0;
+        lastPuffMs = -5000;
         simulationRealStartMs = System.currentTimeMillis();
     }
 
@@ -234,11 +234,13 @@ public class SimulationManager {
             lastPuffMs = nowMs;
 
             ThermalPuff puff = new ThermalPuff();
-            // Случайная позиция в 50-150м от пилота, в любом направлении
-            double angle = random.nextDouble() * 2 * Math.PI;
+            // Позиция ВПЕРЕДИ пилота по курсу (направление полёта), в 50-150м
+            // — чтобы пилот приближался к термику и сигнал физически рос
+            double headingRad = Math.toRadians(heading);
+            double fwdAngle = headingRad + (random.nextDouble() - 0.5) * 1.0; // ±~28° от курса
             double dist = 50.0 + random.nextDouble() * 100.0;
-            puff.x = pilotX + dist * Math.sin(angle);
-            puff.y = pilotY + dist * Math.cos(angle);
+            puff.x = pilotX + dist * Math.sin(fwdAngle);
+            puff.y = pilotY + dist * Math.cos(fwdAngle);
             puff.strength = 0.3f + random.nextFloat() * 1.2f;   // 0.3–1.5g
             puff.freq = 0.5f + random.nextFloat() * 2.0f;       // 0.5–2.5 Гц
             puff.bornMs = nowMs;

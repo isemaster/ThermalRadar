@@ -820,7 +820,7 @@ public class MainActivity extends Activity {
                     finish();
                     return;
                 }
-                long now = System.currentTimeMillis();
+                long now = SystemClock.elapsedRealtime();
                 long elapsed = now - simStartMs;
                 if (elapsed > 75000) {
                     simulation.stop();
