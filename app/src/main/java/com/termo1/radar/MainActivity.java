@@ -31,9 +31,18 @@ import com.termo1.radar.core.ThermalDetector;
 import com.termo1.radar.flight.FlightStateMachine;
 import com.termo1.radar.flight.BlindFlightMode;
 import com.termo1.radar.flight.VarioThermalDetector;
+import com.termo1.radar.flight.WindDriftCalculator;
+import com.termo1.radar.flight.WindDriftCalculator.WindCorrected;
 import com.termo1.radar.flight.CirclingManager;
+import com.termo1.radar.flight.CirclingManager.CirclingState;
+import com.termo1.radar.flight.LiftDatabase;
+import com.termo1.radar.flight.ThermalBaseEstimator;
+import com.termo1.radar.flight.ThermalBaseEstimator.ThermalBaseResult;
+import com.termo1.radar.flight.ThermalLocator;
 import com.termo1.radar.gps.GpsManager;
+import com.termo1.radar.logging.IgcLogger;
 import com.termo1.radar.logging.LogManager;
+import com.termo1.radar.map.StaticMapLoader;
 import com.termo1.radar.model.ThermalBlip;
 import com.termo1.radar.sensors.SensorController;
 import com.termo1.radar.sensors.VarioManager;
@@ -77,6 +86,8 @@ public class MainActivity extends Activity {
     private SensorController sensorController;
     private GpsManager gpsManager;
     private LogManager logManager;
+    private IgcLogger igcLogger;
+    private StaticMapLoader staticMapLoader;
     private FlightStateMachine flightStateMachine;
     private BlindFlightMode blindFlightMode;
     private boolean blindModeEnabled;
@@ -84,6 +95,14 @@ public class MainActivity extends Activity {
     private CirclingManager circlingManager;
     private VarioThermalDetector varioThermalDetector;
     private float varioThreshold = 0.5f;
+
+    // Phase 2: ThermalLocator + LiftDatabase
+    private ThermalLocator thermalLocator;
+    private LiftDatabase liftDatabase;
+    private float prevThermalLiftBaseline;
+    private long lastThermalBaseCalcMs;
+    private static final long THERMAL_BASE_INTERVAL_MS = 5000; // раз в 5с
+    private ThermalBaseResult lastThermalBaseResult;
 
     // ThermalRadarService (singleton, без binding)
     private ThermalRadarService radarService;
@@ -100,6 +119,7 @@ public class MainActivity extends Activity {
     private boolean prevLabelState;
     private float prevWindFrom = -2f;
     private float prevWindSpd = -2f;
+    private WindCorrected lastDrift;  // Phase 5: последний расчёт сноса
 
     // ========================================================================
     // Thermals
@@ -111,6 +131,11 @@ public class MainActivity extends Activity {
 
     // GPS trail storage: [lat, lon, timeMs]
     private final List<double[]> gpsTrail = new ArrayList<>();
+
+    // Phase 6: точки входа/выхода из термиков
+    private static final int MAX_MARKERS = 100;
+    private final List<double[]> entryMarkers = new ArrayList<>();  // [lat, lon]
+    private final List<double[]> exitMarkers = new ArrayList<>();   // [lat, lon]
 
     // ========================================================================
     // UI
@@ -253,6 +278,21 @@ public class MainActivity extends Activity {
         logManager.setExternalLogDir(getExternalFilesDir(null) != null
                 ? getExternalFilesDir(null).getAbsolutePath() : null);
 
+        // IGC логгер (1 Гц, параллельно с CSV)
+        igcLogger = new IgcLogger();
+        igcLogger.setLogDir(getExternalFilesDir(null) != null
+                ? getExternalFilesDir(null).getAbsolutePath() : null);
+
+        // Static map loader (OSM под радаром)
+        staticMapLoader = new StaticMapLoader(getCacheDir().getAbsolutePath());
+        staticMapLoader.setCallback((bitmap, lat, lon, zoom) -> {
+            runOnUiThread(() -> {
+                if (radarRenderer != null) {
+                    radarRenderer.setBackgroundMap(bitmap, lat, lon, zoom);
+                }
+            });
+        });
+
         flightStateMachine = new FlightStateMachine();
         flightStateMachine.setListener(flightListener);
 
@@ -279,6 +319,11 @@ public class MainActivity extends Activity {
             }
         });
 
+        // Phase 2: ThermalLocator + LiftDatabase
+        thermalLocator = new ThermalLocator();
+        liftDatabase = new LiftDatabase();
+        prevThermalLiftBaseline = -1.5f; // типичное снижение параплана
+
         // VarioThermal detector
         varioThermalDetector = new VarioThermalDetector();
         varioThreshold = prefs.getFloat("vario_threshold", 0.5f);
@@ -303,6 +348,12 @@ public class MainActivity extends Activity {
 
         // Sound
         varioSoundManager = new VarioSoundManager();
+
+        // Автокалибровка сенсоров при старте (через 1с, чтобы сенсоры успели инициализироваться)
+        new android.os.Handler().postDelayed(() -> {
+            resetCalibration();
+            android.util.Log.i("TERMO1", "Auto calibration at startup");
+        }, 1000);
 
         // TTS голосовые подсказки
         tts = new android.speech.tts.TextToSpeech(this, status -> {
@@ -436,6 +487,7 @@ public class MainActivity extends Activity {
             simHandler.removeCallbacks(simTask);
         }
         logManager.destroy();
+        if (igcLogger != null) igcLogger.destroy();
         if (tts != null) {
             tts.stop();
             tts.shutdown();
@@ -644,6 +696,10 @@ public class MainActivity extends Activity {
         @Override
         public void onFlightStarted() {
             logManager.startLogging();
+            igcLogger.startLogging();
+            // Автокалибровка при старте полёта (сенсоры уже работают)
+            resetCalibration();
+            android.util.Log.i("TERMO1", "Auto calibration on flight start");
             android.widget.Toast.makeText(MainActivity.this,
                     "Полёт обнаружен, запись лога", android.widget.Toast.LENGTH_SHORT).show();
         }
@@ -761,6 +817,7 @@ public class MainActivity extends Activity {
     public void startManualLogging() {
         if (logManager.isLogging()) return;
         logManager.startLogging();
+        igcLogger.startLogging();
         android.widget.Toast.makeText(this,
                 "Запись лога начата", android.widget.Toast.LENGTH_SHORT).show();
     }
@@ -850,6 +907,7 @@ public class MainActivity extends Activity {
                 circlingManager.update(
                     sensorController.getGyroZ(),
                     getCompassHeading(),
+                    gpsManager.getHeading(),  // GPS track
                     sensorController.getVario(),
                     gpsManager.getLat(),
                     gpsManager.getLon(),
@@ -857,6 +915,73 @@ public class MainActivity extends Activity {
                     gpsManager.getHeading(),
                     gpsManager.getAltitude(),
                     bgNow);
+
+                // Phase 2: ThermalLocator + LiftDatabase update
+                if (circlingManager.isCircling()) {
+                    float varioVal = sensorController.getVario();
+                    float altMsl = gpsManager.getAltitude();
+
+                    // LiftDatabase: записываем варио в сектор
+                    if (!Float.isNaN(varioVal) && !Float.isInfinite(varioVal)) {
+                        liftDatabase.recordLift(getCompassHeading(), varioVal);
+                    }
+
+                    // ThermalLocator: добавляем точки с весом подъёма
+                    double baseline = varioThermalDetector != null
+                            ? varioThermalDetector.getBaseline() : prevThermalLiftBaseline;
+                    thermalLocator.addPoint(
+                            gpsManager.getLat(), gpsManager.getLon(),
+                            varioVal, baseline, bgNow);
+
+                    // Дрейфуем и вычисляем центр (если есть ветер)
+                    if (circlingManager.getWindFromDeg() >= 0) {
+                        double windRad = Math.toRadians(circlingManager.getWindFromDeg() + 180);
+                        double windU = circlingManager.getWindSpeedMs() * Math.sin(windRad);
+                        double windV = circlingManager.getWindSpeedMs() * Math.cos(windRad);
+                        thermalLocator.update(
+                                gpsManager.getLat(), gpsManager.getLon(),
+                                windU, windV, bgNow);
+                    } else {
+                        thermalLocator.update(
+                                gpsManager.getLat(), gpsManager.getLon(),
+                                0, 0, bgNow);
+                    }
+
+                    // ThermalBaseEstimator: раз в 5с
+                    if (bgNow - lastThermalBaseCalcMs > THERMAL_BASE_INTERVAL_MS) {
+                        lastThermalBaseCalcMs = bgNow;
+                        float climbAvg = 0f;
+                        // Simple climb average from vario
+                        if (varioVal > 0) {
+                            climbAvg = varioVal;
+                        }
+                        if (circlingManager.getWindFromDeg() >= 0 && climbAvg > 0.2f) {
+                            lastThermalBaseResult = ThermalBaseEstimator.estimate(
+                                    gpsManager.getLat(), gpsManager.getLon(),
+                                    altMsl, climbAvg,
+                                    circlingManager.getWindFromDeg(),
+                                    circlingManager.getWindSpeedMs());
+                        }
+                    }
+                } else {
+                    // Не крутимся — сброс
+                    thermalLocator.reset();
+                    liftDatabase.clear();
+                    lastThermalBaseResult = null;
+                }
+
+                // Phase 5: WindDriftCalculator — расчёт сноса (если есть ветер)
+                if (circlingManager.getWindFromDeg() >= 0 && circlingManager.getWindSpeedMs() > 0.3f) {
+                    float airspeed = prefs.getFloat("airspeed_ms", 9.5f);
+                    lastDrift = WindDriftCalculator.calculate(
+                            gpsManager.getHeading(),
+                            airspeed,
+                            circlingManager.getWindFromDeg(),
+                            circlingManager.getWindSpeedMs());
+                } else {
+                    lastDrift = null;
+                }
+
                 bgHandler.postDelayed(this, BG_INTERVAL_MS);
             }
         };
@@ -1843,16 +1968,36 @@ public class MainActivity extends Activity {
             processSample();
 
             // Push GPS cache to LogManager (1 Гц данные, пишутся в каждом сэмпле)
+            // GPS cache for loggers
             logManager.updateGpsCache(
                 gpsManager.getLat(), gpsManager.getLon(),
                 gpsManager.getAltitude(), gpsManager.getSpeed(), gpsManager.getHeading(),
                 gpsManager.getAccuracy(), gpsManager.getFixAgeMs());
+
+            // Static map: обновить если сместились >500м
+            if (gpsManager.isReady() && gpsManager.getLat() != 0.0 && gpsManager.getLon() != 0.0) {
+                staticMapLoader.updateIfNeeded(gpsManager.getLat(), gpsManager.getLon(), 14);
+                // Принудительное обновление, если карта почти за краем
+                if (radarRenderer.isMapRefreshNeeded()) {
+                    staticMapLoader.forceUpdate(gpsManager.getLat(), gpsManager.getLon(), 14);
+                }
+            }
+
+            // IGC logger: 1 Гц GPS + сэмпл
+            igcLogger.updateGps(
+                gpsManager.getLat(), gpsManager.getLon(),
+                gpsManager.getAltitude(),
+                sensorController.getAltitudeRaw(),
+                gpsManager.getSpeed(), gpsManager.getHeading(),
+                gpsManager.getAccuracy(), gpsManager.getFixAgeMs());
+            igcLogger.recordSample();
 
             // Circling manager: gyroZ, heading, vario, GPS lat/lon, speed/course
             long cmNow = SystemClock.elapsedRealtime();
             circlingManager.update(
                 sensorController.getGyroZ(),
                 getCompassHeading(),
+                gpsManager.getHeading(),  // GPS track
                 sensorController.getVario(),
                 gpsManager.getLat(),
                 gpsManager.getLon(),
@@ -1866,15 +2011,31 @@ public class MainActivity extends Activity {
             boolean nowLabel = circlingManager.isShowThermalLabel();
             if (nowCircling && !prevCirclingState) {
                 logManager.recordEvent("CIRCLING_START", "circling confirmed");
+                igcLogger.recordEvent("C", "circling_start");
+                // Точка входа в термик
+                double lat = gpsManager.getLat();
+                double lon = gpsManager.getLon();
+                if (lat != 0.0 && lon != 0.0 && entryMarkers.size() < MAX_MARKERS) {
+                    entryMarkers.add(new double[]{lat, lon});
+                }
             } else if (!nowCircling && prevCirclingState) {
                 logManager.recordEvent("CIRCLING_END", "circling stopped");
+                igcLogger.recordEvent("C", "circling_stop");
+                // Точка выхода из термика
+                double lat = gpsManager.getLat();
+                double lon = gpsManager.getLon();
+                if (lat != 0.0 && lon != 0.0 && exitMarkers.size() < MAX_MARKERS) {
+                    exitMarkers.add(new double[]{lat, lon});
+                }
             }
             prevCirclingState = nowCircling;
 
             if (nowLabel && !prevLabelState) {
                 logManager.recordEvent("THERMAL_LABEL_ON", "540 deg reached");
+                igcLogger.recordEvent("T", "thermal_label_on");
             } else if (!nowLabel && prevLabelState) {
                 logManager.recordEvent("THERMAL_LABEL_OFF", "label hidden");
+                igcLogger.recordEvent("T", "thermal_label_off");
             }
             prevLabelState = nowLabel;
 
@@ -1884,6 +2045,8 @@ public class MainActivity extends Activity {
                 if (Math.abs(wf - prevWindFrom) > 10f || Math.abs(ws - prevWindSpd) > 0.5f) {
                     logManager.recordEvent("WIND_UPDATE",
                             String.format(java.util.Locale.US, "%.0fdeg %.1fm/s", wf, ws));
+                    igcLogger.recordEvent("W",
+                            String.format(java.util.Locale.US, "%.0f %.1f", wf, ws));
                     prevWindFrom = wf;
                     prevWindSpd = ws;
                 }
@@ -2066,6 +2229,43 @@ public class MainActivity extends Activity {
                     trailBrightBuf[trailCount] = brightness;
                     trailCount++;
                 }
+
+                // Конвертация entry/exit markers в пиксели радара
+                float[] markerPxBuf = new float[entryMarkers.size() + exitMarkers.size()];
+                float[] markerPyBuf = new float[entryMarkers.size() + exitMarkers.size()];
+                boolean[] markerIsEntry = new boolean[entryMarkers.size() + exitMarkers.size()];
+                int markerCount = 0;
+
+                for (double[] pt : entryMarkers) {
+                    float[] res = new float[2];
+                    Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], res);
+                    float dist = res[0];
+                    float bearingRad = (float) Math.toRadians(res[1]);
+                    float distPx = (dist / 150f) * trailR;
+                    if (distPx > trailR) continue;
+                    markerPxBuf[markerCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
+                    markerPyBuf[markerCount] = trailCy - (float) Math.cos(bearingRad) * distPx;
+                    markerIsEntry[markerCount] = true;
+                    markerCount++;
+                }
+
+                for (double[] pt : exitMarkers) {
+                    float[] res = new float[2];
+                    Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], res);
+                    float dist = res[0];
+                    float bearingRad = (float) Math.toRadians(res[1]);
+                    float distPx = (dist / 150f) * trailR;
+                    if (distPx > trailR) continue;
+                    markerPxBuf[markerCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
+                    markerPyBuf[markerCount] = trailCy - (float) Math.cos(bearingRad) * distPx;
+                    markerIsEntry[markerCount] = false;
+                    markerCount++;
+                }
+
+                radarRenderer.setTrailMarkers(markerPxBuf, markerPyBuf, markerIsEntry, markerCount);
+
+                float[] liftValues = liftDatabase.getLiftValues();
+                radarRenderer.setSectorLiftData(liftValues);
             } else {
                 // GPS lost — очищаем трек
                 gpsTrail.clear();
@@ -2103,6 +2303,41 @@ public class MainActivity extends Activity {
                     circlingManager.getDisplayWindSpeed());
             }
 
+            // Phase 2: передаём LiftDatabase и ThermalLocator в RadarRenderer
+            int bestSector = liftDatabase.getBestSectorIndex();
+            if (bestSector >= 0) {
+                radarRenderer.setBestLiftSector(
+                        bestSector,
+                        liftDatabase.getBestSectorLift(),
+                        liftDatabase.getBestSectorDirection());
+            } else {
+                radarRenderer.setBestLiftSector(-1, 0, "");
+            }
+
+            boolean showStats = circlingManager.isCircling() || circlingManager.isShowThermalLabel();
+            String coreText = "";
+            if (thermalLocator.isEstimateValid()) {
+                coreText = String.format(java.util.Locale.US,
+                        "Центр: %.0f° %.0fм",
+                        thermalLocator.getThermalBearing(),
+                        thermalLocator.getThermalDistance());
+            }
+            // Добавляем снос в статистику, если есть
+            if (lastDrift != null && Math.abs(lastDrift.driftAngle) > 2f) {
+                if (coreText.length() > 0) coreText += " | ";
+                coreText += lastDrift.guidanceText;
+            }
+            float thermalBaseMsl = 0;
+            if (lastThermalBaseResult != null && lastThermalBaseResult.valid) {
+                thermalBaseMsl = (float) lastThermalBaseResult.groundAltitude;
+            }
+            radarRenderer.setThermalStats(
+                    circlingManager.isCircling() ? sensorController.getVario() : 0,
+                    gpsManager.getAltitude(),
+                    thermalBaseMsl,
+                    coreText,
+                    showStats);
+
             float headingDisplay = getCompassHeading();
             float varioDisplay = sensorController.getVario();
             if (scenarioMode && flightSim != null && flightSim.isRunning()) {
@@ -2112,6 +2347,10 @@ public class MainActivity extends Activity {
                 headingDisplay = trackReplayer.getHeading();
                 varioDisplay = trackReplayer.getVario();
             }
+
+            // Позиция пилота для плавного сдвига карты
+            radarRenderer.setPilotPosition(gpsManager.getLat(), gpsManager.getLon());
+
             radarRenderer.draw(canvas, nowMs, thermalsCopy,
                     headingDisplay, varioDisplay, currentStatus,
                     sensorController.getMaxSnr(), thermalsCopy.size(),
