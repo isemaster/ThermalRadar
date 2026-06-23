@@ -169,11 +169,10 @@ public class SignalProcessor {
         bpOutY = bandpassY(ay);
 
         // ---- Zero-crossing детектор (только X канал) ----
+        // BUG-16: используем только X канал (однонаправленный ZC даёт 1 crossing/цикл)
+        // freq = totalZc / dt, где totalZc = crossings за окно
         if (prevBpX >= 0f && bpOutX < 0f) {
             zcCountX++;
-        }
-        if (prevBpY >= 0f && bpOutY < 0f) {
-            zcCountY++;
         }
         prevBpX = bpOutX;
         prevBpY = bpOutY;
@@ -181,8 +180,9 @@ public class SignalProcessor {
         // Раз в секунду обновляем частоту
         long now = SystemClock.elapsedRealtime();
         if (now - zcTimerMs >= ZC_WINDOW_MS) {
-            int totalZc = zcCountX + zcCountY;
-            float measuredFreq = (float) totalZc / ((now - zcTimerMs) / 1000f);
+            int totalZc = zcCountX;  // только X, без удвоения
+            float dtSec = (now - zcTimerMs) / 1000f;
+            float measuredFreq = (dtSec > 0) ? (float) totalZc / dtSec : 0f;
             // Ограничиваем полосой фильтра
             if (measuredFreq < BP_MIN_FREQ) measuredFreq = BP_MIN_FREQ;
             if (measuredFreq > BP_MAX_FREQ) measuredFreq = BP_MAX_FREQ;
@@ -194,10 +194,11 @@ public class SignalProcessor {
             zcTimerMs = now;
         }
 
-        // ---- Калибровка шумового порога (инкрементальное среднее) ----
+        // ---- Калибровка шумового порога (RMS за период калибровки) ----
         if (calibCount < CALIB_SAMPLES) {
             if (calibCount == 0) noiseFloor = 0f;
-            float sample = Math.abs(bpOutX) + Math.abs(bpOutY);
+            // BUG-16: RMS вместо L1-нормы для noiseFloor
+            float sample = (float) Math.sqrt(bpOutX * bpOutX + bpOutY * bpOutY);
             noiseFloor += (sample - noiseFloor) / (calibCount + 1);
             calibCount++;
             return 0f;
@@ -238,12 +239,10 @@ public class SignalProcessor {
 
             turbulenceLevel = (float) Math.sqrt(rmsX * rmsX + rmsY * rmsY);
 
-            // Направление: знак от среднего BP (4 квадранта), амплитуда от RMS
-            // atan2(X, Y): 0°=север (ось Y), 90°=восток (ось X) — соответствует радару
+            // Направление турбулентности (стабильный метод)
+            // Используем atan2 средних значений BP, а не знаковый RMS
             if (turbulenceLevel > TURBULENCE_DIR_THRESHOLD) {
-                float dirY = (meanY >= 0) ? rmsY : -rmsY;
-                float dirX = (meanX >= 0) ? rmsX : -rmsX;
-                turbulenceDir = (float) Math.atan2(dirX, dirY);
+                turbulenceDir = (float) Math.atan2(meanX, meanY);
             }
         }
 

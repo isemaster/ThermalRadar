@@ -424,20 +424,21 @@ public class CirclingManager {
                 double ekfSpeed = windEKF.getWindSpeed();
                 double ekfDir = windEKF.getWindDirectionDeg();
                 if (ekfSpeed > 0.5f) {
-                    if (windConfidence < 2) {
-                        float newFrom = (float) ekfDir;
-                        if (windFromDeg < 0) {
-                            windFromDeg = newFrom;
-                            windSpeedMs = (float) ekfSpeed;
-                        } else {
-                            float wdiff = newFrom - windFromDeg;
-                            if (wdiff > 180f) wdiff -= 360f;
-                            else if (wdiff < -180f) wdiff += 360f;
-                            windFromDeg += WIND_DIR_EMA_ALPHA * 0.5f * wdiff;
-                            if (windFromDeg < 0f) windFromDeg += 360f;
-                            if (windFromDeg >= 360f) windFromDeg -= 360f;
-                            windSpeedMs += WIND_SPEED_EMA_ALPHA * 0.5f * ((float)ekfSpeed - windSpeedMs);
-                        }
+                    float newFrom = (float) ekfDir;
+                    if (windFromDeg < 0) {
+                        windFromDeg = newFrom;
+                        windSpeedMs = (float) ekfSpeed;
+                    } else {
+                        // BUG-12: Всегда обновляем от EKF, но с меньшим весом
+                        // при высоком windConfidence (спирали точнее).
+                        float ekfWeight = (windConfidence < 2) ? 1.0f : 0.3f;
+                        float wdiff = newFrom - windFromDeg;
+                        if (wdiff > 180f) wdiff -= 360f;
+                        else if (wdiff < -180f) wdiff += 360f;
+                        windFromDeg += WIND_DIR_EMA_ALPHA * ekfWeight * wdiff;
+                        if (windFromDeg < 0f) windFromDeg += 360f;
+                        if (windFromDeg >= 360f) windFromDeg -= 360f;
+                        windSpeedMs += WIND_SPEED_EMA_ALPHA * ekfWeight * ((float)ekfSpeed - windSpeedMs);
                     }
                     windStore.addEKFMeasurement(windEKF, altMsl, nowMs);
                 }

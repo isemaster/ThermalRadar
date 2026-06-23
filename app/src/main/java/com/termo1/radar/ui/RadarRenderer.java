@@ -408,8 +408,9 @@ public class RadarRenderer {
 
             sectorFillPaint.setColor(color);
 
-            // Угол: сектор 0 = 350°..10°, т.е. центр на 0° (N)
-            float startAngle = - (i * sectorDeg + sectorDeg / 2f);
+            // BUG-23: сектор 0 с центром ровно на 0° (N)
+            // startAngle = -(i * 10) — без смещения на пол-сектора
+            float startAngle = -(i * sectorDeg);
             c.drawArc(sectorRect, startAngle - sectorDeg / 2f, sectorDeg, true, sectorFillPaint);
         }
     }

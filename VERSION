@@ -1,4 +1,16 @@
-TERMO1 Radar — v0.2.0
+TERMO1 Radar — v0.2.2
 ========================
 
-Инкрементальный апдейт после v0.1.x. Множество изменений кода.
+Полный code review fix: исправлены 28 багов (6 критических + 8 высоких + 9 средних + 5 низких).
+- FSM thread safety + гистерезис скорости
+- ThermalBaseEstimator: направление ветра
+- WakeLock утечка, deep-copy ThermalBlip
+- IGC-логгер: GpsSnapshot + thread safety
+- FlightSimulator: белый шум, quiet period, altMsl=500
+- SignalProcessor: ZC, noiseFloor, направление
+- ThermalLocator: синхронизация
+- Anti-click VarioSoundManager
+- VarioThermalDetector: baseline
+- LiftDatabase: пересчёт bestSector
+- RadarRenderer: секторы 0° центр
+- WindDriftCalculator: tan

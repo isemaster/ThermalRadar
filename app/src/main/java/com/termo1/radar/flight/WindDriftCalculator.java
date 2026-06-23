@@ -90,8 +90,9 @@ public class WindDriftCalculator {
                   + windSpeed * Math.cos(windAngleRad);
         float groundSpeed = Math.max(0.1f, (float) gs);
 
-        // Drift per km: сколько метров сноса на 1 км пути
-        float driftPerKm = (float) Math.abs(Math.sin(driftRad) * 1000);
+        // BUG-24: drift per km — tan (боковое смещение на км ПУТЕВОГО пути)
+        // sin даёт смещение на км воздушного пути, что неверно при сильном сносе
+        float driftPerKm = (float) Math.abs(Math.tan(driftRad) * 1000);
 
         // Текстовое описание
         String guidance = getGuidance(driftDeg, driftPerKm);
@@ -124,8 +125,4 @@ public class WindDriftCalculator {
         return driftDeg > 0 ? "сносит вправо" : "сносит влево";
     }
 
-    // ========================================================================
-    // Locale для String.format
-    // ========================================================================
-    private static final java.util.Locale LOCALE = java.util.Locale.US;
 }

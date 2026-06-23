@@ -327,28 +327,39 @@ public class VarioSoundManager {
     }
 
     /**
-     * Anti-click: завершить текущий период синусоиды до crossing zero.
-     * Сколько сэмплов нужно, чтобы фаза дошла до 0 или π (zero crossing).
+     * Anti-click: завершить текущий период синусоиды, дойдя до zero crossing.
+     * Генерирует сэмплы до ближайшего crossing (0 или π), затем fade-out.
      *
      * @return количество сэмплов для завершения (0 если уже на zero crossing)
      */
     private int completeSinePeriod() {
         double twoPi = 2.0 * Math.PI;
-        if (phase <= 0.001 || Math.abs(phase - Math.PI) < 0.001) {
-            return 0; // уже на zero crossing
+        double modPhase = phase % twoPi;
+        if (modPhase < 0) modPhase += twoPi;
+
+        // Если почти на zero crossing — возвращаем 0
+        if (modPhase <= 0.001 || Math.abs(modPhase - Math.PI) < 0.001) {
+            return 0;
         }
+
         // Сколько до следующего zero crossing (0 или π)
         double toZero;
-        if (phase < Math.PI) {
-            toZero = Math.PI - phase;
+        if (modPhase < Math.PI) {
+            toZero = Math.PI - modPhase;
         } else {
-            toZero = twoPi - phase;
+            toZero = twoPi - modPhase;
         }
-        // Возвращаем примерное количество сэмплов:
-        // toZero / (2π) от периода = toZero / (2π) * samples_per_period
-        // Но мы не знаем текущую частоту на этом этапе.
-        // Упрощённо: записываем 1 сэмпл с затуханием до 0
-        return 1; // минимальный anti-click — просто переход
+
+        // Сколько сэмплов до zero crossing при текущей фазовой скорости
+        // twoPiF = 2*PI*freq/SAMPLE_RATE — приращение фазы за сэмпл
+        // Но мы не знаем частоту на момент вызова.
+        // Используем последнюю известную частоту: аппроксимируем freq из SAMPLE_RATE
+        // как минимум 100 Гц (чтобы не генерировать слишком много сэмплов)
+        // Максимум: 1 период 100 Гц = 441 сэмпла
+        int samples = (int) Math.ceil(toZero / (2.0 * Math.PI) * SAMPLE_RATE / 100.0);
+        if (samples > 500) samples = 500;
+        if (samples < 1) samples = 1;
+        return samples; // fade-out будет применён в audioLoop
     }
 
     // ========================================================================

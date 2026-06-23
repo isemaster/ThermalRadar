@@ -53,20 +53,30 @@ public class VarioThermalDetector {
 
     /**
      * Обновить детектор новым значением вариометра.
+     * BUG-21: не включаем в baseline значения, когда термик уже обнаружен,
+     * чтобы baseline не поднимался.
      *
      * @param varioMs текущее значение варио (м/с)
      * @param nowMs   монотонное время
+     * @param isCircling флаг крутки — в крутке не обновляем baseline
      * @return true если обнаружен термик по варио
      */
     public boolean update(float varioMs, long nowMs) {
+        return update(varioMs, nowMs, false);
+    }
+
+    public boolean update(float varioMs, long nowMs, boolean isCircling) {
         currentVario = varioMs;
 
         if (startTimeMs == 0) startTimeMs = nowMs;
 
-        // Заполняем буфер
-        varioBuffer[bufferIdx] = varioMs;
-        bufferIdx = (bufferIdx + 1) % BASELINE_WINDOW;
-        if (bufferFill < BASELINE_WINDOW) bufferFill++;
+        // BUG-21: не обновляем baseline во время детекции термика или в крутке
+        if (!thermalDetected && !isCircling) {
+            // Заполняем буфер
+            varioBuffer[bufferIdx] = varioMs;
+            bufferIdx = (bufferIdx + 1) % BASELINE_WINDOW;
+            if (bufferFill < BASELINE_WINDOW) bufferFill++;
+        }
 
         // Пересчитываем baseline
         if (bufferFill >= BASELINE_WINDOW ||

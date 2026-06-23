@@ -95,14 +95,9 @@ public class ThermalLocator {
 
     /**
      * Добавить точку наблюдения во время крутки.
-     *
-     * @param lat       широта
-     * @param lon       долгота
-     * @param vario     текущий варио (м/с)
-     * @param baseline  базовое снижение (м/с), для вычисления lift = vario - baseline
-     * @param nowMs     время
+     * Synchronized для потокобезопасности.
      */
-    public void addPoint(double lat, double lon, double vario,
+    public synchronized void addPoint(double lat, double lon, double vario,
                          double baseline, long nowMs) {
         // Устанавливаем референс проекции при первом добавлении
         if (!refSet) {
@@ -149,7 +144,7 @@ public class ThermalLocator {
      * @param windV       компонента ветра по Y (м/с) — положительный = на север
      * @param nowMs       время
      */
-    public void update(double pilotLat, double pilotLon,
+    public synchronized void update(double pilotLat, double pilotLon,
                        double windU, double windV, long nowMs) {
         if (count < MIN_POINTS) {
             estimateValid = false;
@@ -159,7 +154,7 @@ public class ThermalLocator {
         // 1. Дрейф точек по ветру
         for (int i = 0; i < count; i++) {
             Observation obs = buffer[i];
-            double dtSec = (nowMs - obs.timeMs) / 1000.0;
+            double dtSec = Math.max(0, (nowMs - obs.timeMs) / 1000.0);  // BUG-19: защита от отрицательного dt
 
             // Recency weight: чем старше, тем меньше вес
             double t = Math.min(dtSec, 60.0); // cap at 60 sec

@@ -4,12 +4,12 @@ package com.termo1.radar.core;
  * FlightSimulator — полный сценарий тестового полёта на 2 минуты.
  *
  * Сценарий:
- *   0-10s:  Лебёдка на СЕВЕР, 3 м/с вперёд, 5 м/с набор → 500м
- *  10-20s:  Свободный полёт на ЮВ (135°), снос ветром 5 м/с с СЗ
- *  20-30s:  Термик-блип на 100м справа спереди, поворот к нему
- *  30-90s:  Крутка вокруг термика (Ø50м), асимметричный подъём 1-3 м/с
- *           Постепенная центровка → стабильные 3 м/с
- *  90-100s: Покидание термика, полёт на ЮВ
+ *   0-2s:   Тишина (quiet period — калибровка noiseFloor)
+ *   2-12s:  Лебёдка на СЕВЕР, 3 м/с вперёд, 5 м/с набор → 500м
+ *  12-22s:  Свободный полёт на ЮВ (135°), снос ветром 5 м/с с СЗ
+ *  22-32s:  Термик-блип на 100м справа спереди, поворот к нему
+ *  32-92s:  Крутка вокруг термика (Ø50м), асимметричный подъём 1-3 м/с
+ *  92-102s: Покидание термика, полёт на ЮВ
  *
  * Ветер: 5 м/с с СЗ (315°), сносит термик на ЮВ.
  * Координаты: +Y=N, +X=E, метры от старта.
@@ -32,12 +32,13 @@ public class FlightSimulator {
     private static final double WIND_X = WIND_SPEED_MS * Math.sin(Math.toRadians(135));  // +3.54
     private static final double WIND_Y = WIND_SPEED_MS * Math.cos(Math.toRadians(135));  // -3.54
 
-    // Phase timing (seconds)
-    private static final float T_TOW_END = 10f;
-    private static final float T_FREE_END = 20f;
-    private static final float T_APPROACH_END = 30f;
-    private static final float T_CIRCLE_END = 90f;
-    private static final float SIM_END_SEC = 100f;
+    // Phase timing (seconds) — сдвинуто на 2s из-за quiet period
+    private static final float QUIET_END = 2f;
+    private static final float T_TOW_END = 12f;
+    private static final float T_FREE_END = 22f;
+    private static final float T_APPROACH_END = 32f;
+    private static final float T_CIRCLE_END = 92f;
+    private static final float SIM_END_SEC = 102f;
 
     // Tow
     private static final float TOW_SPEED = 3f;
@@ -61,8 +62,10 @@ public class FlightSimulator {
     private static final float CIRCLE_PERIOD_SEC = 17.45f;
     private static final float CIRCLE_RATE_RAD_S = (float)(2 * Math.PI / CIRCLE_PERIOD_SEC);
 
-    // Noise
-    private static final float NOISE_FLOOR_G = 0.003f;
+    // Noise — белый шум (нормальное распределение)
+    private static final float NOISE_FLOOR_G = 0.01f;
+    // Для генерации белого шума
+    private double noiseSeedX, noiseSeedY;
 
     // ========================================================================
     // State
@@ -113,12 +116,14 @@ public class FlightSimulator {
         elapsedMs = 0;
         tSec = 0;
         noisePhase = 0;
+        noiseSeedX = 0;
+        noiseSeedY = 0;
 
         pilotX = 0; pilotY = 0;
         heading = 0f;
-        vario = TOW_VARIO;
-        speed = TOW_SPEED;
-        altMsl = 0f;
+        vario = 0f;
+        speed = 0f;
+        altMsl = 500f;
         gyroZ = 0f;
         accelX = 0f; accelY = 0f;
 
@@ -206,7 +211,17 @@ public class FlightSimulator {
     private void updatePhase(float dt) {
         float t = tSec;
 
-        if (t < T_TOW_END) {
+        if (t < QUIET_END) {
+            // Quiet period — калибровка noiseFloor, без движения
+            heading = 0f;
+            vario = 0f;
+            speed = 0f;
+            gyroZ = 0f;
+            isCircling = false;
+            showRedCore = false;
+            guidanceText = "Калибровка...";
+
+        } else if (t < T_TOW_END) {
             heading = 0f;
             vario = TOW_VARIO;
             speed = TOW_SPEED;
@@ -410,21 +425,32 @@ public class FlightSimulator {
     // ========================================================================
 
     private void updateAccel(float dt) {
-        float ax = NOISE_FLOOR_G * (float) Math.sin(noisePhase * 0.7);
-        float ay = NOISE_FLOOR_G * (float) Math.sin(noisePhase * 1.1 + 0.3);
+        // БЕЛЫЙ ШУМ (Box-Muller) — реалистичная калибровка noiseFloor
+        double u1 = Math.sin(noiseSeedX += 0.1) * 0x1p31;
+        double u2 = Math.cos(noiseSeedY += 0.1) * 0x1p31;
+        // Normal distribution approximation via Box-Muller
+        double u1n = (u1 % 1.0 + 1.0) % 1.0;
+        double u2n = (u2 % 1.0 + 1.0) % 1.0;
+        if (u1n < 1e-10) u1n = 0.5;
+        double norm = Math.sqrt(-2.0 * Math.log(u1n)) * Math.cos(2.0 * Math.PI * u2n);
+        float whiteX = NOISE_FLOOR_G * (float) Math.min(Math.abs(norm), 3.0) * Math.signum((float)norm);
+        // Second sample for Y
+        double normY = Math.sqrt(-2.0 * Math.log(u1n)) * Math.sin(2.0 * Math.PI * u2n);
+        float whiteY = NOISE_FLOOR_G * (float) Math.min(Math.abs(normY), 3.0) * Math.signum((float)normY);
+
+        float ax = whiteX;
+        float ay = whiteY;
 
         if (isCircling) {
-            float bank = 0.015f * (float) Math.sin(circleAngle * 2);
-            ax += bank * 0.7f;
-            ay += bank * 0.3f;
-            float turb = 0.01f + 0.03f * (THERMAL_LIFT_CORE - liftAtPilot);
+            // Турбулентность в термике: 0.01–0.06g (SNR > 3 для ThermalDetector)
+            float turb = 0.02f + 0.04f * (THERMAL_LIFT_CORE - liftAtPilot) / THERMAL_LIFT_CORE;
             ax += turb * (float) Math.sin(circleAngle * 3 + noisePhase * 0.1);
             ay += turb * (float) Math.cos(circleAngle * 3 + noisePhase * 0.07f);
         }
 
-        if (tSec >= T_FREE_END && tSec < T_APPROACH_END) {
-            ax += 0.008f * (float) Math.sin(noisePhase * 2);
-            ay += 0.008f * (float) Math.cos(noisePhase * 1.5);
+        if (tSec >= T_FREE_END && tSec < T_CIRCLE_END) {
+            ax += 0.005f * (float) Math.sin(noisePhase * 2);
+            ay += 0.005f * (float) Math.cos(noisePhase * 1.5);
         }
 
         accelX = ax;

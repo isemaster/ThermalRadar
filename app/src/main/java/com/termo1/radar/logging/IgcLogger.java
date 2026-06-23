@@ -51,18 +51,19 @@ public class IgcLogger {
     /** Нарезка: 10 минут на файл */
     private static final long CHUNK_DURATION_MS = 10 * 60 * 1000L;
 
-    /** Формат времени IGC: HHMMSS */
-    private static final SimpleDateFormat IGC_TIME_FMT =
-            new SimpleDateFormat("HHmmss", Locale.US);
-    /** Формат даты IGC: DDMMYY */
-    private static final SimpleDateFormat IGC_DATE_FMT =
-            new SimpleDateFormat("ddMMyy", Locale.US);
+    /** Формат времени IGC: HHMMSS — ThreadLocal для потокобезопасности */
+    private static final ThreadLocal<SimpleDateFormat> IGC_TIME_FMT_TL =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("HHmmss", Locale.US));
+    /** Формат даты IGC: DDMMYY — ThreadLocal для потокобезопасности */
+    private static final ThreadLocal<SimpleDateFormat> IGC_DATE_FMT_TL =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("ddMMyy", Locale.US));
 
     // ========================================================================
     // Состояние
     // ========================================================================
 
-    private boolean logging;
+    /** Флаг логирования — volatile для видимости между потоками */
+    private volatile boolean logging;
     private String logDir;
 
     // Текущий файл
@@ -87,6 +88,34 @@ public class IgcLogger {
     private volatile float cachedHeading;
     private volatile float cachedAccuracy;
     private volatile long cachedFixAgeMs;
+
+    // ========================================================================
+    // GpsSnapshot — immutable snapshot для потокобезопасного обмена GPS данными
+    // ========================================================================
+
+    /** Неизменяемый снимок GPS-данных для потокобезопасности */
+    private static class GpsSnapshot {
+        final double lat, lon;
+        final float altGps, altBaro, speed, heading, accuracy;
+        final long fixAgeMs;
+        final long timestampMs;
+
+        GpsSnapshot(double lat, double lon, float altGps, float altBaro,
+                    float speed, float heading, float accuracy, long fixAgeMs) {
+            this.lat = lat;
+            this.lon = lon;
+            this.altGps = altGps;
+            this.altBaro = altBaro;
+            this.speed = speed;
+            this.heading = heading;
+            this.accuracy = accuracy;
+            this.fixAgeMs = fixAgeMs;
+            this.timestampMs = SystemClock.elapsedRealtime();
+        }
+    }
+
+    /** Единый атомарный снимок (вместо 8 отдельных volatile полей) */
+    private volatile GpsSnapshot gpsSnapshot;
 
     // ========================================================================
     // Callback
@@ -116,17 +145,12 @@ public class IgcLogger {
 
     /**
      * Обновить GPS данные (вызывать из MainActivity в bgTask).
+     * Атомарно заменяет весь снимок (без race condition между полями).
      */
     public void updateGps(double lat, double lon, float altGps, float altBaro,
                           float speed, float heading, float accuracy, long fixAgeMs) {
-        cachedLat = lat;
-        cachedLon = lon;
-        cachedAltGps = altGps;
-        cachedAltBaro = altBaro;
-        cachedSpeed = speed;
-        cachedHeading = heading;
-        cachedAccuracy = accuracy;
-        cachedFixAgeMs = fixAgeMs;
+        gpsSnapshot = new GpsSnapshot(lat, lon, altGps, altBaro,
+                                      speed, heading, accuracy, fixAgeMs);
     }
 
     // ========================================================================
@@ -189,16 +213,18 @@ public class IgcLogger {
         if (elapsed - lastLogElapsedMs < LOG_INTERVAL_MS) return;
         lastLogElapsedMs = elapsed;
 
-        // Проверка валидности GPS
-        if (cachedLat == 0.0 && cachedLon == 0.0) return;
-        if (cachedFixAgeMs > 5000) return;
+        // Проверка валидности GPS — атомарное чтение снимка
+        GpsSnapshot gps = gpsSnapshot;
+        if (gps == null) return;
+        if (gps.lat == 0.0 && gps.lon == 0.0) return;
+        if (gps.fixAgeMs > 5000) return;
 
         seqNum++;
 
         // Формируем B-record
         String bRecord = formatBRecord(
-                elapsed, cachedLat, cachedLon,
-                cachedAltBaro, cachedAltGps);
+                elapsed, gps.lat, gps.lon,
+                gps.altBaro, gps.altGps);
 
         writeLine(bRecord);
     }
@@ -250,9 +276,13 @@ public class IgcLogger {
         if (gpsAltInt > 99999) gpsAltInt = 99999;
 
         // A = GPS fix validity (1 = valid 3D fix, 2 = valid 2D fix)
-        char fixChar = (cachedFixAgeMs < 3000 && cachedAccuracy < 50) ? 'A' : 'V';
+        GpsSnapshot gps = gpsSnapshot;
+        char fixChar = (gps != null && gps.fixAgeMs < 3000 && gps.accuracy < 50) ? 'A' : 'V';
 
-        return String.format(Locale.US, "B%s%s%s %s%s %c%05d%05d",
+        // BUG-26: B-record без лишнего пробела между N/S и lon — стандарт IGC
+        // IGC: BHHMMSSDDMMmmmNDDDMMmmmEAPPPGGGGG или с пробелами группами
+        // Наш формат: B HHMMSS DDMMmmmN DDDMMmmmE A PPPPP GGGGG
+        return String.format(Locale.US, "B%s%s%s%s%s %c%05d%05d",
                 timeStr, latStr, (lat >= 0 ? "N" : "S"),
                 lonStr, (lon >= 0 ? "E" : "W"),
                 fixChar, pressAlt, gpsAltInt);
@@ -266,7 +296,7 @@ public class IgcLogger {
         long wallMs = System.currentTimeMillis()
                 - (SystemClock.elapsedRealtime() - startElapsedMs) + elapsedMs;
         Date d = new Date(wallMs);
-        return IGC_TIME_FMT.format(d);
+        return IGC_TIME_FMT_TL.get().format(d);
     }
 
     /**
@@ -327,10 +357,10 @@ public class IgcLogger {
         Date startDate = new Date(wallStart);
 
         // HFDTE: дата
-        writeLine("A" + IGC_DATE_FMT.format(startDate));
+        writeLine("A" + IGC_DATE_FMT_TL.get().format(startDate));
 
         // HFxxx: заголовки
-        writeLine("HFDTE" + IGC_DATE_FMT.format(startDate));
+        writeLine("HFDTE" + IGC_DATE_FMT_TL.get().format(startDate));
         writeLine("HFPLTPILOT:ARTHUR");
         writeLine("HFGTYGLIDERTYPE:Paraglider");
         writeLine("HFGIDGLIDERID:TERMO1");
@@ -349,7 +379,10 @@ public class IgcLogger {
         if (currentOut == null) return;
 
         try {
-            // Пишем G-record (упрощённый CRC — просто количество записей)
+            // Пишем G-record (упрощённый — количество записей)
+            // ВНИМАНИЕ: G-record — placeholder, НЕ FAI-compliant.
+            // Для FAI-санкционированных соревнований требуется RSA-подпись
+            // по спецификации IGC G-record.
             int gSum = seqNum % 65536;
             writeLine("G" + String.format("%04X", gSum));
 

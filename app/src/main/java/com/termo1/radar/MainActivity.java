@@ -483,6 +483,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        releaseWakeLock();
         if (simHandler != null && simTask != null) {
             simHandler.removeCallbacks(simTask);
         }
@@ -673,14 +674,19 @@ public class MainActivity extends Activity {
             if (thermalDetector != null) {
                 ThermalBlip blip = thermalDetector.getCurrentBlip();
                 if (blip != null) {
-                    return "," + blip.angle
+                    float snr = 0f, noiseFloor = 0f;
+                    SignalProcessor sp = thermalDetector.getSignalProcessor();
+                    if (sp != null) {
+                        snr = sp.getSnr();
+                        noiseFloor = sp.getNoiseFloor();
+                    }
+                    return ","
+                            + blip.angle
                             + "," + String.format(java.util.Locale.US, "%.1f", blip.strength)
                             + "," + (int) blip.distance
                             + "," + blip.source
-                            + "," + String.format(java.util.Locale.US, "%.2f",
-                                    thermalDetector.getSignalProcessor().getSnr())
-                            + "," + String.format(java.util.Locale.US, "%.4f",
-                                    thermalDetector.getSignalProcessor().getNoiseFloor());
+                            + "," + String.format(java.util.Locale.US, "%.2f", snr)
+                            + "," + String.format(java.util.Locale.US, "%.4f", noiseFloor);
                 }
             }
             return ",,,,,,";
@@ -769,7 +775,11 @@ public class MainActivity extends Activity {
         } else {
             vario = sensorController.getVario();
         }
-        float level = thermalDetector.getSignalProcessor().getTurbulenceMs2();
+        float level = 0f;
+        if (thermalDetector != null) {
+            SignalProcessor sp = thermalDetector.getSignalProcessor();
+            if (sp != null) level = sp.getTurbulenceMs2();
+        }
 
         // VarioThermal detector
         boolean varioThermal = false;
@@ -1139,6 +1149,7 @@ public class MainActivity extends Activity {
         if (!testMode || testStepCorrect || thermalDetector == null) return;
 
         SignalProcessor sp = thermalDetector.getSignalProcessor();
+        if (sp == null) return;
         float hpX = sp.getBpX();
         float hpY = sp.getBpY();
         float level = sp.getTurbulenceLevel();
@@ -1964,9 +1975,6 @@ public class MainActivity extends Activity {
                 svc.updateNotification(logManager.isLogging(), sensorController.getVario());
             }
 
-            // Process sample for flight state + sound
-            processSample();
-
             // Push GPS cache to LogManager (1 Гц данные, пишутся в каждом сэмпле)
             // GPS cache for loggers
             logManager.updateGpsCache(
@@ -1991,20 +1999,6 @@ public class MainActivity extends Activity {
                 gpsManager.getSpeed(), gpsManager.getHeading(),
                 gpsManager.getAccuracy(), gpsManager.getFixAgeMs());
             igcLogger.recordSample();
-
-            // Circling manager: gyroZ, heading, vario, GPS lat/lon, speed/course
-            long cmNow = SystemClock.elapsedRealtime();
-            circlingManager.update(
-                sensorController.getGyroZ(),
-                getCompassHeading(),
-                gpsManager.getHeading(),  // GPS track
-                sensorController.getVario(),
-                gpsManager.getLat(),
-                gpsManager.getLon(),
-                gpsManager.getSpeed(),
-                gpsManager.getHeading(),
-                gpsManager.getAltitude(),
-                cmNow);
 
             // Track circling/label/wind state transitions for event log
             boolean nowCircling = circlingManager.isCircling();
@@ -2275,7 +2269,9 @@ public class MainActivity extends Activity {
             long nowMs = System.currentTimeMillis();
             synchronized (thermalLock) {
                 thermalsCopy.clear();
-                thermalsCopy.addAll(thermals);
+                for (ThermalBlip t : thermals) {
+                    thermalsCopy.add(new ThermalBlip(t));
+                }
             }
             // Thermal core + wind for radar renderer
             if (scenarioMode && flightSim != null && flightSim.isRunning()) {
@@ -2387,9 +2383,15 @@ public class MainActivity extends Activity {
             // Info panel
             if (thermalDetector != null) {
                 SignalProcessor sp = thermalDetector.getSignalProcessor();
-                uiManager.drawInfo(canvas, 0, h, sp.getTurbulenceMs2(), sp.getSnr(),
-                        thermalsCopy.size(), sp.getBpX(), sp.getBpY(),
-                        sp.getStableDirDeg(), thermalDetector.getStatusText());
+                if (sp != null) {
+                    uiManager.drawInfo(canvas, 0, h, sp.getTurbulenceMs2(), sp.getSnr(),
+                            thermalsCopy.size(), sp.getBpX(), sp.getBpY(),
+                            sp.getStableDirDeg(), thermalDetector.getStatusText());
+                } else {
+                    uiManager.drawInfo(canvas, 0, h,
+                            sensorController.getVario(), sensorController.getRecentSnr(),
+                            thermalsCopy.size(), 0, 0, 0, currentStatus);
+                }
             } else {
                 uiManager.drawInfo(canvas, 0, h,
                         sensorController.getVario(), sensorController.getRecentSnr(),
@@ -2444,9 +2446,13 @@ public class MainActivity extends Activity {
             // Sensor data below start button
             if (thermalDetector != null) {
                 SignalProcessor sp = thermalDetector.getSignalProcessor();
-                float amp = sp.getTurbulenceMs2();
-                float freq = Math.max(0.5f, Math.min(2.5f, sp.getDominantFrequency()));
-                float dir = sp.getStableDirDeg();
+                float amp = 0f, freq = 0f, dir = 0f;
+                boolean spOk = (sp != null);
+                if (spOk) {
+                    amp = sp.getTurbulenceMs2();
+                    freq = Math.max(0.5f, Math.min(2.5f, sp.getDominantFrequency()));
+                    dir = sp.getStableDirDeg();
+                }
                 if (dir < 0) dir += 360f;
                 if (dir >= 360f) dir -= 360f;
 

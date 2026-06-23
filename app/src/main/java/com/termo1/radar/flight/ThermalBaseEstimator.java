@@ -106,17 +106,18 @@ public class ThermalBaseEstimator {
             double h = altitudeMsl - step * dh;  // высота на этом шаге
             double t = (altitudeMsl - h) / averageClimb;  // время спуска до этой высоты
 
-            // Снос по ветру: позиция смещается против ветра (вверх по потоку)
-            // Чем ниже спускаемся, тем дальше сносит
+            // Снос по ветру: позиция смещается ПРОТИВ ветра (вверх по потоку)
+            // База термика — где столб касается земли. Столб наклонён ПО ветру,
+            // поэтому база находится С НАВЕТРЕННОЙ стороны от пилота.
             double driftDist = windSpeedMs * t;
-            locLat = pilotLat + (windV * t) / 111320.0;
-            locLon = pilotLon + (windU * t) / (111320.0 * Math.cos(Math.toRadians(locLat)));
+            locLat = pilotLat - (windV * t) / 111320.0;
+            locLon = pilotLon - (windU * t) / (111320.0 * Math.cos(Math.toRadians(locLat)));
 
             if (h <= 0) {
                 // Достигли земли
                 double exactT = altitudeMsl / averageClimb;
-                locLat = pilotLat + (windV * exactT) / 111320.0;
-                locLon = pilotLon + (windU * exactT) / (111320.0 * Math.cos(Math.toRadians(locLat)));
+                locLat = pilotLat - (windV * exactT) / 111320.0;
+                locLon = pilotLon - (windU * exactT) / (111320.0 * Math.cos(Math.toRadians(locLat)));
 
                 double dist = haversineMeters(pilotLat, pilotLon, locLat, locLon);
                 float bearing = bearingDeg(pilotLat, pilotLon, locLat, locLon);

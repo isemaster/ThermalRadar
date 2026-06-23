@@ -112,10 +112,15 @@ public class LiftDatabase {
             float alpha = (float) (1.0 / Math.min(sampleCount[idx], 50));
             liftValues[idx] += alpha * (vario - liftValues[idx]);
 
-            // Проверка: стал ли этот сектор лучшим?
-            if (liftValues[idx] > bestSectorLift * BEST_SECTOR_UPDATE_FACTOR) {
-                bestSectorIndex = idx;
-                bestSectorLift = liftValues[idx];
+            // BUG-22: при каждом recordLift пересчитываем bestSectorIndex
+            // заново, чтобы bestSectorLift мог уменьшаться
+            bestSectorIndex = -1;
+            bestSectorLift = Float.NEGATIVE_INFINITY;
+            for (int s = 0; s < SECTOR_COUNT; s++) {
+                if (initialized[s] && liftValues[s] > bestSectorLift) {
+                    bestSectorLift = liftValues[s];
+                    bestSectorIndex = s;
+                }
             }
         }
     }

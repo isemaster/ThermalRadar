@@ -26,6 +26,18 @@ public class ThermalBlip {
 
     public ThermalBlip() {}
 
+    /** Copy constructor — deep copy for thread-safe rendering */
+    public ThermalBlip(ThermalBlip other) {
+        this.bornMs = other.bornMs;
+        this.angle = other.angle;
+        this.strength = other.strength;
+        this.distance = other.distance;
+        this.px = other.px;
+        this.py = other.py;
+        this.source = other.source;
+        this.sizeFactor = other.sizeFactor;
+    }
+
     public ThermalBlip(float angle, float strength, float distance, String source, long nowMs) {
         this.angle = angle;
         this.strength = Math.min(strength, 8f);

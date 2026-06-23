@@ -1,6 +1,7 @@
 package com.termo1.radar.flight;
 
 import android.util.Log;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * FlightStateMachine — детекция начала и окончания полёта.
@@ -13,10 +14,18 @@ import android.util.Log;
  *   ON_GROUND → FLYING → FINISHED
  *
  * Сигнализирует LogManager через коллбэк.
+ *
+ * Thread safety: все переходы состояния защищены общим lock'ом,
+ * чтобы update() и updateSpeedBased() не конфликтовали.
  */
 public class FlightStateMachine {
 
     private static final String TAG = "TERMO1_FLIGHT";
+
+    // ========================================================================
+    // Lock для синхронизации update() и updateSpeedBased()
+    // ========================================================================
+    private final Object stateLock = new Object();
 
     // ========================================================================
     // Altitude-based detection (существующий)
@@ -31,7 +40,7 @@ public class FlightStateMachine {
     // ========================================================================
     /** Скорость для детекции взлёта (м/с) */
     private static final float TAKEOFF_SPEED_MS = 5.0f;
-    /** Половина TAKEOFF_SPEED — порог для посадки (м/с) */
+    /** Порог посадки (м/с) — гистерезис: взлёт при >5, посадка при <2.5 */
     private static final float LANDING_SPEED_MS = TAKEOFF_SPEED_MS / 2.0f;
     /** Время непрерывного движения для подтверждения взлёта (с) */
     private static final long TAKEOFF_CONFIRM_MS = 10_000;  // 10 секунд
@@ -45,7 +54,7 @@ public class FlightStateMachine {
     public static final int STATE_FLYING = 1;
     public static final int STATE_FINISHED = 2;
 
-    private int state = STATE_ON_GROUND;
+    private final AtomicInteger state = new AtomicInteger(STATE_ON_GROUND);
 
     // ========================================================================
     // Altitude history (кольцевой буфер)
@@ -61,8 +70,6 @@ public class FlightStateMachine {
     // Speed-based detection state (как XCSoar: moving/stationary clocks)
     // ========================================================================
     private long movingSinceMs;
-    private double movingLat, movingLon;
-    private float movingAlt;
     private boolean movingClockActive;
     private long stationarySinceMs;
     private boolean stationaryClockActive;
@@ -86,9 +93,11 @@ public class FlightStateMachine {
     // ========================================================================
 
     public void update(float altitudeMsl, long nowMs) {
-        if (state == STATE_FINISHED) {
-            state = STATE_ON_GROUND;
-            lastCheckMs = 0;
+        synchronized (stateLock) {
+            if (state.get() == STATE_FINISHED) {
+                state.set(STATE_ON_GROUND);
+                lastCheckMs = 0;
+            }
         }
 
         // Сохраняем в историю (для altitude-based)
@@ -101,19 +110,26 @@ public class FlightStateMachine {
         if (nowMs - lastCheckMs < 1000) return;
         lastCheckMs = nowMs;
 
-        switch (state) {
-            case STATE_ON_GROUND:
-                checkStart(nowMs);
-                break;
-            case STATE_FLYING:
-                checkStop(nowMs);
-                break;
+        synchronized (stateLock) {
+            switch (state.get()) {
+                case STATE_ON_GROUND:
+                    checkStart(nowMs);
+                    break;
+                case STATE_FLYING:
+                    checkStop(nowMs);
+                    break;
+            }
         }
     }
 
     /**
      * Speed-based update. Вызывать на каждом сэмпле GPS (1 Гц).
      * Дополняет altitude-based детекцию.
+     *
+     * Гистерезис скорости (BUG-09):
+     *   > 5.0 м/с → взлёт (moving)
+     *   < 2.5 м/с → посадка (stationary)
+     *   2.5–5.0 м/с → сохранять текущее состояние (таймеры НЕ сбрасываются)
      *
      * @param gpsSpeed  скорость по GPS (м/с)
      * @param gpsLat    широта
@@ -123,54 +139,50 @@ public class FlightStateMachine {
      */
     public void updateSpeedBased(float gpsSpeed, double gpsLat, double gpsLon,
                                  float altitude, long nowMs) {
-        if (state == STATE_FINISHED) return;
+        synchronized (stateLock) {
+            if (state.get() == STATE_FINISHED) return;
 
-        if (gpsSpeed >= TAKEOFF_SPEED_MS) {
-            // Moving — как XCSoar: увеличиваем moving_clock, сбрасываем stationary
-            if (!movingClockActive) {
-                movingSinceMs = nowMs;
-                movingLat = gpsLat;
-                movingLon = gpsLon;
-                movingAlt = altitude;
-                movingClockActive = true;
+            if (gpsSpeed >= TAKEOFF_SPEED_MS) {
+                // Moving — увеличиваем moving_clock, сбрасываем stationary
+                if (!movingClockActive) {
+                    movingSinceMs = nowMs;
+                    movingClockActive = true;
+                }
+                stationaryClockActive = false;
+                stationarySinceMs = 0;
+
+                // Если не летим, но движемся 10с → взлёт
+                if (state.get() == STATE_ON_GROUND && movingClockActive
+                        && (nowMs - movingSinceMs) >= TAKEOFF_CONFIRM_MS) {
+                    Log.i(TAG, "Flight START (speed-based): speed=" + gpsSpeed
+                            + " m/s for " + TAKEOFF_CONFIRM_MS / 1000 + "s");
+                    state.set(STATE_FLYING);
+                    if (listener != null) listener.onFlightStarted();
+                }
+
+            } else if (gpsSpeed < LANDING_SPEED_MS && gpsSpeed >= 0) {
+                // Stationary
+                if (!stationaryClockActive) {
+                    stationarySinceMs = nowMs;
+                    stationaryClockActive = true;
+                }
+                movingClockActive = false;
+                movingSinceMs = 0;
+
+                // Если летим, но стоим 30с → посадка
+                if (state.get() == STATE_FLYING && stationaryClockActive
+                        && (nowMs - stationarySinceMs) >= LANDING_CONFIRM_MS) {
+                    Log.i(TAG, "Flight FINISH (speed-based): speed=" + gpsSpeed
+                            + " m/s for " + LANDING_CONFIRM_MS / 1000 + "s");
+                    state.set(STATE_FINISHED);
+                    if (listener != null) listener.onFlightFinished();
+                }
+
+            } else {
+                // ГИСТЕРЕЗИС (BUG-09): 2.5–5.0 м/с — неопределённо,
+                // сохраняем текущее состояние, таймеры НЕ сбрасываем
+                // (счётчики сами продолжают тикать)
             }
-            stationaryClockActive = false;
-            stationarySinceMs = 0;
-
-            // Если не летим, но движемся 10с → взлёт
-            if (state == STATE_ON_GROUND && movingClockActive
-                    && (nowMs - movingSinceMs) >= TAKEOFF_CONFIRM_MS) {
-                Log.i(TAG, "Flight START (speed-based): speed=" + gpsSpeed
-                        + " m/s for " + TAKEOFF_CONFIRM_MS / 1000 + "s");
-                state = STATE_FLYING;
-                if (listener != null) listener.onFlightStarted();
-            }
-
-        } else if (gpsSpeed < LANDING_SPEED_MS && gpsSpeed >= 0) {
-            // Stationary — как XCSoar: уменьшаем moving_clock, увеличиваем stationary
-            if (movingClockActive && (nowMs - movingSinceMs) >= 2000) {
-                // Если движемся >2с, начинаем slowly убывать (как XCSoar subtract)
-                // Упрощённо: просто сбрасываем moving после 30с stationary
-            }
-
-            if (!stationaryClockActive) {
-                stationarySinceMs = nowMs;
-                stationaryClockActive = true;
-            }
-
-            // Если летим, но стоим 30с → посадка
-            if (state == STATE_FLYING && stationaryClockActive
-                    && (nowMs - stationarySinceMs) >= LANDING_CONFIRM_MS) {
-                Log.i(TAG, "Flight FINISH (speed-based): speed=" + gpsSpeed
-                        + " m/s for " + LANDING_CONFIRM_MS / 1000 + "s");
-                state = STATE_FINISHED;
-                if (listener != null) listener.onFlightFinished();
-            }
-
-        } else {
-            // Между порогами — неопределённо, таймеры сбрасываются
-            movingClockActive = false;
-            stationaryClockActive = false;
         }
     }
 
@@ -178,6 +190,9 @@ public class FlightStateMachine {
     // Altitude-based checks
     // ========================================================================
 
+    /**
+     * Вызывается ТОЛЬКО внутри synchronized(stateLock).
+     */
     private void checkStart(long nowMs) {
         if (histFill < 2) return;
 
@@ -191,7 +206,7 @@ public class FlightStateMachine {
                 if (delta >= START_ALTITUDE_DELTA) {
                     Log.i(TAG, "Flight START (altitude): +" + delta
                             + "m in " + (nowMs - altitudeTimes[idx]) / 1000 + "s");
-                    state = STATE_FLYING;
+                    state.set(STATE_FLYING);
                     if (listener != null) listener.onFlightStarted();
                 }
                 return;
@@ -199,6 +214,10 @@ public class FlightStateMachine {
         }
     }
 
+    /**
+     * Вызывается ТОЛЬКО внутри synchronized(stateLock).
+     * BUG-08: fullWindow = true если есть хотя бы одна точка старше cutoff.
+     */
     private void checkStop(long nowMs) {
         if (histFill < 2) return;
 
@@ -218,15 +237,18 @@ public class FlightStateMachine {
 
         float delta = maxAlt - minAlt;
         if (delta <= STOP_ALTITUDE_DELTA * 2) {
-            boolean fullWindow = true;
+            // BUG-08: полное окно = есть точка старше cutoff
+            boolean fullWindow = false;
             for (int i = 0; i < histFill; i++) {
                 int idx = (histHead - 1 - i + ALT_HISTORY_SIZE) % ALT_HISTORY_SIZE;
-                if (altitudeTimes[idx] <= cutoff && altitudeTimes[idx] > 0) break;
-                if (i == histFill - 1) fullWindow = false;
+                if (altitudeTimes[idx] <= cutoff && altitudeTimes[idx] > 0) {
+                    fullWindow = true;
+                    break;
+                }
             }
             if (fullWindow) {
                 Log.i(TAG, "Flight FINISH (altitude): delta=" + delta + "m over 5min");
-                state = STATE_FINISHED;
+                state.set(STATE_FINISHED);
                 if (listener != null) listener.onFlightFinished();
             }
         }
@@ -237,7 +259,9 @@ public class FlightStateMachine {
     // ========================================================================
 
     public void reset() {
-        state = STATE_ON_GROUND;
+        synchronized (stateLock) {
+            state.set(STATE_ON_GROUND);
+        }
         histHead = 0;
         histFill = 0;
         lastCheckMs = 0;
@@ -248,12 +272,12 @@ public class FlightStateMachine {
     }
 
     public void setStateFlying() {
-        state = STATE_FLYING;
+        state.set(STATE_FLYING);
     }
 
-    public int getState() { return state; }
+    public int getState() { return state.get(); }
 
-    public boolean isFlying() { return state == STATE_FLYING; }
+    public boolean isFlying() { return state.get() == STATE_FLYING; }
 
-    public boolean isFinished() { return state == STATE_FINISHED; }
+    public boolean isFinished() { return state.get() == STATE_FINISHED; }
 }
