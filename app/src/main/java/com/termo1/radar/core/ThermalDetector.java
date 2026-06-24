@@ -1,5 +1,6 @@
 package com.termo1.radar.core;
 
+import android.os.SystemClock;
 import com.termo1.radar.model.ThermalBlip;
 
 /**
@@ -20,9 +21,8 @@ public class ThermalDetector {
 
     private final SignalProcessor signalProcessor;
 
-    // Пороги (в g) — согласованы с формулой dist = 150 × sqrt(0.05 / rmsMs²)
-    //   0.005g (0.05 м/с²) → 150м, 0.020g (0.20 м/с²) → 75м, 0.080g (0.80 м/с²) → 37.5м
-    private static final float TH_SUSPECT    = 0.020f;  // ~0.20 м/с² → 75м (обнаружение)
+    // Пороги (в g) с гистерезисом — SUSPECT < THERMAL для плавного перехода
+    private static final float TH_SUSPECT    = 0.015f;  // ~0.15 м/с² — порог подозрения (ниже THERMAL для гистерезиса)
     private static final float TH_THERMAL    = 0.020f;  // ~0.20 м/с² → 75м (уверенный сигнал)
     private static final float TH_INSIDE     = 0.080f;  // ~0.80 м/с² → 37.5м (внутри термика)
 
@@ -251,7 +251,7 @@ public class ThermalDetector {
         smoothDist += (distFromRms - smoothDist) * DIST_EMA_ALPHA;
         float dist = Math.max(10f, Math.min(150f, smoothDist));
 
-        long now = System.currentTimeMillis();
+        long now = SystemClock.elapsedRealtime();
 
         if (blipConfirmed && currentBlip != null) {
             // Термик подтверждён: создаём НОВЫЙ объект с заблокированным углом

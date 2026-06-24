@@ -58,6 +58,10 @@ public class IgcLogger {
     private static final ThreadLocal<SimpleDateFormat> IGC_DATE_FMT_TL =
             ThreadLocal.withInitial(() -> new SimpleDateFormat("ddMMyy", Locale.US));
 
+    /** Формат даты для имени файла — ThreadLocal */
+    private static final ThreadLocal<SimpleDateFormat> FILE_DATE_FMT_TL =
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyyMMddHHmmss", Locale.US));
+
     // ========================================================================
     // Состояние
     // ========================================================================
@@ -329,7 +333,7 @@ public class IgcLogger {
         File dir = new File(logDir, "igc");
         if (!dir.exists()) dir.mkdirs();
 
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US);
+        SimpleDateFormat sdf = FILE_DATE_FMT_TL.get();
         String dateStr = sdf.format(new Date(
                 System.currentTimeMillis()
                 - (SystemClock.elapsedRealtime() - startElapsedMs)));

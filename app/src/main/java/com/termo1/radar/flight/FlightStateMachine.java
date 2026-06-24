@@ -98,19 +98,17 @@ public class FlightStateMachine {
                 state.set(STATE_ON_GROUND);
                 lastCheckMs = 0;
             }
-        }
 
-        // Сохраняем в историю (для altitude-based)
-        altitudeHistory[histHead] = altitudeMsl;
-        altitudeTimes[histHead] = nowMs;
-        histHead = (histHead + 1) % ALT_HISTORY_SIZE;
-        if (histFill < ALT_HISTORY_SIZE) histFill++;
+            // Сохраняем в историю (для altitude-based) — под тем же lock
+            altitudeHistory[histHead] = altitudeMsl;
+            altitudeTimes[histHead] = nowMs;
+            histHead = (histHead + 1) % ALT_HISTORY_SIZE;
+            if (histFill < ALT_HISTORY_SIZE) histFill++;
 
-        // Проверка раз в секунду
-        if (nowMs - lastCheckMs < 1000) return;
-        lastCheckMs = nowMs;
+            // Проверка раз в секунду
+            if (nowMs - lastCheckMs < 1000) return;
+            lastCheckMs = nowMs;
 
-        synchronized (stateLock) {
             switch (state.get()) {
                 case STATE_ON_GROUND:
                     checkStart(nowMs);
@@ -261,14 +259,14 @@ public class FlightStateMachine {
     public void reset() {
         synchronized (stateLock) {
             state.set(STATE_ON_GROUND);
+            histHead = 0;
+            histFill = 0;
+            lastCheckMs = 0;
+            movingClockActive = false;
+            stationaryClockActive = false;
+            movingSinceMs = 0;
+            stationarySinceMs = 0;
         }
-        histHead = 0;
-        histFill = 0;
-        lastCheckMs = 0;
-        movingClockActive = false;
-        stationaryClockActive = false;
-        movingSinceMs = 0;
-        stationarySinceMs = 0;
     }
 
     public void setStateFlying() {

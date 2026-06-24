@@ -251,9 +251,9 @@ public class VarioSoundManager {
                     } else {
                         // End of beep → anti-click → pause
                         mode = 2;
+                        // Anti-click: complete current sine period using last frequency
+                        int antiClickSamples = completeSinePeriod(currentSineFreq);
                         currentSineFreq = 0f;
-                        // Anti-click: complete current sine period (max 1 period of silence)
-                        int antiClickSamples = completeSinePeriod();
                         int pauseMs = Math.round(map(v, DEAD_BAND_HIGH, VERY_FAST_CLIMB,
                                 CLIMB_SLOW_PAUSE_MS, CLIMB_FAST_PAUSE_MS));
                         samplesRemaining = antiClickSamples + SAMPLE_RATE * pauseMs / 1000;
@@ -270,7 +270,7 @@ public class VarioSoundManager {
                     // Dead band → silence (с anti-click если был тон)
                     if (mode == 1 || mode == 4 || mode == 3) {
                         // Был тон → anti-click (завершить синусоиду)
-                        int antiClickSamples = completeSinePeriod();
+                        int antiClickSamples = completeSinePeriod(currentSineFreq);
                         mode = 0;
                         currentSineFreq = 0f;
                         samplesRemaining = antiClickSamples + SAMPLE_RATE * STATE_CHECK_MS / 1000;
@@ -328,21 +328,21 @@ public class VarioSoundManager {
 
     /**
      * Anti-click: завершить текущий период синусоиды, дойдя до zero crossing.
-     * Генерирует сэмплы до ближайшего crossing (0 или π), затем fade-out.
+     * Использует актуальную частоту тона для точного расчёта количества сэмплов.
      *
+     * @param lastFreq частота тона перед остановкой (Гц), 0 = тишина
      * @return количество сэмплов для завершения (0 если уже на zero crossing)
      */
-    private int completeSinePeriod() {
+    private int completeSinePeriod(float lastFreq) {
+        if (lastFreq <= 0) return 0;
         double twoPi = 2.0 * Math.PI;
         double modPhase = phase % twoPi;
         if (modPhase < 0) modPhase += twoPi;
 
-        // Если почти на zero crossing — возвращаем 0
         if (modPhase <= 0.001 || Math.abs(modPhase - Math.PI) < 0.001) {
             return 0;
         }
 
-        // Сколько до следующего zero crossing (0 или π)
         double toZero;
         if (modPhase < Math.PI) {
             toZero = Math.PI - modPhase;
@@ -350,16 +350,13 @@ public class VarioSoundManager {
             toZero = twoPi - modPhase;
         }
 
-        // Сколько сэмплов до zero crossing при текущей фазовой скорости
-        // twoPiF = 2*PI*freq/SAMPLE_RATE — приращение фазы за сэмпл
-        // Но мы не знаем частоту на момент вызова.
-        // Используем последнюю известную частоту: аппроксимируем freq из SAMPLE_RATE
-        // как минимум 100 Гц (чтобы не генерировать слишком много сэмплов)
-        // Максимум: 1 период 100 Гц = 441 сэмпла
-        int samples = (int) Math.ceil(toZero / (2.0 * Math.PI) * SAMPLE_RATE / 100.0);
-        if (samples > 500) samples = 500;
+        // Используем реальную частоту: onePiF = 2*PI*freq/SAMPLE_RATE
+        double twoPiF = 2.0 * Math.PI * lastFreq / SAMPLE_RATE;
+        // samples = toZero / twoPiF
+        int samples = (int) Math.ceil(toZero / twoPiF);
+        if (samples > SAMPLE_RATE / 50) samples = SAMPLE_RATE / 50; // max 20ms
         if (samples < 1) samples = 1;
-        return samples; // fade-out будет применён в audioLoop
+        return samples;
     }
 
     // ========================================================================

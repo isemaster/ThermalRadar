@@ -295,12 +295,9 @@ public class FlightSimulator {
             circleAngle += CIRCLE_RATE_RAD_S * dt;
             if (circleAngle > (float)(2 * Math.PI)) circleAngle -= (float)(2 * Math.PI);
 
-            // Heading follows the circle tangent (right turn = decreasing heading)
-            heading = (float) Math.toDegrees(
-                    Math.atan2(Math.cos(circleAngle), -Math.sin(circleAngle))
-            ) + 90f;
-            while (heading < 0) heading += 360;
-            while (heading >= 360) heading -= 360;
+            // Heading follows the circle tangent — стабильная формула
+            // heading = (circleAngle + 90°) % 360
+            heading = ((float) Math.toDegrees(circleAngle) + 90f) % 360f;
 
             speed = CIRCLE_SPEED;
             gyroZ = CIRCLE_RATE_RAD_S;
@@ -442,8 +439,8 @@ public class FlightSimulator {
         float ay = whiteY;
 
         if (isCircling) {
-            // Турбулентность в термике: 0.01–0.06g (SNR > 3 для ThermalDetector)
-            float turb = 0.02f + 0.04f * (THERMAL_LIFT_CORE - liftAtPilot) / THERMAL_LIFT_CORE;
+            // Турбулентность в термике: 0.03–0.08g (SNR > 3 для ThermalDetector даже на краю)
+            float turb = 0.03f + 0.05f * (THERMAL_LIFT_CORE - liftAtPilot) / THERMAL_LIFT_CORE;
             ax += turb * (float) Math.sin(circleAngle * 3 + noisePhase * 0.1);
             ay += turb * (float) Math.cos(circleAngle * 3 + noisePhase * 0.07f);
         }

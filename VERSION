@@ -1,16 +1,23 @@
-TERMO1 Radar — v0.2.2
+TERMO1 Radar — v0.2.3
 ========================
 
-Полный code review fix: исправлены 28 багов (6 критических + 8 высоких + 9 средних + 5 низких).
-- FSM thread safety + гистерезис скорости
-- ThermalBaseEstimator: направление ветра
-- WakeLock утечка, deep-copy ThermalBlip
-- IGC-логгер: GpsSnapshot + thread safety
-- FlightSimulator: белый шум, quiet period, altMsl=500
-- SignalProcessor: ZC, noiseFloor, направление
-- ThermalLocator: синхронизация
-- Anti-click VarioSoundManager
-- VarioThermalDetector: baseline
-- LiftDatabase: пересчёт bestSector
-- RadarRenderer: секторы 0° центр
-- WindDriftCalculator: tan
+Code Review 3: 11 замечаний исправлено (2 critical + 2 high + 5 medium + 2 refactor).
+
+P0:
+- SimulationManager: Box-Muller белый шум + Quiet Period 2s
+- VarioSoundManager: completeSinePeriod с реальной частотой
+
+P1:
+- FlightStateMachine: единый synchronized блок в update()
+- FlightSimulator: турбулентность 0.03-0.08g
+
+P2:
+- FlightStateMachine: reset() полная синхронизация
+- FlightSimulator: стабильная формула heading
+- RadarRenderer: без мутации ThermalBlip + RectF в поля
+- IgcLogger: ThreadLocal для имени файла
+- ThermalDetector: elapsedRealtime для bornMs
+
+P3:
+- ThermalDetector: гистерезис TH_SUSPECT=0.015 / TH_THERMAL=0.020
+- RadarRenderer: устранены аллокации в onDraw

@@ -35,17 +35,21 @@ public class SimulationManager {
     // ========================================================================
     // Constants
     // ========================================================================
+    // Noise
     private static final float NOISE_FLOOR_G = 0.003f;       // g, базовый шум
     private static final float SPEED = 9.0f;                 // m/s
     private static final float PRESSURE = 1013.25f;          // hPa
     private static final float INITIAL_ALT_MSL = 500.0f;     // m
 
+    // Quiet period — первые 2 секунды без термиков (калибровка noiseFloor)
+    private static final float QUIET_END_SEC = 2.0f;
+
     // Timeline
-    private static final float T_NORTH_END = 20.0f;
-    private static final float T_EAST_END = 40.0f;
-    private static final float T_CIRCLE_END = 50.0f;        // 10s circle
-    private static final float T_TURN_END = 55.0f;          // 5s turn left
-    private static final float SIM_END_SEC = 75.0f;         // 55-75: straight
+    private static final float T_NORTH_END = 22.0f;         // +2s для quiet period
+    private static final float T_EAST_END = 42.0f;          // +2s
+    private static final float T_CIRCLE_END = 52.0f;        // +2s
+    private static final float T_TURN_END = 57.0f;          // +2s
+    private static final float SIM_END_SEC = 77.0f;         // +2s
 
     // Circle: 360° in 10s = 36°/s
     private static final float CIRCLE_RATE = 360.0f / 10.0f;
@@ -69,8 +73,8 @@ public class SimulationManager {
     // Accelerometer output (g units)
     private float simAx, simAy;
 
-    // Phase for noise generation
-    private double noisePhase;
+    // Phase for noise generation (Box-Muller)
+    private double noiseSeedX, noiseSeedY;
 
     // Thermal puffs
     private final List<ThermalPuff> puffs = new ArrayList<>();
@@ -93,7 +97,8 @@ public class SimulationManager {
         pilotY = 0.0;
         simAx = 0f;
         simAy = 0f;
-        noisePhase = 0.0;
+        noiseSeedX = 0.0;
+        noiseSeedY = 0.0;
         puffs.clear();
         lastPuffMs = -5000;
         simulationRealStartMs = System.currentTimeMillis();
@@ -261,12 +266,25 @@ public class SimulationManager {
     private void generateAccel(float tSec) {
         float ax = 0f, ay = 0f;
 
-        // 1. Базовый шум (0.003g RMS)
-        noisePhase += 0.05;
-        float noiseX = NOISE_FLOOR_G * (float)Math.sin(noisePhase * 0.7 + 0.3);
-        float noiseY = NOISE_FLOOR_G * (float)Math.sin(noisePhase * 1.1 + 1.7);
-        ax += noiseX;
-        ay += noiseY;
+        // 1. Базовый шум — БЕЛЫЙ ШУМ Box-Muller (как во FlightSimulator)
+        double u1 = Math.sin(noiseSeedX += 0.1) * 0x1p31;
+        double u2 = Math.cos(noiseSeedY += 0.1) * 0x1p31;
+        double u1n = (u1 % 1.0 + 1.0) % 1.0;
+        double u2n = (u2 % 1.0 + 1.0) % 1.0;
+        if (u1n < 1e-10) u1n = 0.5;
+        double norm = Math.sqrt(-2.0 * Math.log(u1n)) * Math.cos(2.0 * Math.PI * u2n);
+        float whiteX = NOISE_FLOOR_G * (float) Math.min(Math.abs(norm), 3.0) * Math.signum((float)norm);
+        double normY = Math.sqrt(-2.0 * Math.log(u1n)) * Math.sin(2.0 * Math.PI * u2n);
+        float whiteY = NOISE_FLOOR_G * (float) Math.min(Math.abs(normY), 3.0) * Math.signum((float)normY);
+        ax += whiteX;
+        ay += whiteY;
+
+        // Quiet period: первые 2 секунды — чистый шум, без термиков
+        if (tSec < QUIET_END_SEC) {
+            simAx = ax;
+            simAy = ay;
+            return;
+        }
 
         // 2. Thermal puff contributions
         for (ThermalPuff puff : puffs) {

@@ -31,6 +31,9 @@ public class RadarRenderer {
     private final Paint dashedLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint cardTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint nsewPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    // Кешированные геометрические объекты — без new в onDraw!
+    private final RectF sectorRect = new RectF();
+    private final RectF outerRect = new RectF();
 
     // Wind arrow
     private final Paint windLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -389,8 +392,9 @@ public class RadarRenderer {
         }
         float range = Math.max(maxLift - minLift, 0.5f);
 
-        RectF sectorRect = new RectF(cx - outerR, cy - outerR,
-                                      cx + outerR, cy + outerR);
+        // Кешированный RectF (без аллокации в onDraw)
+        sectorRect.set(cx - outerR, cy - outerR,
+                       cx + outerR, cy + outerR);
 
         for (int i = 0; i < 36; i++) {
             float val = sectorLiftValues[i];
@@ -633,8 +637,9 @@ public class RadarRenderer {
             if (distPx < 15) distPx = 15;
 
             float rad = (float) Math.toRadians(t.angle);
-            t.px = cx + (float) Math.sin(rad) * distPx;
-            t.py = cy - (float) Math.cos(rad) * distPx;
+            // NEW-08: локальные переменные вместо мутации ThermalBlip
+            float px = cx + (float) Math.sin(rad) * distPx;
+            float py = cy - (float) Math.cos(rad) * distPx;
 
             float dist = t.distance;
             float distFactor;
@@ -655,22 +660,22 @@ public class RadarRenderer {
             float size = Math.max(8f, 42f - dist * 0.25f) * t.sizeFactor;
 
             thermalGlowPaint.setColor(Color.argb((int) (alpha * 40), 255, 193, 7));
-            c.drawCircle(t.px, t.py, size * 2, thermalGlowPaint);
+            c.drawCircle(px, py, size * 2, thermalGlowPaint);
 
             thermalFillPaint.setColor(Color.argb((int) (alpha * 230), 255, 193, 7));
-            c.drawCircle(t.px, t.py, size, thermalFillPaint);
+            c.drawCircle(px, py, size, thermalFillPaint);
 
             thermalStrokePaint.setColor(Color.argb((int) (alpha * 120), 255, 193, 7));
-            c.drawCircle(t.px, t.py, size, thermalStrokePaint);
+            c.drawCircle(px, py, size, thermalStrokePaint);
 
             cardTextPaint.setTextSize(20);
             cardTextPaint.setTextAlign(Paint.Align.CENTER);
             cardTextPaint.setColor(Color.argb((int) (alpha * 180), 255, 193, 7));
-            c.drawText(String.format("+%.1f", t.strength), t.px, t.py - size - 10, cardTextPaint);
+            c.drawText(String.format("+%.1f", t.strength), px, py - size - 10, cardTextPaint);
             cardTextPaint.setTextAlign(Paint.Align.LEFT);
 
             dashedLinePaint.setColor(Color.argb((int) (alpha * 15), 255, 193, 7));
-            c.drawLine(cx, cy, t.px, t.py, dashedLinePaint);
+            c.drawLine(cx, cy, px, py, dashedLinePaint);
         }
     }
 
