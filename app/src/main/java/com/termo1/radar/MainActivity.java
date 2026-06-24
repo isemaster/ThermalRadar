@@ -2521,6 +2521,8 @@ public class MainActivity extends Activity {
             } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                 headingDisplay = trackReplayer.getHeading();
                 varioDisplay = trackReplayer.getVario();
+                // При реплее — север всегда сверху (телефон может болтаться в руках)
+                headingDisplayFinal = 0f;
             }
 
             // Позиция пилота для плавного сдвига карты
