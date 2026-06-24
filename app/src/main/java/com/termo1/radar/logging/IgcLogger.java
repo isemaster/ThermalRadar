@@ -273,10 +273,10 @@ public class IgcLogger {
         if (gpsAltInt < 0) gpsAltInt = 0;
         if (gpsAltInt > 99999) gpsAltInt = 99999;
 
-        // A = GPS fix validity
+        // A = GPS fix validity — БЕЗ пробела (IGC spec: фиксированная длина, никаких пробелов)
         char fixChar = (fixAgeMs < 3000 && accuracy < 50) ? 'A' : 'V';
 
-        return String.format(Locale.US, "B%s%s%s%s%s %c%05d%05d",
+        return String.format(Locale.US, "B%s%s%s%s%s%c%05d%05d",
                 timeStr, latStr, (lat >= 0 ? "N" : "S"),
                 lonStr, (lon >= 0 ? "E" : "W"),
                 fixChar, pressAlt, gpsAltInt);
