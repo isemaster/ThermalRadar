@@ -72,7 +72,7 @@ public class MainActivity extends Activity {
     private static final int RENDER_FPS = 30;
     private static final long RENDER_INTERVAL_MS = 33L;
     private static final int THERMAL_LIMIT = 12;
-    private static final float MAX_DISTANCE_M = 1500.0f;
+    private static final float MAX_DISTANCE_M = 150.0f;
 
     // GPS trail
     private static final int GPS_TRAIL_MAX = 2000;
