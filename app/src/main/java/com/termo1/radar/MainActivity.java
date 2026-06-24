@@ -290,6 +290,13 @@ public class MainActivity extends Activity {
     // ========================================================================
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent); // ← чтобы getIntent() вернул новый интент
+        handleIntent(intent);
+    }
+
+    @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
@@ -443,32 +450,7 @@ public class MainActivity extends Activity {
         startForegroundService(new Intent(this, ThermalRadarService.class));
 
         // Simulation mode
-        Intent intent = getIntent();
-        if (intent != null && intent.getBooleanExtra("simulate", false)) {
-            simMode = true;
-            simulation = new SimulationManager();
-            simulation.start();
-            simStartMs = SystemClock.elapsedRealtime();
-            lastThermalBeepMs = simStartMs;
-            startSimLoop();
-        }
-
-        // Test mode
-        if (intent != null && intent.getBooleanExtra("test_mode", false)) {
-            startTestMode();
-        }
-
-        // Flight scenario from settings
-        if (intent != null && intent.getBooleanExtra("flight_test", false)) {
-            radarView.post(() -> startFlightScenario());
-        }
-
-        // Track replay from settings
-        if (intent != null && intent.getBooleanExtra("track_replay", false)) {
-            final String trackFile = intent.hasExtra("track_file")
-                    ? intent.getStringExtra("track_file") : null;
-            radarView.post(() -> startTrackReplay(trackFile));
-        }
+        handleIntent(getIntent());
     }
 
     @Override
@@ -588,6 +570,33 @@ public class MainActivity extends Activity {
                         "GPS недоступен без разрешения на геолокацию",
                         android.widget.Toast.LENGTH_LONG).show();
             }
+        }
+    }
+
+    // ========================================================================
+    // Intent handling (вызывается из onCreate и onNewIntent)
+    // ========================================================================
+
+    private void handleIntent(Intent intent) {
+        if (intent == null) return;
+        if (intent.getBooleanExtra("simulate", false)) {
+            simMode = true;
+            simulation = new SimulationManager();
+            simulation.start();
+            simStartMs = SystemClock.elapsedRealtime();
+            lastThermalBeepMs = simStartMs;
+            startSimLoop();
+        }
+        if (intent.getBooleanExtra("test_mode", false)) {
+            startTestMode();
+        }
+        if (intent.getBooleanExtra("flight_test", false)) {
+            radarView.post(() -> startFlightScenario());
+        }
+        if (intent.getBooleanExtra("track_replay", false)) {
+            final String trackFile = intent.hasExtra("track_file")
+                    ? intent.getStringExtra("track_file") : null;
+            radarView.post(() -> startTrackReplay(trackFile));
         }
     }
 
