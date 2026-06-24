@@ -94,14 +94,16 @@ public class RadarRenderer {
     private double mapCenterLat, mapCenterLon;
     private int mapZoom;
     private boolean mapValid;
+    // Background map paint (75% opacity)
+    private static final int MAP_ALPHA = 191; // 191/255 ≈ 75%
     private final Paint mapAlphaPaint = new Paint();
     // Плавный сдвиг: текущая позиция пилота (обновляется каждый кадр)
     private double pilotLat, pilotLon;
     private boolean pilotPositionValid;
     // Порог обновления: если смещение >30% от размера карты — пора грузить новую
     private static final float MAP_REFRESH_THRESHOLD = 0.30f;
-    // Пикселей на метр при zoom 14, ~60°N (Санкт-Петербург)
-    private static final double METERS_PER_PIXEL = 4.78;
+    // Реальный размер карты на местности: 3 тайла zoom 14 на 60°N
+    private static final double MAP_METERS_TOTAL = 3671.0;
 
     // Кэш для haversine при вычислении сдвига карты
     private final float[] mapDistRes = new float[2];
@@ -216,8 +218,8 @@ public class RadarRenderer {
         // Sector diagram paint
         sectorFillPaint.setStyle(Paint.Style.FILL);
 
-        // Background map paint (30% alpha)
-        mapAlphaPaint.setAlpha(77); // 77/255 ≈ 30%
+        // Background map paint (75% alpha)
+        mapAlphaPaint.setAlpha(MAP_ALPHA);
 
         // Thermal core
         thermalCoreGlowPaint.setStyle(Paint.Style.FILL);
@@ -266,7 +268,7 @@ public class RadarRenderer {
         this.showThermalCore = show;
         this.thermalCoreBearing = bearing;
         this.thermalCoreDistance = distance;
-        this.thermalCoreRadiusPx = (radiusMeters / 150f) * r;
+        this.thermalCoreRadiusPx = (radiusMeters / 1500f) * r;
     }
 
     /** Set full 36-sector lift values for sector diagram. */
@@ -330,9 +332,9 @@ public class RadarRenderer {
         if (mapValid && backgroundMap != null) {
             float[] offset = computeMapOffsetPx();
 
-            // Карта 768×768 (или размер Bitmap), масштабируем под радар,
-            // сдвигаем на offset — плавно следует за пилотом
-            float mapSize = r * 2.1f;
+            // Карта 768×768, масштаб: край радара r = 1500 м
+            // 3×3 тайла = 3671 м, mapSize = 3671/1500 × r = 2.447 × r
+            float mapSize = r * (float)(MAP_METERS_TOTAL / 1500.0);
             float mapLeft = cx - mapSize / 2f - offset[0];
             float mapTop = cy - mapSize / 2f + offset[1];
             Rect dst = new Rect((int) mapLeft, (int) mapTop,
@@ -441,15 +443,15 @@ public class RadarRenderer {
         ringPaint.setStrokeWidth(2);
         c.drawCircle(cx, cy, r / 3f, ringPaint);
         cardTextPaint.setColor(Color.argb(70, 0, 255, 0));
-        c.drawText("50м", cx + 5, cy - r / 3f - 5, cardTextPaint);
+        c.drawText("500м", cx + 5, cy - r / 3f - 5, cardTextPaint);
 
         c.drawCircle(cx, cy, r * 2f / 3f, ringPaint);
-        c.drawText("100м", cx + 5, cy - r * 2f / 3f - 5, cardTextPaint);
+        c.drawText("1км", cx + 5, cy - r * 2f / 3f - 5, cardTextPaint);
 
         dashPaint.setStrokeWidth(2);
         dashPaint.setColor(Color.argb(15, 0, 255, 0));
         c.drawCircle(cx, cy, thermalMaxDist, dashPaint);
-        c.drawText("125м", cx + 5, cy - thermalMaxDist - 5, cardTextPaint);
+        c.drawText("1250м", cx + 5, cy - thermalMaxDist - 5, cardTextPaint);
 
         ringPaint.setColor(Color.argb(90, 0, 255, 0));
         ringPaint.setStrokeWidth(2);
@@ -612,7 +614,7 @@ public class RadarRenderer {
     private void drawThermalCore(Canvas c) {
         if (!showThermalCore || thermalCoreDistance < 0) return;
 
-        float distPx = Math.min(thermalCoreDistance / 150f, 1f) * r;
+        float distPx = Math.min(thermalCoreDistance / 1500f, 1f) * r;
         float rad = (float) Math.toRadians(thermalCoreBearing);
         float px = cx + (float) Math.sin(rad) * distPx;
         float py = cy - (float) Math.cos(rad) * distPx;
@@ -639,7 +641,7 @@ public class RadarRenderer {
             float brightness = t.getBrightness(nowMs);
             if (brightness <= 0f) continue;
 
-            float distPx = Math.min(t.distance / 150f, 1f) * thermalMaxDist;
+            float distPx = Math.min(t.distance / 1500f, 1f) * thermalMaxDist;
             if (distPx < 15) distPx = 15;
 
             float rad = (float) Math.toRadians(t.angle);
@@ -649,12 +651,12 @@ public class RadarRenderer {
 
             float dist = t.distance;
             float distFactor;
-            if (dist < 30f) {
+            if (dist < 300f) {
                 distFactor = 0.85f;
-            } else if (dist < 80f) {
-                distFactor = 0.85f - (dist - 30f) * 0.35f / 50f;
-            } else if (dist < 150f) {
-                distFactor = 0.50f - (dist - 80f) * 0.40f / 70f;
+            } else if (dist < 800f) {
+                distFactor = 0.85f - (dist - 300f) * 0.35f / 500f;
+            } else if (dist < 1500f) {
+                distFactor = 0.50f - (dist - 800f) * 0.40f / 700f;
             } else {
                 distFactor = 0.10f;
             }
@@ -707,10 +709,10 @@ public class RadarRenderer {
         double eastM = distM * Math.sin(rad);  // положительный = пилот восточнее центра
         double northM = distM * Math.cos(rad); // положительный = пилот севернее центра
 
-        // В пиксели: east → negative offsetX (карта смещается влево)
-        // north → positive offsetY (карта смещается вниз)
-        float offsetX = (float) (-eastM / METERS_PER_PIXEL);
-        float offsetY = (float) (northM / METERS_PER_PIXEL);
+        // Динамический m/px: край радара (r пикселей) = 1500 м
+        double mpp = 1500.0 / r;
+        float offsetX = (float) (-eastM / mpp);
+        float offsetY = (float) (northM / mpp);
 
         return new float[]{offsetX, offsetY};
     }
