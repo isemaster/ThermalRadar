@@ -842,6 +842,20 @@ public class MainActivity extends Activity {
     // ========================================================================
 
     private void updateStatus() {
+        if (trackMode) {
+            // При реплее — статус из TrackReplayer
+            if (trackReplayer != null && trackReplayer.isRunning()) {
+                float varioVal = trackReplayer.getVario();
+                if (trackReplayer.isThermalActive() || varioVal > 1.0f) {
+                    currentStatus = UiManager.STATUS_CLIMB;
+                } else if (varioVal < -1.0f) {
+                    currentStatus = UiManager.STATUS_SINK;
+                } else {
+                    currentStatus = UiManager.STATUS_SEARCH;
+                }
+            }
+            return;
+        }
         if (simMode) {
             currentStatus = thermalDetector != null
                     ? thermalDetector.getStatusText() : UiManager.STATUS_SEARCH;
@@ -1729,8 +1743,16 @@ public class MainActivity extends Activity {
         };
         trackHandler.postDelayed(trackTask, 20);
 
+        // Статус и подгрузка карты под трек
+        String trackName = filePath != null ? new java.io.File(filePath).getName() : "встроенный";
+        currentStatus = "▶ Проигрываем: " + trackName;
         android.widget.Toast.makeText(MainActivity.this,
-                "Сим2: трек полёта (2x)", android.widget.Toast.LENGTH_SHORT).show();
+                "▶ " + trackName + " (5x)", android.widget.Toast.LENGTH_SHORT).show();
+
+        // Форсированная загрузка карты в координатах трека
+        if (filePath != null && trackReplayer.getLat() != 0.0 && trackReplayer.getLon() != 0.0) {
+            staticMapLoader.forceUpdate(trackReplayer.getLat(), trackReplayer.getLon(), 14);
+        }
     }
 
     private void stopTrackReplay() {
@@ -2097,11 +2119,19 @@ public class MainActivity extends Activity {
                 gpsManager.getAccuracy(), gpsManager.getFixAgeMs());
 
             // Static map: обновить если сместились >500м
-            if (gpsManager.isReady() && gpsManager.getLat() != 0.0 && gpsManager.getLon() != 0.0) {
-                staticMapLoader.updateIfNeeded(gpsManager.getLat(), gpsManager.getLon(), 14);
+            double mapLat, mapLon;
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                mapLat = trackReplayer.getLat();
+                mapLon = trackReplayer.getLon();
+            } else {
+                mapLat = gpsManager.getLat();
+                mapLon = gpsManager.getLon();
+            }
+            if (gpsManager.isReady() && mapLat != 0.0 && mapLon != 0.0) {
+                staticMapLoader.updateIfNeeded(mapLat, mapLon, 14);
                 // Принудительное обновление, если карта почти за краем
                 if (radarRenderer.isMapRefreshNeeded()) {
-                    staticMapLoader.forceUpdate(gpsManager.getLat(), gpsManager.getLon(), 14);
+                    staticMapLoader.forceUpdate(mapLat, mapLon, 14);
                 }
             }
 
@@ -2485,7 +2515,11 @@ public class MainActivity extends Activity {
             }
 
             // Позиция пилота для плавного сдвига карты
-            radarRenderer.setPilotPosition(gpsManager.getLat(), gpsManager.getLon());
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                radarRenderer.setPilotPosition(trackReplayer.getLat(), trackReplayer.getLon());
+            } else {
+                radarRenderer.setPilotPosition(gpsManager.getLat(), gpsManager.getLon());
+            }
 
             radarRenderer.draw(canvas, nowMs, thermalsCopy,
                     headingDisplayFinal, varioDisplay, currentStatus,
