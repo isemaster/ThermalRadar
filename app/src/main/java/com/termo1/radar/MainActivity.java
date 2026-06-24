@@ -144,6 +144,9 @@ public class MainActivity extends Activity {
     private final boolean[] markerIsEntry = new boolean[MAX_MARKERS * 2];
     /** Буфер цветов трека (vario → цвет, возраст → alpha) */
     private final int[] trailColorBuf = new int[GPS_TRAIL_MAX];
+    /** Буферы для map-трека (синий, масштаб карты 3×3 км, без клипа 150м) */
+    private final float[] mapTrailPxBuf = new float[GPS_TRAIL_MAX];
+    private final float[] mapTrailPyBuf = new float[GPS_TRAIL_MAX];
 
     // ========================================================================
     // UI
@@ -2255,6 +2258,7 @@ public class MainActivity extends Activity {
             float trailCy = h / 2f;
             float trailR = Math.min(w / 2f, trailCy) - 4;
             int trailCount = 0;
+            int mapTrailCount = 0;
             boolean gpsOk;
             double pilotLat, pilotLon;
             if (scenarioMode && flightSim != null && flightSim.isRunning()) {
@@ -2299,6 +2303,7 @@ public class MainActivity extends Activity {
 
                 // Конвертация в пиксели радара. Цвет — от варио (varioToColor),
                 // alpha — от возраста (5 мин → прозрачный)
+                // Одновременно считаем map-трек (синий, масштаб карты 3×3 км)
                 for (double[] pt : gpsTrail) {
                     long age = now - (long) pt[2];
                     float brightness = 1.0f - (float) age / (float) GPS_TRAIL_MAX_AGE_MS;
@@ -2308,16 +2313,24 @@ public class MainActivity extends Activity {
                     float dist = distanceResult[0];
                     float bearingRad = (float) Math.toRadians(distanceResult[1]);
 
-                    // Масштаб: 150м = trailR пикселей
+                    // Radar trail (150m scale, клип по радиусу)
                     float distPx = (dist / 150f) * trailR;
-                    if (distPx > trailR) continue; // за краем радара — не рисуем, но точку храним
+                    if (distPx <= trailR) {
+                        trailPxBuf[trailCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
+                        trailPyBuf[trailCount] = trailCy - (float) Math.cos(bearingRad) * distPx;
+                        float varioVal = (pt.length >= 4) ? (float) pt[3] : 0f;
+                        trailColorBuf[trailCount] = varioToColor(varioVal, brightness);
+                        trailCount++;
+                    }
 
-                    trailPxBuf[trailCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
-                    trailPyBuf[trailCount] = trailCy - (float) Math.cos(bearingRad) * distPx;
-                    // Цвет от варио с прозрачностью от возраста
-                    float varioVal = (pt.length >= 4) ? (float) pt[3] : 0f;
-                    trailColorBuf[trailCount] = varioToColor(varioVal, brightness);
-                    trailCount++;
+                    // Map trail (3×3 км scale, клип по размеру карты)
+                    float mapDistPx = (dist / 1500f) * trailR;
+                    float mapHalf = (3671f / 1500f) * trailR / 2f;
+                    if (mapDistPx <= mapHalf) {
+                        mapTrailPxBuf[mapTrailCount] = (w / 2f) + (float) Math.sin(bearingRad) * mapDistPx;
+                        mapTrailPyBuf[mapTrailCount] = trailCy - (float) Math.cos(bearingRad) * mapDistPx;
+                        mapTrailCount++;
+                    }
                 }
 
                 // Конвертация entry/exit markers в пиксели радара
@@ -2459,7 +2472,8 @@ public class MainActivity extends Activity {
             radarRenderer.draw(canvas, nowMs, thermalsCopy,
                     headingDisplayFinal, varioDisplay, currentStatus,
                     sensorController.getMaxSnr(), thermalsCopy.size(),
-                    trailPxBuf, trailPyBuf, trailColorBuf, trailCount);
+                    trailPxBuf, trailPyBuf, trailColorBuf, trailCount,
+                    mapTrailPxBuf, mapTrailPyBuf, mapTrailCount);
 
             // HUD
             float cx = w / 2f;

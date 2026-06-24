@@ -68,6 +68,8 @@ public class RadarRenderer {
     private final Paint trailGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint trailCirclingPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint trailCirclingGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    // Map trail — синяя линия на карте (3×3 км)
+    private final Paint mapTrailPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     // Entry/exit markers
     private final Paint entryMarkerFill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint entryMarkerGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -200,6 +202,13 @@ public class RadarRenderer {
         trailCirclingGlowPaint.setStrokeCap(Paint.Cap.ROUND);
         trailCirclingGlowPaint.setStrokeJoin(Paint.Join.ROUND);
 
+        // Map trail — синий 4px
+        mapTrailPaint.setStyle(Paint.Style.STROKE);
+        mapTrailPaint.setStrokeWidth(4f);
+        mapTrailPaint.setColor(Color.argb(160, 50, 150, 255));
+        mapTrailPaint.setStrokeCap(Paint.Cap.ROUND);
+        mapTrailPaint.setStrokeJoin(Paint.Join.ROUND);
+
         // Entry/exit markers
         entryMarkerFill.setStyle(Paint.Style.FILL);
         entryMarkerFill.setColor(COLOR_ENTRY);
@@ -319,7 +328,8 @@ public class RadarRenderer {
     public void draw(Canvas canvas, long nowMs, List<ThermalBlip> thermals,
                      float heading, float vario, String status,
                      float maxSnr, int count,
-                     float[] trailPx, float[] trailPy, int[] trailColors, int trailCount) {
+                     float[] trailPx, float[] trailPy, int[] trailColors, int trailCount,
+                     float[] mapTrailPx, float[] mapTrailPy, int mapTrailCount) {
         if (baseW <= 0 || baseH <= 0) return;
         // --- black background ---
         canvas.drawColor(Color.rgb(10, 10, 10));
@@ -349,6 +359,7 @@ public class RadarRenderer {
         drawTickMarks(canvas);
         drawBestLiftSector(canvas);
         drawThermalCore(canvas);
+        drawMapTrail(canvas, mapTrailPx, mapTrailPy, mapTrailCount);
         drawTrail(canvas, trailPx, trailPy, trailColors, trailCount);
         drawTrailMarkers(canvas);
         drawThermals(canvas, nowMs, thermals);
@@ -555,6 +566,15 @@ public class RadarRenderer {
         if (lx < 30) lx = 30; if (lx > baseW - 30) lx = baseW - 30;
         if (ly < 30) ly = 30; if (ly > baseH - 10) ly = baseH - 10;
         c.drawText(String.format(java.util.Locale.US, "ветер %.1fм/с", windSpeedMs), lx, ly, windLabelPaint);
+    }
+
+    // ===== MAP TRAIL — синий трек на карте (3×3 км, 4px) =====
+
+    private void drawMapTrail(Canvas c, float[] px, float[] py, int count) {
+        if (count < 2) return;
+        for (int i = 1; i < count; i++) {
+            c.drawLine(px[i-1], py[i-1], px[i], py[i], mapTrailPaint);
+        }
     }
 
     // ===== TRAIL (жёлтый круиз / оранжевый крутка) =====
