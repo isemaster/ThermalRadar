@@ -1633,11 +1633,16 @@ public class MainActivity extends Activity {
 
         trackReplayer = new TrackReplayer();
         trackReplayer.setSpeed(5.0f);
+        // Определяем, есть ли ZIP с сенсорами
+        boolean hasSensorZip = false;
         if (filePath != null) {
             trackReplayer.loadFile(filePath);
+            String zipPath = filePath.replace(".igc", ".zip");
+            hasSensorZip = new java.io.File(zipPath).exists();
         } else {
             trackReplayer.loadFromIGC(getResources().openRawResource(R.raw.track_replay));
         }
+        trackReplayer.setHasSensorData(hasSensorZip);
         trackReplayer.start();
         trackPrevFrameMs = 0;
 

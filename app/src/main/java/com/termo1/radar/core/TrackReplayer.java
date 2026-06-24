@@ -68,6 +68,7 @@ public class TrackReplayer {
     // Thermal state
     private boolean thermalActive;
     private boolean showRedCore;
+    private boolean hasSensorData; // true = есть ZIP с сенсорами, false = только IGC
     private float thermalBearing;     // from pilot
     private float thermalDistance;    // from pilot
     private float thermalRadiusM = 25f; // radius in meters
@@ -98,6 +99,11 @@ public class TrackReplayer {
      */
     public void setSpeed(float speed) {
         this.playbackSpeed = speed;
+    }
+
+    /** Установить наличие сенсорных данных (true = есть ZIP, false = только IGC). */
+    public void setHasSensorData(boolean v) {
+        this.hasSensorData = v;
     }
 
     /**
@@ -491,8 +497,8 @@ public class TrackReplayer {
     public float getVario() { return vario; }
     public float getSpeed() { return speed; }
     public float getGyroZ() { return gyroZ; }
-    public float getAccelX() { return accelX; }
-    public float getAccelY() { return accelY; }
+    public float getAccelX() { return hasSensorData ? accelX : 0f; }
+    public float getAccelY() { return hasSensorData ? accelY : 0f; }
 
     public boolean isThermalActive() { return thermalActive; }
     public boolean isShowRedCore() { return showRedCore; }
