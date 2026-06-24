@@ -88,6 +88,9 @@ public class SensorController implements SensorEventListener {
     private volatile boolean compassReady = false;
     // Heading filter (Медиана 3 + Alpha-Beta, из algo.md раздел 12)
     private final HeadingFilter headingFilter = new HeadingFilter();
+    // Hold heading frozen после калибровки (пока не пройдёт 2 секунды стабильности)
+    private long headingHoldUntilMs = 0;
+    private float headingHoldValue;
     // Магнитное склонение (обновляется по GPS)
     private float magneticDeclination = 0f;
     private long lastDeclinationUpdateMs = 0;
@@ -380,10 +383,15 @@ public class SensorController implements SensorEventListener {
                 headingFilter.reset();
                 compassReady = true;
             } else {
-                // Применяем полный пайплайн: Clamp → Median(3) → Alpha-Beta + Deadband
-                double filtered = headingFilter.update(newHeading, SystemClock.elapsedRealtime());
-                if (!Double.isNaN(filtered)) {
-                    heading = (float) filtered;
+                // Если heading заморожен (первые 2 сек после калибровки) — не обновляем
+                if (isHeadingOnHold()) {
+                    heading = headingHoldValue;
+                } else {
+                    // Применяем полный пайплайн: Clamp → Median(3) → Alpha-Beta + Deadband
+                    double filtered = headingFilter.update(newHeading, SystemClock.elapsedRealtime());
+                    if (!Double.isNaN(filtered)) {
+                        heading = (float) filtered;
+                    }
                 }
             }
         } else if (magnetometer == null) {
@@ -590,6 +598,37 @@ public class SensorController implements SensorEventListener {
         if (h < 0) h += 360f;
         if (h >= 360f) h -= 360f;
         return h;
+    }
+
+    /**
+     * Калибровка компаса: зафиксировать текущее направление на 2 секунды,
+     * затем плавно дрейфовать от калиброванного значения к реальному показанию.
+     * Вызывать при старте лога или обнаружении старта полёта.
+     */
+    public void calibrateHeading() {
+        headingHoldValue = heading;
+        headingHoldUntilMs = SystemClock.elapsedRealtime() + 2000; // 2 сек заморозки
+        headingFilter.reset();
+        compassReady = false;
+    }
+
+    /** Проверить, не заморожен ли heading (первые 2 сек после калибровки) */
+    private boolean isHeadingOnHold() {
+        return SystemClock.elapsedRealtime() < headingHoldUntilMs;
+    }
+
+    /**
+     * Подать GPS-курс в фильтр компаса (когда магнитометр недоступен).
+     * Вызывать с gpsManager.getHeading() на каждом GPS-фиксе.
+     */
+    public void updateGpsHeading(float gpsHeading) {
+        if (!compassReady && magnetometer == null) {
+            // Нет магнитометра — фильтруем GPS курс через тот же HeadingFilter
+            double filtered = headingFilter.update(gpsHeading, SystemClock.elapsedRealtime());
+            if (!Double.isNaN(filtered)) {
+                heading = (float) filtered;
+            }
+        }
     }
 
     /** Магнитометр достаточно точен для компаса? */

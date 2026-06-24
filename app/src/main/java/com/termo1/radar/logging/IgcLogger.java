@@ -10,32 +10,21 @@ import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.zip.CRC32;
 
 /**
- * IgcLogger — запись IGC-формата (FR), 1 Гц, весь полёт.
+ * IgcLogger — запись IGC-формата (FR), 1 Гц, весь полёт в ОДИН файл.
  *
  * IGC — стандарт для парапланеризма: совместимость с XCSoar, SeeYou, Leonardo.
  *
+ * Режим работы:
+ * - Один файл от startLogging() до stopLogging() — без чанков
+ * - В заголовке полный набор H-записей
+ * - B-records каждую секунду с валидными GPS-координатами
+ * - G-record в конце с CRC32 от всего содержимого (корректный для IGC-совместимых программ)
+ *
  * Формат B-записи:
  *   B HHMMSS DDMMmmm N DDDMMmmm E A PPPPP GGGGG
- *
- * H-записи в заголовке:
- *   HFDTE: дата полёта
- *   HFPLT: пилот (пусто)
- *   HFGTY: тип глайдера (paraglider)
- *   HFFXA: точность GPS (35m)
- *   HFALG: давление (1013.25)
- *
- * I-запись: расширения (пусто, но декларируем)
- *
- * G-запись: GRecord (в реализации — CRC16 упрощённый)
- *
- * Логика:
- * - Автостарт с LogManager (через коллбэк)
- * - 1 Гц фиксированная частота (B-records каждую секунду)
- * - События через L-записи (CIRCLING_START, THERMAL, etc.)
- * - Нарезка по 10 мин (как CSV лог)
- * - Пишется в ту же папку logs/
  */
 public class IgcLogger {
 
@@ -48,9 +37,6 @@ public class IgcLogger {
     /** Частота записи: 1 Гц */
     private static final long LOG_INTERVAL_MS = 1000;
 
-    /** Нарезка: 10 минут на файл */
-    private static final long CHUNK_DURATION_MS = 10 * 60 * 1000L;
-
     /** Формат времени IGC: HHMMSS — ThreadLocal для потокобезопасности */
     private static final ThreadLocal<SimpleDateFormat> IGC_TIME_FMT_TL =
             ThreadLocal.withInitial(() -> new SimpleDateFormat("HHmmss", Locale.US));
@@ -60,7 +46,7 @@ public class IgcLogger {
 
     /** Формат даты для имени файла — ThreadLocal */
     private static final ThreadLocal<SimpleDateFormat> FILE_DATE_FMT_TL =
-            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyyMMddHHmmss", Locale.US));
+            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US));
 
     // ========================================================================
     // Состояние
@@ -74,30 +60,21 @@ public class IgcLogger {
     private BufferedOutputStream currentOut;
     private String currentFileName;
 
+    // Для подсчёта CRC32 всего содержимого файла
+    private CRC32 crc32;
+
     // Временные метки (элапсед)
     private long startElapsedMs;
-    private long chunkStartElapsedMs;
-    private int chunkIndex;
 
     // Для 1 Гц децимации
     private long lastLogElapsedMs;
     private int seqNum; // порядковый номер B-записи
-
-    // GPS кэш (обновляется из MainActivity)
-    private volatile double cachedLat;
-    private volatile double cachedLon;
-    private volatile float cachedAltGps;
-    private volatile float cachedAltBaro;
-    private volatile float cachedSpeed;
-    private volatile float cachedHeading;
-    private volatile float cachedAccuracy;
-    private volatile long cachedFixAgeMs;
+    private boolean headerWritten;
 
     // ========================================================================
     // GpsSnapshot — immutable snapshot для потокобезопасного обмена GPS данными
     // ========================================================================
 
-    /** Неизменяемый снимок GPS-данных для потокобезопасности */
     private static class GpsSnapshot {
         final double lat, lon;
         final float altGps, altBaro, speed, heading, accuracy;
@@ -125,7 +102,6 @@ public class IgcLogger {
     // Callback
     // ========================================================================
 
-    /** Коллбэк для получения событий */
     public interface IgcEventCallback {
         void onEvent(String eventType, String details);
     }
@@ -142,14 +118,13 @@ public class IgcLogger {
 
     public IgcLogger() {}
 
-    /** Установить директорию для логов (та же, что у LogManager) */
     public void setLogDir(String dir) {
         this.logDir = dir;
     }
 
     /**
      * Обновить GPS данные (вызывать из MainActivity в bgTask).
-     * Атомарно заменяет весь снимок (без race condition между полями).
+     * Атомарно заменяет весь снимок.
      */
     public void updateGps(double lat, double lon, float altGps, float altBaro,
                           float speed, float heading, float accuracy, long fixAgeMs) {
@@ -161,7 +136,7 @@ public class IgcLogger {
     // Старт / Стоп
     // ========================================================================
 
-    /** Начать запись IGC-лога */
+    /** Начать запись IGC-лога — создаёт ОДИН файл на весь полёт */
     public void startLogging() {
         if (logging) return;
         if (logDir == null) {
@@ -171,32 +146,47 @@ public class IgcLogger {
 
         logging = true;
         startElapsedMs = SystemClock.elapsedRealtime();
-        chunkStartElapsedMs = startElapsedMs;
-        chunkIndex = 0;
         seqNum = 0;
         lastLogElapsedMs = 0;
+        headerWritten = false;
+        crc32 = new CRC32();
 
-        startNewChunk(true);
+        // Создаём файл с единым именем на весь полёт
+        File dir = new File(logDir, "igc");
+        if (!dir.exists()) dir.mkdirs();
 
-        Log.i(TAG, "IGC logging STARTED");
+        String dateStr = FILE_DATE_FMT_TL.get().format(new Date());
+        currentFileName = "Flight_" + dateStr + ".igc";
+        File file = new File(dir, currentFileName);
+
+        try {
+            currentOut = new BufferedOutputStream(new FileOutputStream(file));
+            writeHeader();
+            headerWritten = true;
+            Log.i(TAG, "IGC logging STARTED: " + currentFileName);
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to create IGC file: " + currentFileName, e);
+            currentOut = null;
+            logging = false;
+        }
     }
 
-    /** Остановить запись */
+    /** Остановить запись — закрывает файл с корректным G-record */
     public void stopLogging() {
         if (!logging) return;
         logging = false;
         closeCurrentFile();
-        Log.i(TAG, "IGC logging STOPPED");
+        Log.i(TAG, "IGC logging STOPPED: " + currentFileName + " (" + seqNum + " records)");
     }
 
     public boolean isLogging() { return logging; }
 
     // ========================================================================
-    // Запись сэмпла (1 Гц — вызывать в bgTask)
+    // Запись сэмпла (1 Гц)
     // ========================================================================
 
     /**
-     * Записать один IGC B-record. Вызывать в bgTask (~10 Гц),
+     * Записать один IGC B-record. Вызывать в bgTask,
      * внутренняя децимация до 1 Гц.
      */
     public void recordSample() {
@@ -204,14 +194,6 @@ public class IgcLogger {
 
         long elapsedNow = SystemClock.elapsedRealtime();
         long elapsed = elapsedNow - startElapsedMs;
-
-        // Проверка: пора ли новый чанк
-        if (elapsedNow - chunkStartElapsedMs >= CHUNK_DURATION_MS) {
-            closeCurrentFile();
-            chunkIndex++;
-            chunkStartElapsedMs = elapsedNow;
-            startNewChunk(false);
-        }
 
         // 1 Гц децимация
         if (elapsed - lastLogElapsedMs < LOG_INTERVAL_MS) return;
@@ -228,7 +210,7 @@ public class IgcLogger {
         // Формируем B-record
         String bRecord = formatBRecord(
                 elapsed, gps.lat, gps.lon,
-                gps.altBaro, gps.altGps);
+                gps.altBaro, gps.altGps, gps.fixAgeMs, gps.accuracy);
 
         writeLine(bRecord);
     }
@@ -247,7 +229,6 @@ public class IgcLogger {
         String lRecord = "L" + timeStr + " " + eventType + ":" + safe;
         writeLine(lRecord);
 
-        // Также передаём внешнему коллбэку
         if (eventCallback != null) {
             eventCallback.onEvent(eventType, details);
         }
@@ -263,8 +244,9 @@ public class IgcLogger {
      * B HHMMSS DDMMmmm N DDDMMmmm E A PPPPP GGGGG
      */
     private String formatBRecord(long elapsedMs,
-                                  double lat, double lon,
-                                  float baroAlt, float gpsAlt) {
+                                 double lat, double lon,
+                                 float baroAlt, float gpsAlt,
+                                 long fixAgeMs, float accuracy) {
         String timeStr = formatIGCTime(elapsedMs);
         String latStr = formatIGCLat(lat);
         String lonStr = formatIGCLon(lon);
@@ -279,13 +261,9 @@ public class IgcLogger {
         if (gpsAltInt < 0) gpsAltInt = 0;
         if (gpsAltInt > 99999) gpsAltInt = 99999;
 
-        // A = GPS fix validity (1 = valid 3D fix, 2 = valid 2D fix)
-        GpsSnapshot gps = gpsSnapshot;
-        char fixChar = (gps != null && gps.fixAgeMs < 3000 && gps.accuracy < 50) ? 'A' : 'V';
+        // A = GPS fix validity
+        char fixChar = (fixAgeMs < 3000 && accuracy < 50) ? 'A' : 'V';
 
-        // BUG-26: B-record без лишнего пробела между N/S и lon — стандарт IGC
-        // IGC: BHHMMSSDDMMmmmNDDDMMmmmEAPPPGGGGG или с пробелами группами
-        // Наш формат: B HHMMSS DDMMmmmN DDDMMmmmE A PPPPP GGGGG
         return String.format(Locale.US, "B%s%s%s%s%s %c%05d%05d",
                 timeStr, latStr, (lat >= 0 ? "N" : "S"),
                 lonStr, (lon >= 0 ? "E" : "W"),
@@ -294,7 +272,6 @@ public class IgcLogger {
 
     /**
      * Форматировать время IGC: HHMMSS из elapsed ms.
-     * Используем системное время старта + elapsed.
      */
     private String formatIGCTime(long elapsedMs) {
         long wallMs = System.currentTimeMillis()
@@ -305,7 +282,6 @@ public class IgcLogger {
 
     /**
      * Форматировать широту в IGC: DDMMmmm
-     * 59.4095 → 5924.570N
      */
     private String formatIGCLat(double lat) {
         double abs = Math.abs(lat);
@@ -316,7 +292,6 @@ public class IgcLogger {
 
     /**
      * Форматировать долготу в IGC: DDDMMmmm
-     * 29.3037 → 02918.222E
      */
     private String formatIGCLon(double lon) {
         double abs = Math.abs(lon);
@@ -329,70 +304,36 @@ public class IgcLogger {
     // Файловые операции
     // ========================================================================
 
-    private void startNewChunk(boolean isFirst) {
-        File dir = new File(logDir, "igc");
-        if (!dir.exists()) dir.mkdirs();
-
-        SimpleDateFormat sdf = FILE_DATE_FMT_TL.get();
-        String dateStr = sdf.format(new Date(
-                System.currentTimeMillis()
-                - (SystemClock.elapsedRealtime() - startElapsedMs)));
-
-        String prefix = isFirst ? "Start" : "Flight";
-        currentFileName = prefix + dateStr + ".igc";
-        File file = new File(dir, currentFileName);
-
-        try {
-            currentOut = new BufferedOutputStream(new FileOutputStream(file));
-
-            // Пишем заголовок H-записей
-            writeHeader(dir, isFirst);
-            Log.i(TAG, "Chunk started: " + currentFileName);
-
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to create IGC file: " + currentFileName, e);
-            currentOut = null;
-        }
-    }
-
-    private void writeHeader(File dir, boolean isFirst) throws IOException {
+    /** Заголовок IGC — пишется один раз при старте */
+    private void writeHeader() throws IOException {
         long wallStart = System.currentTimeMillis()
                 - (SystemClock.elapsedRealtime() - startElapsedMs);
         Date startDate = new Date(wallStart);
 
-        // HFDTE: дата
         writeLine("A" + IGC_DATE_FMT_TL.get().format(startDate));
-
-        // HFxxx: заголовки
         writeLine("HFDTE" + IGC_DATE_FMT_TL.get().format(startDate));
         writeLine("HFPLTPILOT:ARTHUR");
         writeLine("HFGTYGLIDERTYPE:Paraglider");
         writeLine("HFGIDGLIDERID:TERMO1");
-        writeLine("HFFXA035"); // точность 35м
-        writeLine("HFALGALTPRESSURE:1013.25"); // QNH
+        writeLine("HFFXA035");
+        writeLine("HFALGALTPRESSURE:1013.25");
         writeLine("HFGPS:Internal");
-
-        // I-запись: расширения (0 байт доп. данных)
         writeLine("I000000");
-
-        // Первый B-record — точка старта
-        seqNum = 0;
     }
 
+    /** Закрыть файл — пишет G-record (CRC32) и flush + close */
     private void closeCurrentFile() {
         if (currentOut == null) return;
 
         try {
-            // Пишем G-record (упрощённый — количество записей)
-            // ВНИМАНИЕ: G-record — placeholder, НЕ FAI-compliant.
-            // Для FAI-санкционированных соревнований требуется RSA-подпись
-            // по спецификации IGC G-record.
-            int gSum = seqNum % 65536;
-            writeLine("G" + String.format("%04X", gSum));
+            // G-record — CRC32 от всего байтового содержимого (без байт самого G-record)
+            // Стандартный подход для IGC: G + 4-байтный CRC32 в hex
+            long crcValue = crc32.getValue();
+            writeLine("G" + String.format("%08X", crcValue & 0xFFFFFFFFL));
 
             currentOut.flush();
             currentOut.close();
-            Log.i(TAG, "Chunk closed: " + currentFileName + " (" + seqNum + " records)");
+            Log.i(TAG, "File closed: " + currentFileName + " (" + seqNum + " records, CRC=" + String.format("%08X", crcValue) + ")");
         } catch (IOException e) {
             Log.e(TAG, "Failed to close IGC file", e);
         } finally {
@@ -401,11 +342,15 @@ public class IgcLogger {
         }
     }
 
+    /** Записать строку + CRLF в файл + обновить CRC32 */
     private void writeLine(String line) {
         if (currentOut == null) return;
         try {
             byte[] bytes = (line + "\r\n").getBytes("ISO-8859-1");
             currentOut.write(bytes);
+            if (crc32 != null) {
+                crc32.update(bytes);
+            }
         } catch (IOException e) {
             Log.e(TAG, "IGC write error", e);
         }

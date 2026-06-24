@@ -1,13 +1,8 @@
-TERMO1 Radar — v0.2.4
+TERMO1 Radar — v0.2.5
 ========================
 
-Audit fix + VarioSound управляется порогом из настроек.
-
-- VarioSound: dead band управляется ползунком "Порог Vario-термика"
-- VarioSound: dead band расширен (включает 0 м/с), тишина на столе
-- SimulationManager: Random.nextGaussian, long→double dt, clamp 50ms
-- SimulationManager: CIRCLE_RATE 20°/s (реалистичная крутка)
-- FlightSimulator: Random.nextGaussian, турбулентность растёт к ядру
-- FlightSimulator: гладкий exp currentOffset, исправлен osc
-- ThermalBaseEstimator: убран мёртвый цикл 10 итераций
-- LiftDatabase: гистерезис BEST_SECTOR_UPDATE_FACTOR
+IGC: один файл на весь полёт, CRC32 G-record.
+Компас: сглаживание везде, калибровка при старте.
+Голос: 8 направлений + против/по ветру.
+12 секторов подъёма (было 36).
+VarioSound управляется порогом из настроек.

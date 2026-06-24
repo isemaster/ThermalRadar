@@ -560,6 +560,12 @@ public class CirclingManager {
     // Голосовая подсказка после полного круга
     // ========================================================================
 
+    /** 8 направлений для голосовых подсказок */
+    private static final String[] COMPASS_DIRS = {
+        "север", "северо-восток", "восток", "юго-восток",
+        "юг", "юго-запад", "запад", "северо-запад"
+    };
+
     private String getCircleGuidance() {
         // Найти сектор с максимальным средним варио
         int bestSector = -1;
@@ -575,25 +581,24 @@ public class CirclingManager {
 
         float bestHeading = sectorCenterHeading(bestSector);
 
-        // Если известен ветер и достоверность > 2 спиралей
+        // Если известен ветер — проверяем совпадение с направлением ветра
         if (windFromDeg >= 0 && windConfidence > 1) {
-            float diff = bestHeading - windFromDeg;
-            if (diff < 0) diff += 360f;
+            float diffUp = (bestHeading - windFromDeg + 720f) % 360f;
+            float diffDown = (bestHeading - ((windFromDeg + 180f) % 360f) + 720f) % 360f;
 
-            if (diff < 45f || diff >= 315f) {
-                return "ядро на ветер";
-            } else if (diff >= 135f && diff < 225f) {
-                return "ядро по ветру";
+            // В пределах 45° от направления ПРОТИВ ветра
+            if (diffUp < 45f || diffUp >= 315f) {
+                return "Ядро против ветра";
+            }
+            // В пределах 45° от направления ПО ветру
+            if (diffDown < 45f || diffDown >= 315f) {
+                return "Ядро по ветру";
             }
         }
 
-        switch (bestSector) {
-            case 0:  return "Ядро север";
-            case 1:  return "Ядро восток";
-            case 2:  return "Ядро юг";
-            case 3:  return "Ядро запад";
-            default: return null;
-        }
+        // Иначе — 8 направлений компаса
+        int dir8 = (int) Math.round(bestHeading / 45f) % 8;
+        return "Ядро " + COMPASS_DIRS[dir8];
     }
 
     // ========================================================================

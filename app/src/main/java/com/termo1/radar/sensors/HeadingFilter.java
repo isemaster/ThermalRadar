@@ -16,7 +16,7 @@ import java.util.ArrayDeque;
 public class HeadingFilter {
 
     // === CLAMP ===
-    private static final float MAX_DELTA_DEG_PER_SEC = 50f; // 50°/с — физический лимит поворота параплана
+    private static final float MAX_DELTA_DEG_PER_SEC = 70f; // 70°/с — физический лимит поворота параплана
 
     // === MEDIAN FILTER ===
     private static final int MEDIAN_WINDOW = 3;
@@ -31,7 +31,7 @@ public class HeadingFilter {
     private double unwrapped;     // монотонная шкала без скачков 359→0
 
     // === DEADBAND ===
-    private static final double DEADBAND_DEG = 1.5; // не обновлять если < 1.5°
+    private static final double DEADBAND_DEG = 4.0; // не обновлять если < 4° (масляный демпфер)
     private double lastOutputDeg;  // последнее выведенное значение (0-360)
 
     // === Состояние ===
@@ -47,9 +47,9 @@ public class HeadingFilter {
         reset();
     }
 
-    /** Конструктор с рекомендуемыми значениями Медиана(3) + Alpha-Beta(α=0.6, β=0.2) */
+    /** Конструктор с рекомендуемыми значениями Медиана(3) + Alpha-Beta(α=0.75, β=0.3) */
     public HeadingFilter() {
-        this(0.6, 0.2);
+        this(0.75, 0.3);
     }
 
     /**

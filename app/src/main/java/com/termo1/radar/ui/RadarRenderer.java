@@ -4,6 +4,8 @@ import android.graphics.*;
 
 import com.termo1.radar.model.ThermalBlip;
 
+import com.termo1.radar.flight.LiftDatabase;
+
 import java.util.List;
 
 /**
@@ -33,6 +35,7 @@ public class RadarRenderer {
     private final Paint nsewPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     // Кешированные геометрические объекты — без new в onDraw!
     private final RectF sectorRect = new RectF();
+    private final RectF bestSectorRect = new RectF();
     private final RectF outerRect = new RectF();
 
     // Wind arrow
@@ -375,18 +378,21 @@ public class RadarRenderer {
         }
     }
 
-    // ===== SECTOR DIAGRAM (36 цветных сегментов) =====
+    // ===== SECTOR DIAGRAM (12 цветных сегментов) =====
 
     private void drawSectorDiagram(Canvas c) {
         if (!sectorDataValid) return;
 
         float outerR = r - 2f;          // внешний край
-        float innerR = r * 0.80f;       // внутренний край (чуть внутри внешнего кольца)
-        float sectorDeg = 360f / 36f;   // 10° на сектор
+        float innerR = r * 0.80f;       // внутренний край
+
+        // Используем LiftDatabase.SECTOR_COUNT вместо хардкода
+        int nSectors = LiftDatabase.SECTOR_COUNT;
+        float sectorDeg = 360f / nSectors;
 
         // Определяем диапазон значений для шкалы
         float maxLift = 0.001f, minLift = -0.001f;
-        for (int i = 0; i < 36; i++) {
+        for (int i = 0; i < nSectors; i++) {
             if (sectorLiftValues[i] > maxLift) maxLift = sectorLiftValues[i];
             if (sectorLiftValues[i] < minLift) minLift = sectorLiftValues[i];
         }
@@ -396,7 +402,7 @@ public class RadarRenderer {
         sectorRect.set(cx - outerR, cy - outerR,
                        cx + outerR, cy + outerR);
 
-        for (int i = 0; i < 36; i++) {
+        for (int i = 0; i < nSectors; i++) {
             float val = sectorLiftValues[i];
             if (val == 0f) continue; // нет данных — не рисуем
 
@@ -714,14 +720,15 @@ public class RadarRenderer {
     private void drawBestLiftSector(Canvas c) {
         if (bestSectorIndex < 0) return;
 
-        float sectorWidth = 360f / 36f;
+        float sectorWidth = 360f / LiftDatabase.SECTOR_COUNT;
         float sectorHalf = sectorWidth / 2f;
         float sectorCenterDeg = bestSectorIndex * sectorWidth + sectorHalf;
         float outerR = r - 2f;
 
-        RectF sectorRect = new RectF(cx - outerR, cy - outerR,
-                                      cx + outerR, cy + outerR);
-        c.drawArc(sectorRect, -sectorCenterDeg - sectorHalf, sectorWidth, false,
+        // BUG-A18: кешированный RectF (без аллокации в onDraw)
+        bestSectorRect.set(cx - outerR, cy - outerR,
+                           cx + outerR, cy + outerR);
+        c.drawArc(bestSectorRect, -sectorCenterDeg - sectorHalf, sectorWidth, false,
                   bestSectorStrokePaint);
 
         if (bestSectorDirection.length() > 0) {

@@ -18,8 +18,8 @@ public class LiftDatabase {
     // Константы
     // ========================================================================
 
-    /** Количество секторов */
-    public static final int SECTOR_COUNT = 36;
+    /** Количество секторов (12 по 30° — параплан: круг ~17 с при 50 Гц → ~72 сэмпла на сектор) */
+    public static final int SECTOR_COUNT = 12;
 
     /** Ширина одного сектора (градусы) */
     private static final double SECTOR_WIDTH = 360.0 / SECTOR_COUNT; // 10°

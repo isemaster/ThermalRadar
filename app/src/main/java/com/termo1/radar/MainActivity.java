@@ -706,6 +706,7 @@ public class MainActivity extends Activity {
             igcLogger.startLogging();
             // Автокалибровка при старте полёта (сенсоры уже работают)
             resetCalibration();
+            sensorController.calibrateHeading(); // компас — стабилен 2 сек прямого полёта
             android.util.Log.i("TERMO1", "Auto calibration on flight start");
             android.widget.Toast.makeText(MainActivity.this,
                     "Полёт обнаружен, запись лога", android.widget.Toast.LENGTH_SHORT).show();
@@ -832,6 +833,8 @@ public class MainActivity extends Activity {
         if (logManager.isLogging()) return;
         logManager.startLogging();
         igcLogger.startLogging();
+        // Калибровка компаса: считаем направление стабильным 2 сек
+        sensorController.calibrateHeading();
         android.widget.Toast.makeText(this,
                 "Запись лога начата", android.widget.Toast.LENGTH_SHORT).show();
     }
@@ -1676,8 +1679,15 @@ public class MainActivity extends Activity {
     // ========================================================================
 
     private float getCompassHeading() {
-        if (sensorController.isCompassReady()) return sensorController.getHeading();
-        if (gpsManager.isReady()) return gpsManager.getHeading();
+        // Всегда через SensorController (HeadingFilter + GPS feed + hold)
+        if (sensorController.isCompassReady()) {
+            return sensorController.getHeading();
+        }
+        if (gpsManager.isReady()) {
+            // GPS fallback через тот же HeadingFilter
+            sensorController.updateGpsHeading(gpsManager.getHeading());
+            return sensorController.getHeading();
+        }
         return 0.0f;
     }
 
