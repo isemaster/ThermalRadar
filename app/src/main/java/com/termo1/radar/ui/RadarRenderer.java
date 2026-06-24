@@ -119,19 +119,19 @@ public class RadarRenderer {
 
     public RadarRenderer() {
         borderPaint.setStyle(Paint.Style.STROKE);
-        borderPaint.setStrokeWidth(2);
-        borderPaint.setColor(Color.argb(115, 255, 255, 255));
+        borderPaint.setStrokeWidth(6);
+        borderPaint.setColor(Color.argb(180, 0, 120, 255));
 
         ringPaint.setStyle(Paint.Style.STROKE);
-        ringPaint.setStrokeWidth(1);
+        ringPaint.setStrokeWidth(3);
 
         dashPaint.setStyle(Paint.Style.STROKE);
-        dashPaint.setStrokeWidth(1);
+        dashPaint.setStrokeWidth(3);
         dashPaint.setPathEffect(dash125);
 
         crossPaint.setStyle(Paint.Style.STROKE);
-        crossPaint.setStrokeWidth(1);
-        crossPaint.setColor(Color.argb(12, 0, 255, 0));
+        crossPaint.setStrokeWidth(3);
+        crossPaint.setColor(Color.argb(60, 40, 140, 255));
 
         pilotFillPaint.setStyle(Paint.Style.FILL);
         pilotFillPaint.setColor(Color.GREEN);
@@ -156,7 +156,7 @@ public class RadarRenderer {
         cardTextPaint.setTypeface(Typeface.MONOSPACE);
 
         nsewPaint.setAntiAlias(true);
-        nsewPaint.setTextSize(72);
+        nsewPaint.setTextSize(144);
         nsewPaint.setTextAlign(Paint.Align.CENTER);
         nsewPaint.setTypeface(Typeface.MONOSPACE);
         nsewPaint.setFakeBoldText(true);
@@ -220,6 +220,18 @@ public class RadarRenderer {
 
         // Background map paint (75% alpha)
         mapAlphaPaint.setAlpha(MAP_ALPHA);
+
+        // Posterize map: high contrast + saturation → 16-color look
+        ColorMatrix mapCm = new ColorMatrix();
+        mapCm.setSaturation(2.0f);
+        ColorMatrix mapContrast = new ColorMatrix(new float[]{
+            2.2f, 0, 0, 0, -102f,
+            0, 2.2f, 0, 0, -102f,
+            0, 0, 2.2f, 0, -102f,
+            0, 0, 0, 1, 0
+        });
+        mapCm.postConcat(mapContrast);
+        mapAlphaPaint.setColorFilter(new ColorMatrixColorFilter(mapCm));
 
         // Thermal core
         thermalCoreGlowPaint.setStyle(Paint.Style.FILL);
@@ -439,51 +451,51 @@ public class RadarRenderer {
     // ===== RINGS, CROSS, CARDINALS, TICKS =====
 
     private void drawRings(Canvas c) {
-        ringPaint.setColor(Color.argb(20, 0, 255, 0));
-        ringPaint.setStrokeWidth(2);
+        ringPaint.setColor(Color.argb(40, 30, 150, 255));
+        ringPaint.setStrokeWidth(6);
         c.drawCircle(cx, cy, r / 3f, ringPaint);
-        cardTextPaint.setColor(Color.argb(70, 0, 255, 0));
+        cardTextPaint.setColor(Color.argb(180, 30, 150, 255));
         c.drawText("50м", cx + 5, cy - r / 3f - 5, cardTextPaint);
 
         c.drawCircle(cx, cy, r * 2f / 3f, ringPaint);
         c.drawText("100м", cx + 5, cy - r * 2f / 3f - 5, cardTextPaint);
 
-        dashPaint.setStrokeWidth(2);
-        dashPaint.setColor(Color.argb(15, 0, 255, 0));
+        dashPaint.setStrokeWidth(6);
+        dashPaint.setColor(Color.argb(30, 30, 150, 255));
         c.drawCircle(cx, cy, thermalMaxDist, dashPaint);
         c.drawText("125м", cx + 5, cy - thermalMaxDist - 5, cardTextPaint);
 
-        ringPaint.setColor(Color.argb(90, 0, 255, 0));
-        ringPaint.setStrokeWidth(2);
+        ringPaint.setColor(Color.argb(180, 0, 120, 255));
+        ringPaint.setStrokeWidth(6);
         c.drawCircle(cx, cy, r, ringPaint);
     }
 
     private void drawCross(Canvas c) {
-        crossPaint.setStrokeWidth(2);
-        crossPaint.setColor(Color.argb(40, 0, 255, 0));
+        crossPaint.setStrokeWidth(6);
+        crossPaint.setColor(Color.argb(60, 40, 140, 255));
         c.drawLine(cx - r, cy, cx + r, cy, crossPaint);
         c.drawLine(cx, cy - r, cx, cy + r, crossPaint);
         float d = (float) (r * 0.70710678118);
         c.drawLine(cx - d, cy - d, cx + d, cy + d, crossPaint);
         c.drawLine(cx - d, cy + d, cx + d, cy - d, crossPaint);
-        crossPaint.setStrokeWidth(1);
+        crossPaint.setStrokeWidth(3);
     }
 
     private void drawCardinalPoints(Canvas c) {
-        float offset = 70;
-        nsewPaint.setColor(Color.argb(70, 0, 255, 0));
+        float offset = 100;
+        nsewPaint.setColor(Color.argb(200, 0, 130, 255));
         c.drawText("N", cx, cy - r + offset, nsewPaint);
-        c.drawText("S", cx, cy + r - 10, nsewPaint);
-        c.drawText("W", cx - r + offset - 10, cy + 8, nsewPaint);
-        c.drawText("E", cx + r - offset + 10, cy + 8, nsewPaint);
+        c.drawText("S", cx, cy + r - 20, nsewPaint);
+        c.drawText("W", cx - r + offset - 10, cy + 18, nsewPaint);
+        c.drawText("E", cx + r - offset + 10, cy + 18, nsewPaint);
     }
 
     private void drawTickMarks(Canvas c) {
-        ringPaint.setColor(Color.argb(40, 0, 255, 0));
-        ringPaint.setStrokeWidth(1);
+        ringPaint.setColor(Color.argb(80, 30, 150, 255));
+        ringPaint.setStrokeWidth(3);
         cardTextPaint.setTextAlign(Paint.Align.CENTER);
         cardTextPaint.setTextSize(32);
-        cardTextPaint.setColor(Color.argb(60, 0, 255, 0));
+        cardTextPaint.setColor(Color.argb(130, 30, 150, 255));
         for (int deg = 0; deg < 360; deg += 15) {
             float rad = (float) Math.toRadians(deg);
             float innerR = r - 8f;
