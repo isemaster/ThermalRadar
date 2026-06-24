@@ -40,11 +40,11 @@ public class StaticMapLoader {
     private static final int MEM_CACHE_KB = 32 * 1024;       // 32 MB
     private static final long DISK_CACHE_MAX_BYTES = 50 * 1024 * 1024L; // 50 MB disk limit
 
-    // OpenStreetMap tile сервер (tile.openstreetmap.org — стабильный, бесплатный, без ключа)
-    // Формат: https://tile.openstreetmap.org/{zoom}/{x}/{y}.png
-    // Пример: https://tile.openstreetmap.org/14/4985/3241.png
+    // CartoDB light — чистая карта, без ключа, стабильно, работает в РФ
+    // https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png
+    // Subdomains a,b,c для балансировки
     private static final String OSM_TILE_URL =
-            "https://tile.openstreetmap.org/%d/%d/%d.png";
+            "https://a.basemaps.cartocdn.com/light_all/%d/%d/%d.png";
 
     // Threading: ExecutorService вместо AsyncTask
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -212,6 +212,7 @@ public class StaticMapLoader {
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(5000);
             conn.setReadTimeout(10000);
+            conn.setRequestProperty("User-Agent", "ThermalRadar/0.2.6 (paragliding app)");
             conn.connect();
 
             if (conn.getResponseCode() != 200) {

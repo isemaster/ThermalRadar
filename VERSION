@@ -1,7 +1,5 @@
-TERMO1 Radar — v0.2.6
+TERMO1 Radar — v0.2.7
 ========================
 
-Исправления из t5.md:
-- Completely rewritten HeadingFilter (no NaN, CLAMP by xk, no alloc, deadband 0.5°)
-- compassFailureStreak (защита от сброса при турбулентности)
-- StaticMapLoader: tile.openstreetmap.org вместо мёртвого staticmap.openstreetmap.de
+CartoDB light tiles вместо tile.openstreetmap.org (access blocked).
+Добавлен User-Agent при загрузке тайлов.
