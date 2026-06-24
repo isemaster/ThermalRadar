@@ -1,8 +1,11 @@
-TERMO1 Radar — v0.2.12
+TERMO1 Radar — v0.2.13
 =========================
 
-Тайлы: Esri World Topo (топографическая, контрастная).
-User-Agent: generic Chrome Android.
-Сетка радара: синяя, ×3 толщина.
-Буквы N S W E увеличены в 2 раза.
-Карта 3×3 км (75%), радар 150м — двойной масштаб.
+Исправление компаса по ревью t9.md:
+- TYPE_ROTATION_VECTOR (встроенный fusion ядра Android)
+- HeadingFilter: α=0.15, β=0.02, deadband адаптивный
+- UI-сглаживание heading (SLERP)
+- rotationMatrix snapshot (thread-safe)
+- getLogHeading → filtered heading
+- WindEKF переименован в WindGradientDescent
+- VarioManager: deadband 0.2, ISA const, alpha clamp 0.8

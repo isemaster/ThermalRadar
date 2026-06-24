@@ -23,6 +23,13 @@ public class VarioManager {
     private static final float NOISE_FLOOR_FIXED = 3.5f;
     private static final int HP_BUF_SIZE = 64;
 
+    // ISA: h = 44330 · (1 - (p/p0)^0.190263), где 0.190263 = (R·L)/(g·M) = 1/5.255
+    private static final double ISA_HEIGHT_FACTOR = 0.190263072286998;
+    private static final double ISA_HEIGHT_SCALE_M = 44330.7692307692;
+
+    /** Vario deadband — минимальное изменение для отображения (исправлено: 0.05→0.2 м/с) */
+    private static final float VARIO_DEADBAND = 0.2f;
+
     // Baro calibration
     private float baselinePressure = 1013.25f;
     private int baroCalibCount;
@@ -101,7 +108,7 @@ public class VarioManager {
         }
 
         float ratio = pressure / baselinePressure;
-        altRaw = 44330.7692307692f * (1.0f - (float) Math.pow(ratio, 0.190263072286998f));
+        altRaw = (float) (ISA_HEIGHT_SCALE_M * (1.0 - Math.pow(ratio, ISA_HEIGHT_FACTOR)));
 
         long nowNanos = SystemClock.elapsedRealtimeNanos();
         if (baroCalibCount == BARO_CALIB_SAMPLES) {
@@ -145,7 +152,8 @@ public class VarioManager {
                 idx = (idx + 1) % VARIO_BUF_SIZE;
             }
             vario = (count > 0) ? sum / count : 0f;
-            if (Math.abs(vario) < 0.05f) vario = 0f;
+            // Deadband для варио (исправлено: 0.05→0.2 м/с)
+            if (Math.abs(vario) < VARIO_DEADBAND) vario = 0f;
         }
 
         // HPF + RMS для SNR
@@ -169,7 +177,8 @@ public class VarioManager {
         return false;
     }
 
-    /** Адаптивный alpha — быстрее при турбулентности */
+    /** Адаптивный alpha — быстрее при турбулентности.
+     *  Исправлено по ревью §5.4: нижний clamp 0.9→0.8, чтобы настройка n=5 работала. */
     private float getVarioAlpha() {
         int n = Math.max(5, Math.min(100, varioSmoothSamples));
         if (thermalDetector != null) {
@@ -180,7 +189,8 @@ public class VarioManager {
             if (n < 1) n = 1;
         }
         float alpha = 1f - 1f / n;
-        return Math.max(0.9f, Math.min(0.9999f, alpha));
+        // Нижний порог снижен с 0.9 до 0.8, чтобы настройки пользователя (n=5→α=0.8) работали
+        return Math.max(0.8f, Math.min(0.9999f, alpha));
     }
 
     // ========================================================================

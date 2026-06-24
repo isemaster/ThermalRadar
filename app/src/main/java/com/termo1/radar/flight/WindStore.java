@@ -74,9 +74,9 @@ public class WindStore {
     }
 
     /**
-     * Добавить измерение из WindEKF.
+     * Добавить измерение из WindGradientDescent (бывший WindEKF).
      */
-    public void addEKFMeasurement(WindEKF ekf, double altitude, long nowMs) {
+    public void addEKFMeasurement(WindGradientDescent ekf, double altitude, long nowMs) {
         if (ekf.getQuality() <= 0) return;
         addMeasurement(
                 ekf.getWindDirectionDeg(),

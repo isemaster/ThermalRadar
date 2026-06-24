@@ -1,7 +1,15 @@
 package com.termo1.radar.flight;
 
 /**
- * WindEKF — расширенный фильтр Калмана для оценки ветра на прямых участках полёта.
+ * WindGradientDescent — оценка ветра градиентным спуском на прямых участках полёта.
+ *
+ * ВНИМАНИЕ: несмотря на историческое название WindEKF, это НЕ расширенный фильтр Калмана.
+ * Реализация не содержит:
+ *   - ковариационной матрицы P
+ *   - prediction step
+ *   - Q (process noise) / R (measurement noise)
+ *   - Kalman gain
+ * Это градиентный спуск с эвристическим decay learning rate. (см. ревью §6)
  *
  * Из algo.md раздел 11.2:
  * State: [wind_u, wind_v, scale_factor]
@@ -11,7 +19,7 @@ package com.termo1.radar.flight;
  *
  * Update: каждый GPS fix на прямом участке сравнивает GPS-вектор с воздушной скоростью.
  */
-public class WindEKF {
+public class WindGradientDescent {
 
     // State
     private double windU;       // ветер по оси X (м/с)
@@ -24,7 +32,7 @@ public class WindEKF {
     // Счётчик обновлений для качества
     private int updateCount;
 
-    public WindEKF() {
+    public WindGradientDescent() {
         reset();
     }
 
@@ -42,7 +50,7 @@ public class WindEKF {
 
         if (mag < 0.1 || airspeed < 1.0) return; // нет данных
 
-        // Kalman gains
+        // Gradient descent gain = -d(airspeed)/d(wind*)
         double k0 = -scaleFactor * dx / mag * k;
         double k1 = -scaleFactor * dy / mag * k;
         double k2 = mag * 1e-5;
@@ -89,7 +97,7 @@ public class WindEKF {
     /** Поправка TAS */
     public double getScaleFactor() { return scaleFactor; }
 
-    /** Качество оценки (0-3) */
+    /** Качество оценки (0-3) — функция от k, не от реальной дисперсии (см. ревью §6.4) */
     public int getQuality() {
         if (updateCount < 5) return 0;      // недостаточно данных
         if (k < 0.02) return 3;             // устоялось

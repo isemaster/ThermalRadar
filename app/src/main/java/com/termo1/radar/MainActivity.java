@@ -155,6 +155,10 @@ public class MainActivity extends Activity {
     private String lastTtsPhrase;
     private long lastTtsSpeakMs;
 
+    // ===== UI-сглаживание heading (Fix C) =====
+    private float headingDisplaySmoothed = 0f;
+    private boolean headingDisplayInitialized = false;
+
     // ========================================================================
     // Simulation
     // ========================================================================
@@ -455,9 +459,15 @@ public class MainActivity extends Activity {
             }, 500);
         }
 
-        // Яркость экрана: средняя (0.5) по умолчанию
+        // Яркость экрана: из настроек (исправлено по ревью §7.10)
         android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
-        lp.screenBrightness = 0.5f;
+        if (prefs.getBoolean("sunlight_mode", false)) {
+            lp.screenBrightness = 1.0f;
+        } else if (prefs.getBoolean("blind_mode", false)) {
+            lp.screenBrightness = 0.15f;
+        } else {
+            lp.screenBrightness = -1.0f;  // system default
+        }
         getWindow().setAttributes(lp);
 
         startRendering();
@@ -901,7 +911,7 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 if (!running) return;
-                radarView.postInvalidateOnAnimation();
+                radarView.invalidate();
                 renderHandler.postDelayed(this, RENDER_INTERVAL_MS);
             }
         };
@@ -2352,6 +2362,16 @@ public class MainActivity extends Activity {
                     showStats);
 
             float headingDisplay = getCompassHeading();
+            // UI-сглаживание heading (Fix C — SLERP-интерполяция для плавности отображения)
+            if (!headingDisplayInitialized) {
+                headingDisplaySmoothed = headingDisplay;
+                headingDisplayInitialized = true;
+            } else {
+                // SLERP-like для углов: учитываем wrap 0/360
+                float diff = ((headingDisplay - headingDisplaySmoothed + 540f) % 360f) - 180f;
+                headingDisplaySmoothed = (headingDisplaySmoothed + diff * 0.25f + 360f) % 360f;
+            }
+            float headingDisplayFinal = headingDisplaySmoothed;
             float varioDisplay = sensorController.getVario();
             if (scenarioMode && flightSim != null && flightSim.isRunning()) {
                 headingDisplay = flightSim.getHeading();
@@ -2365,7 +2385,7 @@ public class MainActivity extends Activity {
             radarRenderer.setPilotPosition(gpsManager.getLat(), gpsManager.getLon());
 
             radarRenderer.draw(canvas, nowMs, thermalsCopy,
-                    headingDisplay, varioDisplay, currentStatus,
+                    headingDisplayFinal, varioDisplay, currentStatus,
                     sensorController.getMaxSnr(), thermalsCopy.size(),
                     trailPxBuf, trailPyBuf, trailBrightBuf, trailCount);
 

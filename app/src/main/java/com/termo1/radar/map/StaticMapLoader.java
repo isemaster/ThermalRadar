@@ -255,7 +255,7 @@ public class StaticMapLoader {
             conn.setConnectTimeout(5000);
             conn.setReadTimeout(10000);
             conn.setRequestProperty("User-Agent",
-                    "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36");
+                    "TERMO1-Radar/0.2.13 (Android; paragliding instrument; github.com/isemaster/ThermalRadar)");
             conn.connect();
 
             if (conn.getResponseCode() != 200) {

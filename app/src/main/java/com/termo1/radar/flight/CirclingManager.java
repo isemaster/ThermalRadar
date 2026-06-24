@@ -20,7 +20,7 @@ package com.termo1.radar.flight;
  *
  * Оценка ветра:
  * - При крутке: дрейф GPS-центра спирали → направление и скорость ветра
- * - На прямых участках: WindEKF по разнице GPS vs TAS
+ * - На прямых участках: WindGradientDescent по разнице GPS vs TAS
  * - Хранение в WindStore по слоям высоты
  */
 public class CirclingManager {
@@ -140,7 +140,7 @@ public class CirclingManager {
     private float windSpeedMs = -1f;
     private int windConfidence;
 
-    private final WindEKF windEKF = new WindEKF();
+    private final WindGradientDescent windEKF = new WindGradientDescent();
     private final WindStore windStore = new WindStore();
 
     // ========================================================================
@@ -708,7 +708,7 @@ public class CirclingManager {
         return windStore.getWindAt(altMsl, nowMs);
     }
 
-    public WindEKF getWindEKF() {
+    public WindGradientDescent getWindEKF() {
         return windEKF;
     }
 
@@ -762,7 +762,7 @@ public class CirclingManager {
         this.airspeedMs = Math.max(8f, Math.min(15f, ms));
     }
 
-    /** Полный сброс с очисткой WindStore и WindEKF */
+    /** Полный сброс с очисткой WindStore и WindGradientDescent */
     public void fullReset() {
         reset();
         windEKF.reset();
