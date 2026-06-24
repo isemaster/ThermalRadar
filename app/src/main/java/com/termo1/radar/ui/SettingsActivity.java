@@ -210,8 +210,8 @@ public class SettingsActivity extends Activity {
         });
         root.addView(simulateBtn);
 
-        // 4b. Track replay button (сим2)
-        Button trackBtn = createButton("Сим2: трек полёта (2x)");
+        // 4b. Треклоги button
+        Button trackBtn = createButton("Треклоги");
         trackBtn.setOnClickListener(v -> {
             Intent intent = new Intent(this, MainActivity.class);
             intent.putExtra("track_replay", true);
@@ -219,6 +219,71 @@ public class SettingsActivity extends Activity {
             startActivity(intent);
         });
         root.addView(trackBtn);
+
+        // Ищет IGC-файлов в getExternalFilesDir(null)/igc/
+        java.io.File igcDir = new java.io.File(
+                getExternalFilesDir(null), "igc");
+        if (igcDir.exists() && igcDir.isDirectory()) {
+            java.io.File[] igcFiles = igcDir.listFiles((dir, name) ->
+                    name.toLowerCase(java.util.Locale.US).endsWith(".igc"));
+            if (igcFiles != null && igcFiles.length > 0) {
+                // Sort by last modified, newest first
+                java.util.Arrays.sort(igcFiles, (a, b) ->
+                        Long.compare(b.lastModified(), a.lastModified()));
+
+                // Section header
+                TextView igcHeader = new TextView(this);
+                igcHeader.setText("Файлы IGC:");
+                igcHeader.setTextSize(13);
+                igcHeader.setTypeface(android.graphics.Typeface.MONOSPACE);
+                igcHeader.setTextColor(android.graphics.Color.argb(180, 0, 255, 0));
+                igcHeader.setPadding(0, 12, 0, 8);
+                root.addView(igcHeader);
+
+                for (final java.io.File igcFile : igcFiles) {
+                    LinearLayout row = new LinearLayout(this);
+                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    row.setPadding(8, 4, 8, 4);
+                    LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT);
+                    row.setLayoutParams(rowLp);
+
+                    // File name label
+                    String sizeStr = igcFile.length() > 1024
+                            ? (igcFile.length() / 1024) + " КБ"
+                            : igcFile.length() + " Б";
+                    String label = igcFile.getName() + "  (" + sizeStr + ")";
+                    TextView fileNameView = new TextView(this);
+                    fileNameView.setText(label);
+                    fileNameView.setTextSize(13);
+                    fileNameView.setTypeface(android.graphics.Typeface.MONOSPACE);
+                    fileNameView.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
+                    fileNameView.setLayoutParams(new LinearLayout.LayoutParams(
+                            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+                    row.addView(fileNameView);
+
+                    // ▶ Play button
+                    Button playBtn = new Button(this);
+                    playBtn.setText("▶ Play");
+                    playBtn.setTextSize(13);
+                    playBtn.setTypeface(android.graphics.Typeface.MONOSPACE);
+                    playBtn.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
+                    playBtn.setBackgroundColor(android.graphics.Color.argb(40, 0, 255, 0));
+                    playBtn.setPadding(16, 8, 16, 8);
+                    playBtn.setOnClickListener(v -> {
+                        Intent intent = new Intent(this, MainActivity.class);
+                        intent.putExtra("track_replay", true);
+                        intent.putExtra("track_file", igcFile.getAbsolutePath());
+                        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                        startActivity(intent);
+                    });
+                    row.addView(playBtn);
+
+                    root.addView(row);
+                }
+            }
+        }
 
         // Spacer
         View spacer2 = new View(this);

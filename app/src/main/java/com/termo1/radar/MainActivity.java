@@ -463,9 +463,11 @@ public class MainActivity extends Activity {
             radarView.post(() -> startFlightScenario());
         }
 
-        // Track replay from settings (сим2)
+        // Track replay from settings
         if (intent != null && intent.getBooleanExtra("track_replay", false)) {
-            radarView.post(() -> startTrackReplay());
+            final String trackFile = intent.hasExtra("track_file")
+                    ? intent.getStringExtra("track_file") : null;
+            radarView.post(() -> startTrackReplay(trackFile));
         }
     }
 
@@ -778,21 +780,27 @@ public class MainActivity extends Activity {
             new FlightStateMachine.FlightStateListener() {
         @Override
         public void onFlightStarted() {
+            // Единое имя файла для IGC и sensor companion
+            java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US);
+            String baseName = "Flight_" + sdf.format(new java.util.Date());
+            igcLogger.setBaseFileName(baseName);
+            logManager.setBaseFileName(baseName);
             logManager.startLogging();
             igcLogger.startLogging();
             // Автокалибровка при старте полёта (сенсоры уже работают)
             resetCalibration();
-            sensorController.calibrateHeading(); // компас — стабилен 2 сек прямого полёта
-            android.util.Log.i("TERMO1", "Auto calibration on flight start");
+            sensorController.calibrateHeading();
+            android.util.Log.i("TERMO1", "Flight START: " + baseName);
             android.widget.Toast.makeText(MainActivity.this,
-                    "Полёт обнаружен, запись лога", android.widget.Toast.LENGTH_SHORT).show();
+                    "Полёт обнаружен, запись", android.widget.Toast.LENGTH_SHORT).show();
         }
 
         @Override
         public void onFlightFinished() {
-            // Логи НЕ останавливаем — остановка только по кнопке с подтверждением
+            igcLogger.stopLogging();
+            logManager.stopLogging();
             android.widget.Toast.makeText(MainActivity.this,
-                    "Полёт завершён, лог продолжается", android.widget.Toast.LENGTH_SHORT).show();
+                    "Полёт завершён, лог сохранён", android.widget.Toast.LENGTH_SHORT).show();
         }
     };
 
@@ -1614,7 +1622,7 @@ public class MainActivity extends Activity {
     private long trackStartMs;
     private long trackPrevFrameMs;
 
-    private void startTrackReplay() {
+    private void startTrackReplay(String filePath) {
         trackMode = true;
         trackStartMs = SystemClock.elapsedRealtime();
 
@@ -1624,7 +1632,12 @@ public class MainActivity extends Activity {
         }
 
         trackReplayer = new TrackReplayer();
-        trackReplayer.loadFromIGC(getResources().openRawResource(R.raw.track_replay));
+        trackReplayer.setSpeed(5.0f);
+        if (filePath != null) {
+            trackReplayer.loadFile(filePath);
+        } else {
+            trackReplayer.loadFromIGC(getResources().openRawResource(R.raw.track_replay));
+        }
         trackReplayer.start();
         trackPrevFrameMs = 0;
 

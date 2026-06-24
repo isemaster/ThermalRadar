@@ -10,44 +10,35 @@ import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.text.SimpleDateFormat;
-import java.util.Date;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
- * LogManager — потокобезопасное логирование 50 Гц + события (Events.csv).
- * - synchronized на всех доступах к буферам
- * - periodic flush каждые ~5 с (для предотвращения потери данных при краше)
- * - I/O на выделенном HandlerThread
+ * LogManager — companion sensor logger for IGC flights.
+ * Writes a single .zip file per flight containing all sensor data as CSV.
+ * - synchronized on all buffer access
+ * - async I/O on dedicated HandlerThread
+ * - base file name set externally (same as IGC file)
  */
 public class LogManager {
 
     private static final String TAG = "TERMO1_LOG";
 
     private static final int SAMPLE_DECIMATION = 1;
-    private static final long CHUNK_DURATION_MS = 10 * 60 * 1000L;
-    private static final long FLUSH_INTERVAL_MS = 5000L;
 
     private boolean isLogging;
     private final Object bufferLock = new Object();
     private StringBuilder logBuffer;
-    private StringBuilder eventBuffer;
 
     private long elapsedStartMs;
     private long wallStartMs;
-    private long chunkStartElapsed;
-    private int chunkIndex;
     private int sampleCounter;
     private String externalLogDir;
+    private String baseFileName;
 
     private HandlerThread ioThread;
     private Handler ioHandler;
-
-    // Periodic flush timer
-    private Handler flushHandler;
-    private Runnable flushTask;
 
     private volatile double cachedGpsLat;
     private volatile double cachedGpsLon;
@@ -91,11 +82,9 @@ public class LogManager {
 
     public LogManager() {
         logBuffer = new StringBuilder(65536);
-        eventBuffer = new StringBuilder(4096);
         ioThread = new HandlerThread("termo1-log-io");
         ioThread.start();
         ioHandler = new Handler(ioThread.getLooper());
-        flushHandler = new Handler(ioThread.getLooper());
     }
 
     public void setDataProvider(LogDataProvider provider) {
@@ -106,23 +95,22 @@ public class LogManager {
         this.externalLogDir = dir;
     }
 
+    /** Set the base file name (without extension), same as the IGC file name. */
+    public void setBaseFileName(String name) {
+        this.baseFileName = name;
+    }
+
     public void startLogging() {
         if (isLogging) return;
         isLogging = true;
 
         elapsedStartMs = SystemClock.elapsedRealtime();
         wallStartMs = System.currentTimeMillis();
-        chunkStartElapsed = elapsedStartMs;
-        chunkIndex = 0;
         sampleCounter = 0;
 
         synchronized (bufferLock) {
             logBuffer.setLength(0);
-            eventBuffer.setLength(0);
-            // Первое событие — точка привязки к реальному времени
-            eventBuffer.append("0,WALL_START,").append(wallStartMs).append('\n');
-
-            // Заголовок Samples CSV
+            // CSV header
             logBuffer.append("dtMs,gpsSpeed,gpsHeading,gpsLat,gpsLon,gpsAlt,");
             logBuffer.append("gpsFixAge,gpsAccuracy,vario,");
             logBuffer.append("ax,ay,az,gx,gy,gz,mx,my,mz,pressure,pitch,roll,heading,");
@@ -130,42 +118,13 @@ public class LogManager {
             logBuffer.append("detectStatus\n");
         }
 
-        // Periodic flush каждые 5 с
-        flushTask = () -> {
-            if (!isLogging) return;
-            flushPartialChunk();
-            flushHandler.postDelayed(flushTask, FLUSH_INTERVAL_MS);
-        };
-        flushHandler.postDelayed(flushTask, FLUSH_INTERVAL_MS);
-
         Log.i(TAG, "Logging STARTED wall=" + wallStartMs + " elapsed=" + elapsedStartMs);
-    }
-
-    /** Сброс текущих данных в неполный чанк (защита от потери при краше) */
-    private void flushPartialChunk() {
-        synchronized (bufferLock) {
-            if (logBuffer.length() == 0) return;
-            long nowElapsed = SystemClock.elapsedRealtime();
-            long nowWall = System.currentTimeMillis();
-            final String csvData = logBuffer.toString();
-            final String eventsData = eventBuffer.toString();
-            logBuffer.setLength(0);
-            eventBuffer.setLength(0);
-            final String prefix = "Partial";
-            final long startWall = wallStartMs + (chunkStartElapsed - elapsedStartMs);
-            ioHandler.post(() -> writeZipChunk(prefix, startWall, nowWall, csvData, eventsData));
-        }
     }
 
     public void stopLogging() {
         if (!isLogging) return;
         isLogging = false;
-        if (flushTask != null) {
-            flushHandler.removeCallbacks(flushTask);
-            flushTask = null;
-        }
-        long wallNow = System.currentTimeMillis();
-        finalizeChunk(wallNow, true);
+        writeFinalZip();
         Log.i(TAG, "Logging STOPPED");
     }
 
@@ -180,7 +139,6 @@ public class LogManager {
             }
             ioThread = null;
             ioHandler = null;
-            flushHandler = null;
         }
     }
 
@@ -191,10 +149,6 @@ public class LogManager {
 
         long elapsedNow = SystemClock.elapsedRealtime();
         long dtMs = elapsedNow - elapsedStartMs;
-
-        if (elapsedNow - chunkStartElapsed >= CHUNK_DURATION_MS) {
-            rotateChunk(elapsedNow);
-        }
 
         synchronized (bufferLock) {
             logBuffer.append(dtMs).append(',');
@@ -227,106 +181,62 @@ public class LogManager {
     }
 
     public void recordEvent(String eventType, String details) {
-        if (!isLogging) return;
-        long elapsedNow = SystemClock.elapsedRealtime();
-        long dtMs = elapsedNow - elapsedStartMs;
-        String safe = details.replace(',', ';').replace('\n', ' ').replace('\r', ' ');
+        // Events are currently not included in the single CSV per flight.
+        // Kept as a no-op to preserve the interface contract.
+    }
+
+    /** Write the final .zip with all collected sensor data to [externalLogDir]/logs/[baseName].zip */
+    private void writeFinalZip() {
         synchronized (bufferLock) {
-            eventBuffer.append(dtMs).append(',');
-            eventBuffer.append(eventType).append(',');
-            eventBuffer.append(safe).append('\n');
-        }
-    }
+            if (logBuffer.length() == 0) return;
+            final String csvData = logBuffer.toString();
+            logBuffer.setLength(0);
 
-    private void rotateChunk(long elapsedNow) {
-        long wallNow = System.currentTimeMillis();
-        synchronized (bufferLock) {
-            finalizeChunkLocked(wallNow, false);
-        }
-        chunkStartElapsed = elapsedNow;
-        chunkIndex++;
-    }
+            final String fName = baseFileName;
+            final String logDirPath = externalLogDir;
 
-    private void finalizeChunk(long wallNow, boolean isFinish) {
-        synchronized (bufferLock) {
-            finalizeChunkLocked(wallNow, isFinish);
-        }
-    }
+            ioHandler.post(() -> {
+                if (logDirPath == null || fName == null) {
+                    Log.e(TAG, "Cannot write final ZIP: externalLogDir or baseFileName not set");
+                    return;
+                }
+                File logDir = new File(logDirPath, "logs");
+                if (!logDir.exists()) logDir.mkdirs();
 
-    private void finalizeChunkLocked(long wallNow, boolean isFinish) {
-        if (logBuffer.length() == 0) return;
+                File zipFile = new File(logDir, fName + ".zip");
 
-        String prefix;
-        if (isFinish) {
-            prefix = "Finish";
-        } else if (chunkIndex == 0) {
-            prefix = "Start";
-        } else {
-            prefix = "Flight";
-        }
+                try {
+                    byte[] csvBytes = csvData.getBytes("UTF-8");
+                    ByteArrayOutputStream baos = new ByteArrayOutputStream(csvBytes.length / 2);
+                    ZipOutputStream zos = new ZipOutputStream(baos);
+                    zos.setLevel(9);
 
-        final String csvData = logBuffer.toString();
-        logBuffer.setLength(0);
-        final String eventsData = eventBuffer.toString();
-        eventBuffer.setLength(0);
+                    ZipEntry entry = new ZipEntry(fName + ".csv");
+                    entry.setSize(csvBytes.length);
+                    zos.putNextEntry(entry);
+                    zos.write(csvBytes);
+                    zos.closeEntry();
+                    zos.close();
 
-        final String finalPrefix = prefix;
-        final long startWall = wallStartMs + (chunkStartElapsed - elapsedStartMs);
+                    byte[] zipBytes = baos.toByteArray();
+                    FileOutputStream fos = new FileOutputStream(zipFile);
+                    BufferedOutputStream bos = new BufferedOutputStream(fos);
+                    bos.write(zipBytes);
+                    bos.flush();
+                    bos.close();
 
-        ioHandler.post(() -> writeZipChunk(finalPrefix, startWall, wallNow, csvData, eventsData));
-    }
+                    double ratio = (double) zipBytes.length / csvBytes.length * 100.0;
+                    Log.i(TAG, String.format(Locale.US,
+                            "Final ZIP saved: %s (%d KB -> %d KB, %.0f%%)",
+                            zipFile.getAbsolutePath(),
+                            csvBytes.length / 1024,
+                            zipBytes.length / 1024,
+                            ratio));
 
-    private void writeZipChunk(String prefix, long startWallMs, long endWallMs,
-                                String csvData, String eventsData) {
-        if (externalLogDir == null) {
-            Log.e(TAG, "External storage not available");
-            return;
-        }
-        File logDir = new File(externalLogDir, "logs");
-        if (!logDir.exists()) logDir.mkdirs();
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddHHmmss", Locale.US);
-        String startStr = sdf.format(new Date(startWallMs));
-        String endStr = sdf.format(new Date(endWallMs));
-        String baseName = prefix + startStr + "-" + endStr;
-
-        try {
-            byte[] csvBytes = csvData.getBytes("UTF-8");
-            byte[] eventsBytes = eventsData.getBytes("UTF-8");
-            ByteArrayOutputStream baos = new ByteArrayOutputStream(
-                    (csvBytes.length + eventsBytes.length) / 2);
-            ZipOutputStream zos = new ZipOutputStream(baos);
-            zos.setLevel(9);
-
-            ZipEntry samplesEntry = new ZipEntry(baseName + ".csv");
-            samplesEntry.setSize(csvBytes.length);
-            zos.putNextEntry(samplesEntry);
-            zos.write(csvBytes);
-            zos.closeEntry();
-
-            if (eventsBytes.length > 0) {
-                ZipEntry eventsEntry = new ZipEntry(baseName + "_events.csv");
-                eventsEntry.setSize(eventsBytes.length);
-                zos.putNextEntry(eventsEntry);
-                zos.write(eventsBytes);
-                zos.closeEntry();
-            }
-
-            zos.close();
-            byte[] zipBytes = baos.toByteArray();
-            File zipFile = new File(logDir, baseName);
-            FileOutputStream fos = new FileOutputStream(zipFile);
-            BufferedOutputStream bos = new BufferedOutputStream(fos);
-            bos.write(zipBytes);
-            bos.flush();
-            bos.close();
-
-            double ratio = (double) zipBytes.length / csvBytes.length * 100.0;
-            Log.i(TAG, String.format(Locale.US,
-                    "Chunk saved: %s (%d KB -> %d KB, %.0f%%)",
-                    baseName, csvBytes.length / 1024, zipBytes.length / 1024, ratio));
-
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to write ZIP chunk: " + baseName, e);
+                } catch (IOException e) {
+                    Log.e(TAG, "Failed to write final ZIP: " + zipFile.getAbsolutePath(), e);
+                }
+            });
         }
     }
 

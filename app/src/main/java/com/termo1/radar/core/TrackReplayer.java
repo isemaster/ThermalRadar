@@ -34,7 +34,7 @@ public class TrackReplayer {
     // ========================================================================
     // Constants
     // ========================================================================
-    private static final float PLAYBACK_SPEED = 2.0f; // 2x
+    private float playbackSpeed = 2.0f; // 2x (mutable via setSpeed)
 
     // Noise
     private static final float NOISE_FLOOR_G = 0.003f;
@@ -91,6 +91,30 @@ public class TrackReplayer {
     private int currentIdx;
 
     public TrackReplayer() {}
+
+    /**
+     * Set the playback speed multiplier (default: 2.0f).
+     * @param speed 1.0f = real-time, 2.0f = 2x, etc.
+     */
+    public void setSpeed(float speed) {
+        this.playbackSpeed = speed;
+    }
+
+    /**
+     * Load IGC data from a specific file path.
+     * Calls loadFromIGC(InputStream) internally.
+     */
+    public void loadFile(String filePath) {
+        try {
+            loadFromIGC(new java.io.FileInputStream(filePath));
+        } catch (Exception e) {
+            e.printStackTrace();
+            // Fallback to synthetic track if file load fails
+            if (track == null || track.isEmpty()) {
+                generateFallbackTrack();
+            }
+        }
+    }
 
     /**
      * Load IGC data from the embedded resource.
@@ -209,7 +233,7 @@ public class TrackReplayer {
 
         totalRealSec += dt;
         // 2x speed
-        float simDt = dt * PLAYBACK_SPEED;
+        float simDt = dt * playbackSpeed;
         totalSimSec += simDt;
         noisePhase += simDt * 50;
 

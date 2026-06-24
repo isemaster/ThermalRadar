@@ -56,6 +56,9 @@ public class IgcLogger {
     private volatile boolean logging;
     private String logDir;
 
+    // Имя файла — можно задать извне (единое с LogManager)
+    private String baseFileName;
+
     // Текущий файл
     private BufferedOutputStream currentOut;
     private String currentFileName;
@@ -122,6 +125,11 @@ public class IgcLogger {
         this.logDir = dir;
     }
 
+    /** Задать имя файла извне (должно совпадать с LogManager). */
+    public void setBaseFileName(String name) {
+        this.baseFileName = name;
+    }
+
     /**
      * Обновить GPS данные (вызывать из MainActivity в bgTask).
      * Атомарно заменяет весь снимок.
@@ -156,7 +164,11 @@ public class IgcLogger {
         if (!dir.exists()) dir.mkdirs();
 
         String dateStr = FILE_DATE_FMT_TL.get().format(new Date());
-        currentFileName = "Flight_" + dateStr + ".igc";
+        if (baseFileName != null) {
+            currentFileName = baseFileName + ".igc";
+        } else {
+            currentFileName = "Flight_" + dateStr + ".igc";
+        }
         File file = new File(dir, currentFileName);
 
         try {
