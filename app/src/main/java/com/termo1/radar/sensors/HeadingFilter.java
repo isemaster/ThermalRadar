@@ -4,10 +4,10 @@ package com.termo1.radar.sensors;
  * HeadingFilter — полный пайплайн сглаживания курса (heading) для отображения.
  *
  * Пайплайн:
- *   Raw heading → CLAMP выбросов (если |Δheading| > 70°/с → limit по lastOutputDeg)
+ *   Raw heading → CLAMP выбросов (если |Δheading| > 40°/с → limit по lastOutputDeg)
  *     → MEDIAN FILTER (окно 5) → без аллокаций
  *     → Alpha-Beta filter (α=0.15, β=0.02) → плавная кривая с предсказанием
- *     → DEADBAND (адаптивный: 2.5° в статике, 0.5° в движении)
+ *     → DEADBAND (адаптивный: 1.0° в статике, 0.3° в движении)
  *
  * α=0.15, β=0.02 — пересчитано для параплана по ревью:
  *   - В статике σ_out ≈ σ·√(α²+(1-α)²) ≈ 0.6° (было 2° при α=0.75)
@@ -18,7 +18,7 @@ package com.termo1.radar.sensors;
 public class HeadingFilter {
 
     // === CLAMP ===
-    private static final float MAX_DELTA_DEG_PER_SEC = 70f;
+    private static final float MAX_DELTA_DEG_PER_SEC = 40f;
 
     // === MEDIAN FILTER ===
     private static final int MEDIAN_WINDOW = 5;
@@ -28,19 +28,20 @@ public class HeadingFilter {
     // === ALPHA-BETA ===
     private final double alpha;   // вес позиции (0.15 — статика)
     private final double beta;    // вес скорости (0.02)
-    private static final double NOMINAL_DT = 1.0 / 50.0; // 50 Гц — ожидаемая частота
+    /** Максимальная скорость поворота для vk (°/с) — защита от выбросов при малых dt */
+    private static final double MAX_TURN_RATE = 50.0;
     private double xk;            // filtered heading (в unwrapped space)
     private double vk;            // turn rate (°/с)
     private long lastTimeMs;      // время последнего обновления
     private double unwrapped;     // монотонная шкала без скачков 359→0
 
     // === DEADBAND (адаптивный) ===
-    /** В статике (|vk| < 1°/с) — не дёргать UI */
-    private static final double DEADBAND_STATIC_DEG = 2.5;
+    /** В статике (|vk| < 2°/с) — не дёргать UI, достаточно точно для центровки термика */
+    private static final double DEADBAND_STATIC_DEG = 1.0;
     /** В движении — быстрая реакция */
-    private static final double DEADBAND_MOVING_DEG = 0.5;
+    private static final double DEADBAND_MOVING_DEG = 0.3;
     /** Порог turn-rate для переключения режимов */
-    private static final double TURN_RATE_THRESHOLD = 1.0;
+    private static final double TURN_RATE_THRESHOLD = 2.0;
     private double lastOutputDeg;  // последнее выведенное значение (0-360)
 
     // === Состояние ===
@@ -126,17 +127,20 @@ public class HeadingFilter {
         double innovation = unwrapped - xkPred;
 
         // Update
-        // dt для β зафиксирован на номинале 1/50, чтобы избежать раздувания
-        // vk при коротких всплесках dt (RC-6 в ревью)
+        // Используем реальный dt для β (исправлено по T12 §2.3 — NOMINAL_DT не совпадает
+        // с реальной частотой сенсора 25 Гц). vk clamp защищает от взрыва при малых dt.
         xk = xkPred + alpha * innovation;
-        vk = vkPred + beta * innovation / NOMINAL_DT;
+        vk = vkPred + beta * innovation / dt;
+        if (vk > MAX_TURN_RATE) vk = MAX_TURN_RATE;
+        if (vk < -MAX_TURN_RATE) vk = -MAX_TURN_RATE;
 
         // Wrap в 0-360
         double outputDeg = (xk % 360 + 360) % 360;
 
         // ============================================================
-        // 4. DEADBAND — адаптивный (2.5° в статике, 0.5° в движении)
-        //    Исправлено по ревью §3.5: xk подтягивается к lastOutputDeg
+        // 4. DEADBAND — адаптивный (1.0° в статике, 0.3° в движении)
+        //    Исправлено по T12 §2.3: xk НЕ подтягивается к lastOutputDeg,
+        //    т.к. xk в unwrapped space, а lastOutputDeg в wrapped (0-360).
         // ============================================================
         double displayDiff = Math.abs(outputDeg - lastOutputDeg);
         if (displayDiff > 180) displayDiff = 360 - displayDiff;
@@ -146,8 +150,8 @@ public class HeadingFilter {
                 : DEADBAND_MOVING_DEG;
 
         if (displayDiff < deadband) {
-            // Подтягиваем состояние фильтра к видимому — не накапливаем отставание
-            xk = lastOutputDeg;
+            // Не трогаем xk — просто не обновляем lastOutputDeg.
+            // Фильтр продолжает накапливать историю.
             return lastOutputDeg;
         }
 

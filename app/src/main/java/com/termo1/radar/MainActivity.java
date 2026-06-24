@@ -155,9 +155,10 @@ public class MainActivity extends Activity {
     private String lastTtsPhrase;
     private long lastTtsSpeakMs;
 
-    // ===== UI-сглаживание heading (Fix C) =====
+    // ===== UI-сглаживание heading (Fix C — time-based SLERP) =====
     private float headingDisplaySmoothed = 0f;
     private boolean headingDisplayInitialized = false;
+    private long lastHeadingFrameMs = 0;
 
     // ========================================================================
     // Simulation
@@ -2362,14 +2363,22 @@ public class MainActivity extends Activity {
                     showStats);
 
             float headingDisplay = getCompassHeading();
-            // UI-сглаживание heading (Fix C — SLERP-интерполяция для плавности отображения)
+            // UI-сглаживание heading (Fix C — time-based SLERP, T12 §2.4.3)
+            long headingFrameMs = SystemClock.elapsedRealtime();
             if (!headingDisplayInitialized) {
                 headingDisplaySmoothed = headingDisplay;
                 headingDisplayInitialized = true;
+                lastHeadingFrameMs = headingFrameMs;
             } else {
+                double dtSec = (headingFrameMs - lastHeadingFrameMs) / 1000.0;
+                lastHeadingFrameMs = headingFrameMs;
+                // Time-based: за 100 мс проходим 90% расстояния
+                double smoothingFactor = 1.0 - Math.pow(0.1, dtSec / 0.1);
+                if (smoothingFactor > 1.0) smoothingFactor = 1.0;
+                if (smoothingFactor < 0.01) smoothingFactor = 0.01;
                 // SLERP-like для углов: учитываем wrap 0/360
                 float diff = ((headingDisplay - headingDisplaySmoothed + 540f) % 360f) - 180f;
-                headingDisplaySmoothed = (headingDisplaySmoothed + diff * 0.25f + 360f) % 360f;
+                headingDisplaySmoothed = (float)((headingDisplaySmoothed + diff * smoothingFactor + 360f) % 360f);
             }
             float headingDisplayFinal = headingDisplaySmoothed;
             float varioDisplay = sensorController.getVario();

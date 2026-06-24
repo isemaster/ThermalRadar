@@ -506,8 +506,14 @@ public class SensorController implements SensorEventListener {
     public float getPitch() { return pitch; }
     public float getRoll() { return roll; }
     public boolean isCompassReady() { return compassReady; }
-    /** Возвращает snapshot rotationMatrix — immutable для caller (исправлено §10.3) */
-    public float[] getRotationMatrix() { return rotationMatrixSnapshot; }
+    /** Возвращает snapshot rotationMatrix — атомарная ссылка.
+     *  Возвращается копия массива для защиты от partial reads (T12 §3.1). */
+    public float[] getRotationMatrix() {
+        float[] snapshot = rotationMatrixSnapshot;
+        float[] copy = new float[9];
+        System.arraycopy(snapshot, 0, copy, 0, 9);
+        return copy;
+    }
 
     /** Для лога: heading с fallback, если нет магнитометра.
      *  Исправлено по ревью §4.4: теперь пишет filtered heading, не raw. */
