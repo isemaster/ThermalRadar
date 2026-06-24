@@ -29,7 +29,7 @@ public class VarioSoundManager {
 
     // ===== VARIO RANGES (м/с) =====
     private static final float DEAD_BAND_LOW = -1.2f;       // тишина ниже этого = sink tone
-    private static final float DEAD_BAND_HIGH = -0.1f;       // тишина выше этого = climb beep
+    private volatile float deadBandHigh = 0.3f;              // тишина выше этого = climb beep (управляется из настроек)
     private static final float VERY_FAST_CLIMB = 9.0f;      // непрерывный тон
     private static final float MAX_SINK = -5.0f;             // максимальная скорость снижения
 
@@ -153,6 +153,11 @@ public class VarioSoundManager {
 
     public boolean isSoundEnabled() { return soundEnabled; }
 
+    /** Установить порог dead band для варио-звука (берётся из настроек Vario-термика) */
+    public void setDeadBandHigh(float threshMs) {
+        this.deadBandHigh = threshMs;
+    }
+
     public void setSoundEnabled(boolean enabled) {
         this.soundEnabled = enabled;
         if (!enabled) currentVario = 0f;
@@ -238,14 +243,14 @@ public class VarioSoundManager {
                     mode = 4;
                     currentSineFreq = CLIMB_MAX_FREQ;
                     samplesRemaining = SAMPLE_RATE * STATE_CHECK_MS / 1000;
-                } else if (v > DEAD_BAND_HIGH) {
+                } else if (v > deadBandHigh) {
                     // Normal climb → alternate beep/pause
                     if (mode == 2 || mode == 0 || mode == 3) {
                         // Start beep
                         mode = 1;
-                        currentSineFreq = map(v, DEAD_BAND_HIGH, VERY_FAST_CLIMB,
+                        currentSineFreq = map(v, deadBandHigh, VERY_FAST_CLIMB,
                                 CLIMB_MIN_FREQ, CLIMB_MAX_FREQ);
-                        int toneMs = Math.round(map(v, DEAD_BAND_HIGH, VERY_FAST_CLIMB,
+                        int toneMs = Math.round(map(v, deadBandHigh, VERY_FAST_CLIMB,
                                 CLIMB_SLOW_TONE_MS, CLIMB_FAST_TONE_MS));
                         samplesRemaining = SAMPLE_RATE * toneMs / 1000;
                     } else {
@@ -254,7 +259,7 @@ public class VarioSoundManager {
                         // Anti-click: complete current sine period using last frequency
                         int antiClickSamples = completeSinePeriod(currentSineFreq);
                         currentSineFreq = 0f;
-                        int pauseMs = Math.round(map(v, DEAD_BAND_HIGH, VERY_FAST_CLIMB,
+                        int pauseMs = Math.round(map(v, deadBandHigh, VERY_FAST_CLIMB,
                                 CLIMB_SLOW_PAUSE_MS, CLIMB_FAST_PAUSE_MS));
                         samplesRemaining = antiClickSamples + SAMPLE_RATE * pauseMs / 1000;
                     }

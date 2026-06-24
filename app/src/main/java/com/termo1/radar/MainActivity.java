@@ -348,6 +348,7 @@ public class MainActivity extends Activity {
 
         // Sound
         varioSoundManager = new VarioSoundManager();
+        varioSoundManager.setDeadBandHigh(varioThreshold);
 
         // Автокалибровка сенсоров при старте (через 1с, чтобы сенсоры успели инициализироваться)
         new android.os.Handler().postDelayed(() -> {
@@ -788,6 +789,9 @@ public class MainActivity extends Activity {
             varioThermalDetector.update(vario, now);
             varioThreshold = prefs.getFloat("vario_threshold", 0.5f);
             varioThermalDetector.setThreshold(varioThreshold);
+            if (varioSoundManager != null) {
+                varioSoundManager.setDeadBandHigh(varioThreshold);
+            }
             varioThermal = varioThermalDetector.isThermalDetected();
         }
 

@@ -62,10 +62,9 @@ public class FlightSimulator {
     private static final float CIRCLE_PERIOD_SEC = 17.45f;
     private static final float CIRCLE_RATE_RAD_S = (float)(2 * Math.PI / CIRCLE_PERIOD_SEC);
 
-    // Noise — белый шум (нормальное распределение)
+    // Noise — белый шум через Random.nextGaussian
     private static final float NOISE_FLOOR_G = 0.01f;
-    // Для генерации белого шума
-    private double noiseSeedX, noiseSeedY;
+    private final java.util.Random noiseRandom = new java.util.Random();
 
     // ========================================================================
     // State
@@ -116,8 +115,7 @@ public class FlightSimulator {
         elapsedMs = 0;
         tSec = 0;
         noisePhase = 0;
-        noiseSeedX = 0;
-        noiseSeedY = 0;
+        noiseRandom.setSeed(System.nanoTime());
 
         pilotX = 0; pilotY = 0;
         heading = 0f;
@@ -278,16 +276,13 @@ public class FlightSimulator {
             float circTime = t - T_APPROACH_END;
             centeringProgress = Math.min(circTime / 25f, 1f);
 
-            // Offset: 20m initially → ~2m after centering
+            // BUG-A08: экспоненциальное затухание offset: 18 → 1.5 за 25 с, гладкая C∞
+            currentOffset = 1.5f + 16.5f * (float) Math.exp(-centeringProgress * 3.5f);
             if (centeringProgress < 0.3f) {
-                currentOffset = 18f * (1f - centeringProgress / 0.3f * 0.4f);
                 guidanceText = "Сместись к ядру! Подъём усилится";
             } else if (centeringProgress < 0.6f) {
-                currentOffset = 10.8f * (1f - (centeringProgress - 0.3f) / 0.3f * 0.5f);
                 guidanceText = "Хорошо, ближе к центру!";
             } else {
-                currentOffset = 5.4f * (1f - (centeringProgress - 0.6f) / 0.4f);
-                if (currentOffset < 1.5f) currentOffset = 1.5f;
                 guidanceText = "Отлично! 3 м/с стабильно";
             }
 
@@ -388,9 +383,8 @@ public class FlightSimulator {
             ));
             liftAtPilot = THERMAL_LIFT_EDGE + (THERMAL_LIFT_CORE - THERMAL_LIFT_EDGE) * liftRatio;
 
-            // Small oscillation
-            float osc = 0.15f * (float) Math.sin(circleAngle * 2 + noisePhase * 0.1);
-            osc *= centeringProgress; // more oscillation early on
+            // BUG-A19: больше колебаний в начале (пилот не отцентрирован), меньше в конце
+            float osc = 0.15f * (1f - centeringProgress * 0.7f) * (float) Math.sin(circleAngle * 2 + noisePhase * 0.1);
             liftAtPilot = Math.max(THERMAL_LIFT_EDGE, Math.min(THERMAL_LIFT_CORE, liftAtPilot + osc));
 
             vario = liftAtPilot;
@@ -422,25 +416,18 @@ public class FlightSimulator {
     // ========================================================================
 
     private void updateAccel(float dt) {
-        // БЕЛЫЙ ШУМ (Box-Muller) — реалистичная калибровка noiseFloor
-        double u1 = Math.sin(noiseSeedX += 0.1) * 0x1p31;
-        double u2 = Math.cos(noiseSeedY += 0.1) * 0x1p31;
-        // Normal distribution approximation via Box-Muller
-        double u1n = (u1 % 1.0 + 1.0) % 1.0;
-        double u2n = (u2 % 1.0 + 1.0) % 1.0;
-        if (u1n < 1e-10) u1n = 0.5;
-        double norm = Math.sqrt(-2.0 * Math.log(u1n)) * Math.cos(2.0 * Math.PI * u2n);
-        float whiteX = NOISE_FLOOR_G * (float) Math.min(Math.abs(norm), 3.0) * Math.signum((float)norm);
-        // Second sample for Y
-        double normY = Math.sqrt(-2.0 * Math.log(u1n)) * Math.sin(2.0 * Math.PI * u2n);
-        float whiteY = NOISE_FLOOR_G * (float) Math.min(Math.abs(normY), 3.0) * Math.signum((float)normY);
+        // БЕЛЫЙ ШУМ через Random.nextGaussian()
+        float whiteX = NOISE_FLOOR_G * (float) noiseRandom.nextGaussian();
+        float whiteY = NOISE_FLOOR_G * (float) noiseRandom.nextGaussian();
 
         float ax = whiteX;
         float ay = whiteY;
 
         if (isCircling) {
-            // Турбулентность в термике: 0.03–0.08g (SNR > 3 для ThermalDetector даже на краю)
-            float turb = 0.03f + 0.05f * (THERMAL_LIFT_CORE - liftAtPilot) / THERMAL_LIFT_CORE;
+            // BUG-A09: турбулентность растёт к ядру (как в реальности)
+            float coreRatio = (liftAtPilot - THERMAL_LIFT_EDGE) / (THERMAL_LIFT_CORE - THERMAL_LIFT_EDGE);
+            coreRatio = Math.max(0f, Math.min(1f, coreRatio));
+            float turb = 0.04f + 0.06f * coreRatio;  // 0.04 g на краю → 0.10 g в ядре, SNR 4..10
             ax += turb * (float) Math.sin(circleAngle * 3 + noisePhase * 0.1);
             ay += turb * (float) Math.cos(circleAngle * 3 + noisePhase * 0.07f);
         }

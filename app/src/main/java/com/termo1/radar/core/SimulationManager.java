@@ -35,8 +35,9 @@ public class SimulationManager {
     // ========================================================================
     // Constants
     // ========================================================================
-    // Noise
+    // Noise — белый шум через Random.nextGaussian
     private static final float NOISE_FLOOR_G = 0.003f;       // g, базовый шум
+    private final java.util.Random noiseRandom = new java.util.Random();
     private static final float SPEED = 9.0f;                 // m/s
     private static final float PRESSURE = 1013.25f;          // hPa
     private static final float INITIAL_ALT_MSL = 500.0f;     // m
@@ -51,8 +52,9 @@ public class SimulationManager {
     private static final float T_TURN_END = 57.0f;          // +2s
     private static final float SIM_END_SEC = 77.0f;         // +2s
 
-    // Circle: 360° in 10s = 36°/s
-    private static final float CIRCLE_RATE = 360.0f / 10.0f;
+    // Circle: 360° in ~18s = 20°/s — реалистичная парапланерная крутка
+    private static final float CIRCLE_PERIOD_SEC = 18.0f;
+    private static final float CIRCLE_RATE = 360.0f / CIRCLE_PERIOD_SEC;
 
     // Thermal puffs
     private static final long PUFF_INTERVAL_MS = 5000;      // каждые 5 сек
@@ -73,7 +75,6 @@ public class SimulationManager {
     // Accelerometer output (g units)
     private float simAx, simAy;
 
-    // Phase for noise generation (Box-Muller)
     private double noiseSeedX, noiseSeedY;
 
     // Thermal puffs
@@ -127,7 +128,7 @@ public class SimulationManager {
             return;
         }
 
-        float prevMs = elapsedMs;
+        long prevMs = elapsedMs;
         elapsedMs = nowMs;
 
         heading = computeHeading(tSec);
@@ -135,10 +136,10 @@ public class SimulationManager {
         updatePosition(tSec, prevMs);
 
         // Integrate altitude from vario
-        float dtSec = (elapsedMs - prevMs) / 1000f;
-        if (dtSec > 0.05f) dtSec = 0.02f; // cap
-        if (dtSec > 0f) {
-            altMsl += vario * dtSec;
+        double dtSec = (elapsedMs - prevMs) / 1000.0;
+        if (dtSec > 0.05) dtSec = 0.05;
+        if (dtSec > 0) {
+            altMsl += vario * (float) dtSec;
         }
 
         // Generate thermal puffs every 5 seconds
@@ -205,15 +206,15 @@ public class SimulationManager {
     // Position (dead-reckoning from heading + speed)
     // ========================================================================
 
-    private void updatePosition(float tSec, float prevMs) {
+    private void updatePosition(float tSec, long prevMs) {
         if (prevMs <= 0) {
             pilotX = 0.0;
             pilotY = 0.0;
             return;
         }
-        float dt = (elapsedMs - prevMs) / 1000f;
-        if (dt > 0.05f) dt = 0.02f;
-        if (dt < 0.001f) return;
+        double dt = (elapsedMs - prevMs) / 1000.0;
+        if (dt > 0.05) dt = 0.05;
+        if (dt < 0.001) return;
 
         double headingRad = Math.toRadians(heading);
         pilotX += SPEED * dt * Math.sin(headingRad);
@@ -266,16 +267,9 @@ public class SimulationManager {
     private void generateAccel(float tSec) {
         float ax = 0f, ay = 0f;
 
-        // 1. Базовый шум — БЕЛЫЙ ШУМ Box-Muller (как во FlightSimulator)
-        double u1 = Math.sin(noiseSeedX += 0.1) * 0x1p31;
-        double u2 = Math.cos(noiseSeedY += 0.1) * 0x1p31;
-        double u1n = (u1 % 1.0 + 1.0) % 1.0;
-        double u2n = (u2 % 1.0 + 1.0) % 1.0;
-        if (u1n < 1e-10) u1n = 0.5;
-        double norm = Math.sqrt(-2.0 * Math.log(u1n)) * Math.cos(2.0 * Math.PI * u2n);
-        float whiteX = NOISE_FLOOR_G * (float) Math.min(Math.abs(norm), 3.0) * Math.signum((float)norm);
-        double normY = Math.sqrt(-2.0 * Math.log(u1n)) * Math.sin(2.0 * Math.PI * u2n);
-        float whiteY = NOISE_FLOOR_G * (float) Math.min(Math.abs(normY), 3.0) * Math.signum((float)normY);
+        // 1. Базовый шум — Random.nextGaussian() (белый шум, недетерминированный)
+        float whiteX = NOISE_FLOOR_G * (float) noiseRandom.nextGaussian();
+        float whiteY = NOISE_FLOOR_G * (float) noiseRandom.nextGaussian();
         ax += whiteX;
         ay += whiteY;
 

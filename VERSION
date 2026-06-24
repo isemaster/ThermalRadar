@@ -1,23 +1,13 @@
-TERMO1 Radar — v0.2.3
+TERMO1 Radar — v0.2.4
 ========================
 
-Code Review 3: 11 замечаний исправлено (2 critical + 2 high + 5 medium + 2 refactor).
+Audit fix + VarioSound управляется порогом из настроек.
 
-P0:
-- SimulationManager: Box-Muller белый шум + Quiet Period 2s
-- VarioSoundManager: completeSinePeriod с реальной частотой
-
-P1:
-- FlightStateMachine: единый synchronized блок в update()
-- FlightSimulator: турбулентность 0.03-0.08g
-
-P2:
-- FlightStateMachine: reset() полная синхронизация
-- FlightSimulator: стабильная формула heading
-- RadarRenderer: без мутации ThermalBlip + RectF в поля
-- IgcLogger: ThreadLocal для имени файла
-- ThermalDetector: elapsedRealtime для bornMs
-
-P3:
-- ThermalDetector: гистерезис TH_SUSPECT=0.015 / TH_THERMAL=0.020
-- RadarRenderer: устранены аллокации в onDraw
+- VarioSound: dead band управляется ползунком "Порог Vario-термика"
+- VarioSound: dead band расширен (включает 0 м/с), тишина на столе
+- SimulationManager: Random.nextGaussian, long→double dt, clamp 50ms
+- SimulationManager: CIRCLE_RATE 20°/s (реалистичная крутка)
+- FlightSimulator: Random.nextGaussian, турбулентность растёт к ядру
+- FlightSimulator: гладкий exp currentOffset, исправлен osc
+- ThermalBaseEstimator: убран мёртвый цикл 10 итераций
+- LiftDatabase: гистерезис BEST_SECTOR_UPDATE_FACTOR
