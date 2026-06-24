@@ -5,22 +5,24 @@ import java.util.ArrayDeque;
 /**
  * HeadingFilter — полный пайплайн сглаживания курса (heading) для отображения.
  *
- * Пайплайн (из algo.md раздел 12):
- *   Raw heading → CLAMP выбросов (если |Δheading| > 50°/с → limit)
- *     → MEDIAN FILTER (окно 3) → убирает импульсный шум
- *     → Alpha-Beta filter (α=0.6, β=0.2) → плавная кривая с предсказанием
- *     → DEADBAND (1.5°) → не обновлять если изменение незначительно
+ * Пайплайн:
+ *   Raw heading → CLAMP выбросов (если |Δheading| > 70°/с → limit по xk)
+ *     → MEDIAN FILTER (окно 3) → без аллокаций
+ *     → Alpha-Beta filter (α=0.75, β=0.3) → плавная кривая с предсказанием
+ *     → DEADBAND (0.5°) → не дёргать UI на микро-колебаниях
  *
- * Рекомендация: Медиана(3) + Alpha-Beta(α=0.6, β=0.2)
+ * α=0.75, β=0.3 — эмпирически подобрано для параплана
+ * (частота сенсора ~50 Гц, типичная угловая скорость в спирали ~20°/с).
  */
 public class HeadingFilter {
 
     // === CLAMP ===
-    private static final float MAX_DELTA_DEG_PER_SEC = 70f; // 70°/с — физический лимит поворота параплана
+    private static final float MAX_DELTA_DEG_PER_SEC = 70f;
 
     // === MEDIAN FILTER ===
     private static final int MEDIAN_WINDOW = 3;
-    private final ArrayDeque<Double> medianBuffer = new ArrayDeque<>(MEDIAN_WINDOW);
+    private final double[] medianBuf = new double[MEDIAN_WINDOW];
+    private int medianCount;
 
     // === ALPHA-BETA ===
     private final double alpha;   // вес позиции
@@ -31,33 +33,30 @@ public class HeadingFilter {
     private double unwrapped;     // монотонная шкала без скачков 359→0
 
     // === DEADBAND ===
-    private static final double DEADBAND_DEG = 4.0; // не обновлять если < 4° (масляный демпфер)
+    private static final double DEADBAND_DEG = 0.5;
     private double lastOutputDeg;  // последнее выведенное значение (0-360)
 
     // === Состояние ===
     private boolean initialized;
 
-    /**
-     * @param alpha вес позиции (0.6 — рекомендуется)
-     * @param beta  вес скорости поворота (0.2 — рекомендуется)
-     */
     public HeadingFilter(double alpha, double beta) {
         this.alpha = alpha;
         this.beta = beta;
         reset();
     }
 
-    /** Конструктор с рекомендуемыми значениями Медиана(3) + Alpha-Beta(α=0.75, β=0.3) */
+    /** α=0.75, β=0.3 — эмпирически подобрано для параплана (50 Гц, спираль ~20°/с) */
     public HeadingFilter() {
         this(0.75, 0.3);
     }
 
     /**
      * Обработать сырой heading из сенсора/компаса.
+     * Всегда возвращает число (никогда NaN).
      *
      * @param rawHeading сырой курс в градусах 0-360
      * @param timeMs     монотонное время (SystemClock.elapsedRealtime())
-     * @return отфильтрованный heading в градусах 0-360, или NaN если deadband сработал
+     * @return отфильтрованный heading в градусах 0-360
      */
     public double update(double rawHeading, long timeMs) {
         if (!initialized) {
@@ -66,109 +65,92 @@ public class HeadingFilter {
             lastOutputDeg = rawHeading;
             lastTimeMs = timeMs;
             initialized = true;
-            medianBuffer.clear();
-            medianBuffer.addLast(rawHeading);
+            medianCount = 0;
             return rawHeading;
         }
 
         long dtMs = timeMs - lastTimeMs;
         if (dtMs <= 0) dtMs = 1;
-        if (dtMs > 2000) dtMs = 2000; // cap — слишком большой разрыв
+        if (dtMs > 2000) dtMs = 2000;
         double dt = dtMs / 1000.0;
         lastTimeMs = timeMs;
 
         // ============================================================
-        // 1. CLAMP — ограничение скорости поворота (физический лимит)
+        // 1. CLAMP — ограничение по xk (внутреннее состояние α-β), а не по lastOutputDeg
         // ============================================================
         double clamped = rawHeading;
-        if (initialized) {
-            double diff = rawHeading - lastOutputDeg;
-            // нормализация в [-180, 180]
-            while (diff > 180) diff -= 360;
-            while (diff < -180) diff += 360;
-            double maxDelta = MAX_DELTA_DEG_PER_SEC * dt;
-            if (Math.abs(diff) > maxDelta) {
-                clamped = lastOutputDeg + Math.signum(diff) * maxDelta;
-                // Wrap обратно в 0-360
-                clamped = (clamped % 360 + 360) % 360;
-            }
+        double diff = rawHeading - xk;
+        while (diff > 180) diff -= 360;
+        while (diff < -180) diff += 360;
+        double maxDelta = MAX_DELTA_DEG_PER_SEC * dt;
+        if (Math.abs(diff) > maxDelta) {
+            clamped = xk + Math.signum(diff) * maxDelta;
+            clamped = (clamped % 360 + 360) % 360;
         }
 
         // ============================================================
-        // 2. MEDIAN FILTER — убирает импульсные помехи
+        // 2. MEDIAN FILTER — без аллокаций (double[3], итератор вручную)
         // ============================================================
-        medianBuffer.addLast(clamped);
-        if (medianBuffer.size() > MEDIAN_WINDOW) {
-            medianBuffer.removeFirst();
+        if (medianCount < MEDIAN_WINDOW) {
+            medianBuf[medianCount++] = clamped;
+        } else {
+            // Сдвиг — без аллокаций
+            medianBuf[0] = medianBuf[1];
+            medianBuf[1] = medianBuf[2];
+            medianBuf[2] = clamped;
         }
-        double median = computeMedian();
+        double median = (medianCount >= MEDIAN_WINDOW) ? computeMedian() : clamped;
 
         // ============================================================
         // 3. ALPHA-BETA FILTER (с unwrap)
         // ============================================================
 
-        // Unwrap: разворачиваем угол в монотонную шкалу
-        double diff = median - unwrapped;
-        while (diff > 180) diff -= 360;
-        while (diff < -180) diff += 360;
-        unwrapped += diff;
+        // Unwrap
+        double uDiff = median - unwrapped;
+        while (uDiff > 180) uDiff -= 360;
+        while (uDiff < -180) uDiff += 360;
+        unwrapped += uDiff;
 
-        // PREDICT: куда будем через dt
+        // Predict
         double xkPred = xk + vk * dt;
         double vkPred = vk;
 
-        // INNOVATION: на сколько ошиблись
+        // Innovation
         double innovation = unwrapped - xkPred;
 
-        // UPDATE
+        // Update
         xk = xkPred + alpha * innovation;
         vk = vkPred + beta * innovation / dt;
 
-        // Wrap в 0-360 для отображения
+        // Wrap в 0-360
         double outputDeg = (xk % 360 + 360) % 360;
 
         // ============================================================
-        // 4. DEADBAND — не обновлять если изменение незначительно
+        // 4. DEADBAND — всегда возвращаем число (никакого NaN)
         // ============================================================
         double displayDiff = Math.abs(outputDeg - lastOutputDeg);
         if (displayDiff > 180) displayDiff = 360 - displayDiff;
 
         if (displayDiff < DEADBAND_DEG) {
-            return Double.NaN; // сигнал: не обновлять отображение
+            return lastOutputDeg; // возвращаем предыдущее показанное
         }
 
         lastOutputDeg = outputDeg;
         return outputDeg;
     }
 
-    /**
-     * Быстрая медиана для окна 3 (без сортировки — inline).
-     */
+    /** Быстрая медиана для окна 3 — без аллокаций */
     private double computeMedian() {
-        if (medianBuffer.size() < 3) {
-            // Меньше 3 точек — возвращаем последнюю
-            return medianBuffer.getLast();
-        }
-        // Для окна 3: медиана — среднее из трёх
-        Double[] vals = medianBuffer.toArray(new Double[0]);
-        double a = vals[0], b = vals[1], c = vals[2];
-        // Медиана трёх чисел без сортировки:
-        // среднее по значению (не по индексу)
+        double a = medianBuf[0], b = medianBuf[1], c = medianBuf[2];
         if ((a >= b && a <= c) || (a >= c && a <= b)) return a;
         if ((b >= a && b <= c) || (b >= c && b <= a)) return b;
         return c;
     }
 
-    /**
-     * Получить текущую оценку скорости поворота (°/с).
-     */
     public double getTurnRate() {
         return vk;
     }
 
-    /**
-     * Сброс состояния фильтра.
-     */
     public void reset() {
         xk = 0;
         vk = 0;
@@ -176,6 +158,6 @@ public class HeadingFilter {
         lastTimeMs = 0;
         initialized = false;
         lastOutputDeg = 0;
-        medianBuffer.clear();
+        medianCount = 0;
     }
 }

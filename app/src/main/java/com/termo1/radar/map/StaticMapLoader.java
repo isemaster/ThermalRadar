@@ -40,9 +40,11 @@ public class StaticMapLoader {
     private static final int MEM_CACHE_KB = 32 * 1024;       // 32 MB
     private static final long DISK_CACHE_MAX_BYTES = 50 * 1024 * 1024L; // 50 MB disk limit
 
-    // OpenStreetMap staticmap сервис (бесплатно, без ключа)
-    private static final String OSM_URL =
-            "https://staticmap.openstreetmap.de/staticmap.php?center=%.4f,%.4f&zoom=%d&size=%dx%d&maptype=mapnik";
+    // OpenStreetMap tile сервер (tile.openstreetmap.org — стабильный, бесплатный, без ключа)
+    // Формат: https://tile.openstreetmap.org/{zoom}/{x}/{y}.png
+    // Пример: https://tile.openstreetmap.org/14/4985/3241.png
+    private static final String OSM_TILE_URL =
+            "https://tile.openstreetmap.org/%d/%d/%d.png";
 
     // Threading: ExecutorService вместо AsyncTask
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -145,7 +147,7 @@ public class StaticMapLoader {
     // ========================================================================
 
     private void loadMap(double lat, double lon, int zoom) {
-        final String cacheKey = makeCacheKey(lat, lon, zoom);
+        final String cacheKey = makeTileCacheKey(lat, lon, zoom);
 
         // 1. In-memory кэш
         Bitmap cached = memCache.get(cacheKey);
@@ -179,7 +181,10 @@ public class StaticMapLoader {
 
         final double fLat = lat, fLon = lon;
         final int fZoom = zoom;
-        final String url = String.format(Locale.US, OSM_URL, lat, lon, zoom, MAP_W, MAP_H);
+        // Преобразуем lat/lon в tile x/y для текущего zoom
+        int tileX = lonToTileX(lon, zoom);
+        int tileY = latToTileY(lat, zoom);
+        final String url = String.format(Locale.US, OSM_TILE_URL, zoom, tileX, tileY);
         Log.i(TAG, "Downloading map: " + url);
 
         executor.submit(() -> {
@@ -284,6 +289,28 @@ public class StaticMapLoader {
                  + Math.cos(Math.toRadians(lat1)) * Math.cos(Math.toRadians(lat2))
                  * Math.sin(dLon / 2) * Math.sin(dLon / 2);
         return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    }
+
+    // ========================================================================
+    // Преобразование lat/lon → tile x/y (для tile.openstreetmap.org)
+    // ========================================================================
+
+    /** Долгота → tile X */
+    private static int lonToTileX(double lon, int zoom) {
+        return (int) Math.floor((lon + 180.0) / 360.0 * (1 << zoom));
+    }
+
+    /** Широта → tile Y */
+    private static int latToTileY(double lat, int zoom) {
+        double latRad = Math.toRadians(lat);
+        return (int) Math.floor((1.0 - Math.log(Math.tan(latRad) + 1.0 / Math.cos(latRad)) / Math.PI) / 2.0 * (1 << zoom));
+    }
+
+    /** Формирует кэш-ключ из tile координат (вместо округлённых lat/lon) */
+    private static String makeTileCacheKey(double lat, double lon, int zoom) {
+        int tx = lonToTileX(lon, zoom);
+        int ty = latToTileY(lat, zoom);
+        return tx + "_" + ty + "_z" + zoom;
     }
 
     /** Принудительно очистить кэш */

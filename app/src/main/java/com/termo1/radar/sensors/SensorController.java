@@ -86,11 +86,14 @@ public class SensorController implements SensorEventListener {
     private volatile float roll = 0.0f;
     private volatile float rawHeading = 0.0f;
     private volatile boolean compassReady = false;
-    // Heading filter (Медиана 3 + Alpha-Beta, из algo.md раздел 12)
+    // Heading filter (Медиана 3 + Alpha-Beta, α=0.75, β=0.3)
     private final HeadingFilter headingFilter = new HeadingFilter();
     // Hold heading frozen после калибровки (пока не пройдёт 2 секунды стабильности)
     private long headingHoldUntilMs = 0;
     private float headingHoldValue;
+    // Счётчик последовательных отказов getRotationMatrix (защита от сброса при турбулентности)
+    private int compassFailureStreak = 0;
+    private static final int COMPASS_FAILURE_THRESHOLD = 30; // ~1 сек при 50 Гц
     // Магнитное склонение (обновляется по GPS)
     private float magneticDeclination = 0f;
     private long lastDeclinationUpdateMs = 0;
@@ -371,6 +374,7 @@ public class SensorController implements SensorEventListener {
         geomBuf[2] = latestMagZ;
 
         if (SensorManager.getRotationMatrix(rotationMatrix, null, gravBuf, geomBuf)) {
+            compassFailureStreak = 0; // успех — сбрасываем счётчик
             SensorManager.getOrientation(rotationMatrix, orientationVals);
             float newHeading = (float) Math.toDegrees(orientationVals[0]);
             rawHeading = newHeading;
@@ -387,23 +391,28 @@ public class SensorController implements SensorEventListener {
                 if (isHeadingOnHold()) {
                     heading = headingHoldValue;
                 } else {
-                    // Применяем полный пайплайн: Clamp → Median(3) → Alpha-Beta + Deadband
-                    double filtered = headingFilter.update(newHeading, SystemClock.elapsedRealtime());
-                    if (!Double.isNaN(filtered)) {
-                        heading = (float) filtered;
-                    }
+                    // HeadingFilter ВСЕГДА возвращает число (не NaN)
+                    heading = (float) headingFilter.update(newHeading, SystemClock.elapsedRealtime());
                 }
             }
         } else if (magnetometer == null) {
             // Нет магнитометра — pitch/roll из гравитации
+            compassFailureStreak = 0;
             pitch = (float) Math.atan2(-gravityAccelX,
                     Math.sqrt(gravityAccelY * gravityAccelY + gravityAccelZ * gravityAccelZ));
             roll = (float) Math.atan2(gravityAccelY, gravityAccelZ);
         } else {
-            compassReady = false;
+            // getRotationMatrix отказал — считаем до COMPASS_FAILURE_THRESHOLD
+            compassFailureStreak++;
             pitch = (float) Math.atan2(-gravityAccelX,
                     Math.sqrt(gravityAccelY * gravityAccelY + gravityAccelZ * gravityAccelZ));
             roll = (float) Math.atan2(gravityAccelY, gravityAccelZ);
+
+            // Только при устойчивом отказе сбрасываем compassReady
+            if (compassFailureStreak > COMPASS_FAILURE_THRESHOLD) {
+                compassReady = false;
+            }
+            // heading НЕ трогаем — держим последнее хорошее значение
         }
     }
 

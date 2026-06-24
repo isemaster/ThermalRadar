@@ -1,8 +1,7 @@
-TERMO1 Radar — v0.2.5
+TERMO1 Radar — v0.2.6
 ========================
 
-IGC: один файл на весь полёт, CRC32 G-record.
-Компас: сглаживание везде, калибровка при старте.
-Голос: 8 направлений + против/по ветру.
-12 секторов подъёма (было 36).
-VarioSound управляется порогом из настроек.
+Исправления из t5.md:
+- Completely rewritten HeadingFilter (no NaN, CLAMP by xk, no alloc, deadband 0.5°)
+- compassFailureStreak (защита от сброса при турбулентности)
+- StaticMapLoader: tile.openstreetmap.org вместо мёртвого staticmap.openstreetmap.de
