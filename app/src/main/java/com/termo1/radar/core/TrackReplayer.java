@@ -106,7 +106,7 @@ public class TrackReplayer {
      */
     public void loadFile(String filePath) {
         try {
-            loadFromIGC(new java.io.FileInputStream(filePath));
+            loadFromIGC(new java.io.FileInputStream(filePath), false);
         } catch (Exception e) {
             e.printStackTrace();
             // Fallback to synthetic track if file load fails
@@ -121,6 +121,15 @@ public class TrackReplayer {
      * Parses B-records from 13:17:00 to 13:40:00 device time.
      */
     public void loadFromIGC(InputStream inputStream) {
+        loadFromIGC(inputStream, true);
+    }
+
+    /**
+     * Load IGC data from an InputStream.
+     * @param inputStream source of IGC data
+     * @param applyTimeFilter если true, применяет фильтр по времени (только для built-in трека)
+     */
+    private void loadFromIGC(InputStream inputStream, boolean applyTimeFilter) {
         track = new ArrayList<>();
         try {
             BufferedReader br = new BufferedReader(new InputStreamReader(inputStream));
@@ -135,9 +144,11 @@ public class TrackReplayer {
                     int ss = Integer.parseInt(t.substring(4, 6));
                     float timeSec = hh * 3600f + mm * 60f + ss;
 
-                    // Filter: 13:17:00 – 13:40:00
-                    if (timeSec < 13 * 3600f + 17 * 60f) continue;
-                    if (timeSec > 13 * 3600f + 40 * 60f) continue;
+                    // Filter: только для встроенного трека (raw resource)
+                    if (applyTimeFilter) {
+                        if (timeSec < 13 * 3600f + 17 * 60f) continue;
+                        if (timeSec > 13 * 3600f + 40 * 60f) continue;
+                    }
 
                     // Parse lat: DDMMmmm
                     float latDeg = Float.parseFloat(line.substring(7, 9));
