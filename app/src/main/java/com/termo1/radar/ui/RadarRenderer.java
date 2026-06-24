@@ -319,7 +319,7 @@ public class RadarRenderer {
     public void draw(Canvas canvas, long nowMs, List<ThermalBlip> thermals,
                      float heading, float vario, String status,
                      float maxSnr, int count,
-                     float[] trailPx, float[] trailPy, float[] trailBright, int trailCount) {
+                     float[] trailPx, float[] trailPy, int[] trailColors, int trailCount) {
         if (baseW <= 0 || baseH <= 0) return;
         // --- black background ---
         canvas.drawColor(Color.rgb(10, 10, 10));
@@ -349,7 +349,7 @@ public class RadarRenderer {
         drawTickMarks(canvas);
         drawBestLiftSector(canvas);
         drawThermalCore(canvas);
-        drawTrail(canvas, trailPx, trailPy, trailBright, trailCount);
+        drawTrail(canvas, trailPx, trailPy, trailColors, trailCount);
         drawTrailMarkers(canvas);
         drawThermals(canvas, nowMs, thermals);
         drawPilot(canvas, nowMs);
@@ -559,24 +559,27 @@ public class RadarRenderer {
 
     // ===== TRAIL (жёлтый круиз / оранжевый крутка) =====
 
-    private void drawTrail(Canvas c, float[] px, float[] py, float[] bright, int count) {
+    private void drawTrail(Canvas c, float[] px, float[] py, int[] colors, int count) {
         if (count < 2) return;
 
-        // Свечение
+        // Свечение (glow — широкая полупрозрачная линия под основной)
         for (int i = 1; i < count; i++) {
-            float b = Math.min(bright[i-1], bright[i]);
-            if (b < 0.02f) continue;
-            int a = (int) (b * 60);
-            trailGlowPaint.setAlpha(a);
+            int col = colors[i];
+            int a = (col >>> 24) & 0xFF;
+            if (a < 8) continue;
+            // Glow: alpha примерно 30% от основной
+            int glowA = a / 3;
+            if (glowA < 8) continue;
+            trailGlowPaint.setColor((glowA << 24) | (col & 0xFFFFFF));
             c.drawLine(px[i-1], py[i-1], px[i], py[i], trailGlowPaint);
         }
 
-        // Основная линия — жёлтая (яркость от возраста)
+        // Основная линия — цвет от варио, alpha от возраста
         for (int i = 1; i < count; i++) {
-            float b = Math.min(bright[i-1], bright[i]);
-            if (b < 0.02f) continue;
-            int a = (int) (b * 200);
-            trailPaint.setAlpha(Math.min(255, a));
+            int col = colors[i];
+            int a = (col >>> 24) & 0xFF;
+            if (a < 8) continue;
+            trailPaint.setColor(col);
             c.drawLine(px[i-1], py[i-1], px[i], py[i], trailPaint);
         }
     }

@@ -129,7 +129,7 @@ public class MainActivity extends Activity {
     private final List<ThermalBlip> thermalsCopy = new ArrayList<>();
     private final Object thermalLock = new Object();
 
-    // GPS trail storage: [lat, lon, timeMs]
+    // GPS trail storage: [lat, lon, timeMs, vario]
     private final List<double[]> gpsTrail = new ArrayList<>();
 
     // Phase 6: точки входа/выхода из термиков
@@ -142,6 +142,8 @@ public class MainActivity extends Activity {
     private final float[] markerPxBuf = new float[MAX_MARKERS * 2];
     private final float[] markerPyBuf = new float[MAX_MARKERS * 2];
     private final boolean[] markerIsEntry = new boolean[MAX_MARKERS * 2];
+    /** Буфер цветов трека (vario → цвет, возраст → alpha) */
+    private final int[] trailColorBuf = new int[GPS_TRAIL_MAX];
 
     // ========================================================================
     // UI
@@ -165,6 +167,51 @@ public class MainActivity extends Activity {
     private float headingDisplaySmoothed = 0f;
     private boolean headingDisplayInitialized = false;
     private long lastHeadingFrameMs = 0;
+
+    /**
+     * Цвет трека по скорости набора/снижения.
+     * @param vario  скорость по вертикали (м/с, +набор, -снижение)
+     * @param alpha  затухание от возраста (0..1, 1 = полностью непрозрачный)
+     * @return ARGB int
+     *
+     * Схема цветов:
+     *   ≤ -5 м/с  тёмно-зелёный
+     *    -2 м/с  зелёный
+     *    -0.3 м/с  салатовый
+     *     0 м/с    ярко-жёлтый
+     *    +0.5 м/с  оранжевый
+     *    +1.5 м/с  красно-оранжевый
+     *    +3 м/с    красный
+     *    +5 м/с    бордовый
+     *    ≥ +8 м/с  тёмно-бордовый
+     */
+    private static int varioToColor(float vario, float alpha) {
+        // Опорные точки: варио → (R,G,B)
+        final float[] keys = {-5f, -2f, -0.3f, 0f, 0.5f, 1.5f, 3f, 5f, 8f};
+        final int[] colors = {
+            0x001A00, 0x006600, 0x99CC66, 0xFFFF33,
+            0xFFAA00, 0xFF4400, 0xFF0000, 0x660000, 0x330000
+        };
+
+        // Поиск интервала
+        int hi = 1;
+        while (hi < keys.length - 1 && vario > keys[hi]) hi++;
+        int lo = hi - 1;
+
+        float t = (keys[hi] - keys[lo] == 0f) ? 0f
+                : (vario - keys[lo]) / (keys[hi] - keys[lo]);
+        t = Math.max(0f, Math.min(1f, t));
+
+        int r = (int)(((colors[lo] >> 16) & 0xFF) * (1f - t) + ((colors[hi] >> 16) & 0xFF) * t);
+        int g = (int)(((colors[lo] >> 8) & 0xFF) * (1f - t) + ((colors[hi] >> 8) & 0xFF) * t);
+        int b = (int)((colors[lo] & 0xFF) * (1f - t) + (colors[hi] & 0xFF) * t);
+
+        int a = (int)(alpha * 200); // макс 200 как и было
+        if (a < 8) a = 8;
+        if (a > 255) a = 255;
+
+        return (a << 24) | (r << 16) | (g << 8) | b;
+    }
 
     // ========================================================================
     // Simulation
@@ -1863,7 +1910,6 @@ public class MainActivity extends Activity {
         // GPS trail render buffers (reused each frame)
         private final float[] trailPxBuf = new float[GPS_TRAIL_MAX];
         private final float[] trailPyBuf = new float[GPS_TRAIL_MAX];
-        private final float[] trailBrightBuf = new float[GPS_TRAIL_MAX]; // 0..1 по возрасту
 
         public RadarView(Context context) {
             super(context);
@@ -2229,13 +2275,14 @@ public class MainActivity extends Activity {
                 long now = System.currentTimeMillis();
 
                 // Добавляем точку с dedup: не чаще 1 раз/сек
+                float currentVario = sensorController.getVario();
                 if (gpsTrail.isEmpty()) {
-                    gpsTrail.add(new double[]{pilotLat, pilotLon, now});
+                    gpsTrail.add(new double[]{pilotLat, pilotLon, now, currentVario});
                 } else {
                     double[] last = gpsTrail.get(gpsTrail.size() - 1);
                     long lastAge = now - (long) last[2];
                     if (lastAge >= GPS_TRAIL_ADD_INTERVAL_MS) {
-                        gpsTrail.add(new double[]{pilotLat, pilotLon, now});
+                        gpsTrail.add(new double[]{pilotLat, pilotLon, now, currentVario});
                     }
                 }
 
@@ -2250,7 +2297,8 @@ public class MainActivity extends Activity {
                 // Лимит буфера
                 while (gpsTrail.size() > GPS_TRAIL_MAX) gpsTrail.remove(0);
 
-                // Конвертация в пиксели радара Яркость от возраста (5 мин = 0 → 1.0)
+                // Конвертация в пиксели радара. Цвет — от варио (varioToColor),
+                // alpha — от возраста (5 мин → прозрачный)
                 for (double[] pt : gpsTrail) {
                     long age = now - (long) pt[2];
                     float brightness = 1.0f - (float) age / (float) GPS_TRAIL_MAX_AGE_MS;
@@ -2266,7 +2314,9 @@ public class MainActivity extends Activity {
 
                     trailPxBuf[trailCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
                     trailPyBuf[trailCount] = trailCy - (float) Math.cos(bearingRad) * distPx;
-                    trailBrightBuf[trailCount] = brightness;
+                    // Цвет от варио с прозрачностью от возраста
+                    float varioVal = (pt.length >= 4) ? (float) pt[3] : 0f;
+                    trailColorBuf[trailCount] = varioToColor(varioVal, brightness);
                     trailCount++;
                 }
 
@@ -2409,7 +2459,7 @@ public class MainActivity extends Activity {
             radarRenderer.draw(canvas, nowMs, thermalsCopy,
                     headingDisplayFinal, varioDisplay, currentStatus,
                     sensorController.getMaxSnr(), thermalsCopy.size(),
-                    trailPxBuf, trailPyBuf, trailBrightBuf, trailCount);
+                    trailPxBuf, trailPyBuf, trailColorBuf, trailCount);
 
             // HUD
             float cx = w / 2f;
