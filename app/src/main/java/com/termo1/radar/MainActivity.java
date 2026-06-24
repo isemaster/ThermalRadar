@@ -137,6 +137,12 @@ public class MainActivity extends Activity {
     private final List<double[]> entryMarkers = new ArrayList<>();  // [lat, lon]
     private final List<double[]> exitMarkers = new ArrayList<>();   // [lat, lon]
 
+    // ===== Reusable buffers для onDraw (устранение аллокаций, T13) =====
+    private final float[] distanceResult = new float[2];
+    private final float[] markerPxBuf = new float[MAX_MARKERS * 2];
+    private final float[] markerPyBuf = new float[MAX_MARKERS * 2];
+    private final boolean[] markerIsEntry = new boolean[MAX_MARKERS * 2];
+
     // ========================================================================
     // UI
     // ========================================================================
@@ -252,15 +258,23 @@ public class MainActivity extends Activity {
         );
 
         // Runtime permission for GPS
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
-            if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED
-                    && checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+        if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED
+                && checkSelfPermission(android.Manifest.permission.ACCESS_COARSE_LOCATION)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[]{android.Manifest.permission.ACCESS_FINE_LOCATION,
+                            android.Manifest.permission.ACCESS_COARSE_LOCATION},
+                    1001);
+        }
+
+        // POST_NOTIFICATIONS для Android 13+ (L-1, foreground service notification)
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                     != android.content.pm.PackageManager.PERMISSION_GRANTED) {
                 requestPermissions(
-                        new String[]{android.Manifest.permission.ACCESS_FINE_LOCATION,
-                                android.Manifest.permission.ACCESS_COARSE_LOCATION},
-                        1001);
+                        new String[]{android.Manifest.permission.POST_NOTIFICATIONS},
+                        1002);
             }
         }
 
@@ -1829,6 +1843,12 @@ public class MainActivity extends Activity {
         private final Paint testBarBgPaint = new Paint();
         private final Paint testBarFillPaint = new Paint();
 
+        // Blind mode paints (reusable, не аллоцировать в onDraw)
+        private final Paint blindBgPaint = new Paint();
+        private final Paint blindTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint blindDataPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint blindVarioPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
         // Logging label
         private final Paint logLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         // Thermal label "крутим термик" (cached)
@@ -1957,36 +1977,35 @@ public class MainActivity extends Activity {
             // Blind mode: минимальный UI, минимум яркости, но видно
             if (blindModeEnabled) {
                 canvas.drawColor(Color.rgb(5, 5, 5));
-                Paint bp = new Paint(Paint.ANTI_ALIAS_FLAG);
-                bp.setColor(Color.argb(180, 0, 255, 0)); // ярче
-                bp.setTextSize(48);
-                bp.setTypeface(android.graphics.Typeface.MONOSPACE);
-                bp.setTextAlign(Paint.Align.CENTER);
-                bp.setFakeBoldText(true);
+                blindTextPaint.setColor(Color.argb(180, 0, 255, 0));
+                blindTextPaint.setTextSize(48);
+                blindTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
+                blindTextPaint.setTextAlign(Paint.Align.CENTER);
+                blindTextPaint.setFakeBoldText(true);
                 String status = flightStateMachine.isFlying() ? "Слепой полёт" : "Ожидание...";
-                canvas.drawText(status, w/2f, h/3f, bp);
+                canvas.drawText(status, w/2f, h/3f, blindTextPaint);
 
                 // В слепом режиме показываем ключевые данные: варио, высоту, время
-                bp.setTextSize(36);
-                bp.setFakeBoldText(false);
-                bp.setColor(Color.argb(160, 100, 200, 255)); // голубой
+                blindDataPaint.setTextSize(36);
+                blindDataPaint.setFakeBoldText(false);
+                blindDataPaint.setColor(Color.argb(160, 100, 200, 255));
                 float varioVal = sensorController.getVario();
                 String varioStr = String.format(java.util.Locale.US, "%s%.1f м/с", varioVal >= 0 ? "+" : "", varioVal);
-                canvas.drawText(varioStr, w/2f, h/2f, bp);
+                canvas.drawText(varioStr, w/2f, h/2f, blindDataPaint);
 
-                bp.setColor(Color.argb(120, 255, 255, 255));
-                bp.setTextSize(28);
+                blindDataPaint.setColor(Color.argb(120, 255, 255, 255));
+                blindDataPaint.setTextSize(28);
                 float alt = gpsManager.getAltitude();
                 float startAlt = gpsManager.getStartAltitude();
                 float agl = gpsManager.isAltitudeInitialized() ? (alt - startAlt) : 0f;
-                canvas.drawText(String.format(java.util.Locale.US, "%.0f м MSL  +%.0f м AGL", alt, agl), w/2f, h/2f + 60, bp);
+                canvas.drawText(String.format(java.util.Locale.US, "%.0f м MSL  +%.0f м AGL", alt, agl), w/2f, h/2f + 60, blindDataPaint);
 
                 // Время полёта
                 if (logManager.isLogging()) {
                     long flightSec = (SystemClock.elapsedRealtime() - logManager.getFlightStartMs()) / 1000;
                     long hh = flightSec / 3600, mm = (flightSec % 3600) / 60, ss = flightSec % 60;
-                    bp.setColor(Color.argb(100, 255, 255, 255));
-                    canvas.drawText(String.format("%02d:%02d:%02d", hh, mm, ss), w/2f, h/2f + 100, bp);
+                    blindDataPaint.setColor(Color.argb(100, 255, 255, 255));
+                    canvas.drawText(String.format("%02d:%02d:%02d", hh, mm, ss), w/2f, h/2f + 100, blindDataPaint);
                 }
                 return;
             }
@@ -2235,12 +2254,11 @@ public class MainActivity extends Activity {
                 for (double[] pt : gpsTrail) {
                     long age = now - (long) pt[2];
                     float brightness = 1.0f - (float) age / (float) GPS_TRAIL_MAX_AGE_MS;
-                    if (brightness < 0.01f) continue; // совсем старые — пропускаем
+                    if (brightness < 0.01f) continue;
 
-                    float[] res = new float[2];
-                    Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], res);
-                    float dist = res[0];
-                    float bearingRad = (float) Math.toRadians(res[1]);
+                    Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], distanceResult);
+                    float dist = distanceResult[0];
+                    float bearingRad = (float) Math.toRadians(distanceResult[1]);
 
                     // Масштаб: 150м = trailR пикселей
                     float distPx = (dist / 150f) * trailR;
@@ -2253,16 +2271,12 @@ public class MainActivity extends Activity {
                 }
 
                 // Конвертация entry/exit markers в пиксели радара
-                float[] markerPxBuf = new float[entryMarkers.size() + exitMarkers.size()];
-                float[] markerPyBuf = new float[entryMarkers.size() + exitMarkers.size()];
-                boolean[] markerIsEntry = new boolean[entryMarkers.size() + exitMarkers.size()];
                 int markerCount = 0;
 
                 for (double[] pt : entryMarkers) {
-                    float[] res = new float[2];
-                    Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], res);
-                    float dist = res[0];
-                    float bearingRad = (float) Math.toRadians(res[1]);
+                    Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], distanceResult);
+                    float dist = distanceResult[0];
+                    float bearingRad = (float) Math.toRadians(distanceResult[1]);
                     float distPx = (dist / 150f) * trailR;
                     if (distPx > trailR) continue;
                     markerPxBuf[markerCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
@@ -2272,10 +2286,9 @@ public class MainActivity extends Activity {
                 }
 
                 for (double[] pt : exitMarkers) {
-                    float[] res = new float[2];
-                    Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], res);
-                    float dist = res[0];
-                    float bearingRad = (float) Math.toRadians(res[1]);
+                    Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], distanceResult);
+                    float dist = distanceResult[0];
+                    float bearingRad = (float) Math.toRadians(distanceResult[1]);
                     float distPx = (dist / 150f) * trailR;
                     if (distPx > trailR) continue;
                     markerPxBuf[markerCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
