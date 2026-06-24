@@ -401,14 +401,21 @@ public class SensorController implements SensorEventListener {
     // Heading filter с блокировкой (исправлено по ревью §10.4)
     // ========================================================================
 
-    /** Вызвать из sensor thread с новым heading */
+    /** Вызвать из sensor thread с новым heading.
+     *  При TYPE_ROTATION_VECTOR — пропускаем HeadingFilter,
+     *  т.к. ROTATION_VECTOR уже отфильтрован встроенным Kalman filter ядра Android.
+     *  Фильтр остаётся только для fallback (accel+mag или GPS). */
     private void updateFilteredHeading(float newHeading) {
         synchronized (headingLock) {
             if (!compassReady) {
                 heading = newHeading;
                 headingFilter.reset();
                 compassReady = true;
+            } else if (rotationVector != null) {
+                // TYPE_ROTATION_VECTOR — уже отфильтрован, идёт напрямую
+                heading = newHeading;
             } else {
+                // Fallback (accel+mag) — применяем HeadingFilter
                 heading = (float) headingFilter.update(newHeading, SystemClock.elapsedRealtime());
             }
         }
