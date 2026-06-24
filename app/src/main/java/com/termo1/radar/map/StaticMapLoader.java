@@ -254,7 +254,7 @@ public class StaticMapLoader {
             conn.setConnectTimeout(5000);
             conn.setReadTimeout(10000);
             conn.setRequestProperty("User-Agent",
-                    "ThermalRadar/0.2.8 (+https://github.com/isemaster/ThermalRadar)");
+                    "ThermalRadar/0.2.9 (+https://github.com/isemaster/ThermalRadar)");
             conn.connect();
 
             if (conn.getResponseCode() != 200) {
