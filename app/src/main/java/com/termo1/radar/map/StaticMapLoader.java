@@ -267,6 +267,7 @@ public class StaticMapLoader {
             Bitmap bitmap = BitmapFactory.decodeStream(is);
             is.close();
             conn.disconnect();
+            // Esri returns JPEG — BitmapFactory handles it fine
             return bitmap;
         } catch (Exception e) {
             Log.e(TAG, "Tile download failed: " + urlStr, e);
