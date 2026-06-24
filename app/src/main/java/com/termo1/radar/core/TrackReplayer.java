@@ -51,6 +51,7 @@ public class TrackReplayer {
     private List<TrackPoint> track;
     private boolean running;
     private boolean finished;
+    private float prevTimeSec; // для детекции midnight crossing
 
     // Simulation clock
     private float totalSimSec;        // total simulated seconds elapsed
@@ -137,40 +138,38 @@ public class TrackReplayer {
      */
     private void loadFromIGC(InputStream inputStream, boolean applyTimeFilter) {
         track = new ArrayList<>();
-        try {
-            BufferedReader br = new BufferedReader(new InputStreamReader(inputStream));
+        try (BufferedReader br = new BufferedReader(new InputStreamReader(inputStream))) {
             String line;
             while ((line = br.readLine()) != null) {
                 line = line.trim();
                 if (line.isEmpty() || line.charAt(0) != 'B') continue;
                 try {
+                    if (line.length() < 30) continue;
                     String t = line.substring(1, 7);
                     int hh = Integer.parseInt(t.substring(0, 2));
                     int mm = Integer.parseInt(t.substring(2, 4));
                     int ss = Integer.parseInt(t.substring(4, 6));
                     float timeSec = hh * 3600f + mm * 60f + ss;
-
-                    // Filter: только для встроенного трека (raw resource)
+                    if (prevTimeSec > 0 && timeSec < prevTimeSec) timeSec += 86400f;
+                    prevTimeSec = timeSec;
                     if (applyTimeFilter) {
                         if (timeSec < 13 * 3600f + 17 * 60f) continue;
                         if (timeSec > 13 * 3600f + 40 * 60f) continue;
                     }
-
-                    // Parse lat: DDMMmmm
                     float latDeg = Float.parseFloat(line.substring(7, 9));
                     float latMin = Float.parseFloat(line.substring(9, 14)) / 1000f;
                     double lat = latDeg + latMin / 60.0;
                     if (line.charAt(14) == 'S') lat = -lat;
-
-                    // Parse lon: DDDMMmmm
                     float lonDeg = Float.parseFloat(line.substring(15, 18));
                     float lonMin = Float.parseFloat(line.substring(18, 23)) / 1000f;
                     double lon = lonDeg + lonMin / 60.0;
                     if (line.charAt(23) == 'W') lon = -lon;
-
-                    int pressAlt = Integer.parseInt(line.substring(25, 30));
-
-                    track.add(new TrackPoint(lat, lon, pressAlt, timeSec));
+                    int alt = 0;
+                    try { alt = Integer.parseInt(line.substring(25, 30).trim()); } catch (Exception ignored) {}
+                    if (alt == 0 && line.length() >= 35) {
+                        try { alt = Integer.parseInt(line.substring(30, 35).trim()); } catch (Exception ignored) {}
+                    }
+                    track.add(new TrackPoint(lat, lon, Math.max(alt, 0), timeSec));
                 } catch (Exception e) {
                     // skip bad records
                 }
@@ -178,9 +177,7 @@ public class TrackReplayer {
         } catch (Exception e) {
             e.printStackTrace();
         }
-
         if (track.isEmpty()) {
-            // Fallback: generate synthetic track if no IGC loaded
             generateFallbackTrack();
         }
     }
@@ -279,6 +276,7 @@ public class TrackReplayer {
                 p0 = track.get(i);
                 p1 = track.get(i + 1);
                 float segLen = p1.timeSec - p0.timeSec;
+                if (segLen < 0.001f) segLen = 0.001f; // защита от NaN
                 frac = (trackTime - p0.timeSec) / segLen;
                 if (frac > 1) frac = 1;
                 if (frac < 0) frac = 0;
@@ -320,12 +318,13 @@ public class TrackReplayer {
 
         altitude = newAlt;
 
-        // Heading from position change
+        // Heading from position change (с учётом схождения меридианов)
         double dLat = pilotLat - prevLat;
         double dLon = pilotLon - prevLon;
-        double dist = Math.sqrt(dLat * dLat + dLon * dLon);
+        double dLonAdj = dLon * Math.cos(Math.toRadians((prevLat + pilotLat) / 2.0));
+        double dist = Math.sqrt(dLat * dLat + dLonAdj * dLonAdj);
         if (dist > 0.0000001) {
-            float newHeading = (float) Math.toDegrees(Math.atan2(dLon, dLat));
+            float newHeading = (float) Math.toDegrees(Math.atan2(dLonAdj, dLat));
             if (newHeading < 0) newHeading += 360;
             float hdgDelta = newHeading - heading;
             while (hdgDelta > 180) hdgDelta -= 360;

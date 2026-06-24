@@ -39,14 +39,26 @@ public class IgcLogger {
 
     /** Формат времени IGC: HHMMSS — ThreadLocal для потокобезопасности */
     private static final ThreadLocal<SimpleDateFormat> IGC_TIME_FMT_TL =
-            ThreadLocal.withInitial(() -> new SimpleDateFormat("HHmmss", Locale.US));
+            ThreadLocal.withInitial(() -> {
+                SimpleDateFormat f = new SimpleDateFormat("HHmmss", Locale.US);
+                f.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+                return f;
+            });
     /** Формат даты IGC: DDMMYY — ThreadLocal для потокобезопасности */
     private static final ThreadLocal<SimpleDateFormat> IGC_DATE_FMT_TL =
-            ThreadLocal.withInitial(() -> new SimpleDateFormat("ddMMyy", Locale.US));
+            ThreadLocal.withInitial(() -> {
+                SimpleDateFormat f = new SimpleDateFormat("ddMMyy", Locale.US);
+                f.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+                return f;
+            });
 
     /** Формат даты для имени файла — ThreadLocal */
     private static final ThreadLocal<SimpleDateFormat> FILE_DATE_FMT_TL =
-            ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US));
+            ThreadLocal.withInitial(() -> {
+                SimpleDateFormat f = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
+                f.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+                return f;
+            });
 
     // ========================================================================
     // Состояние
