@@ -1,5 +1,11 @@
-TERMO1 Radar — v0.2.7
+TERMO1 Radar — v0.2.8
 ========================
 
-CartoDB light tiles вместо tile.openstreetmap.org (access blocked).
-Добавлен User-Agent при загрузке тайлов.
+3×3 tile compositing (768×768 px, RGB_565) вместо растяжения одного тайла.
+Карта: корректный сдвиг через центр тайла, без rounding.
+Компас: убрана 2-секундная заморозка при калибровке.
+Компас: GPS-fallback при плохой калибровке магнитометра.
+Компас: проверка isMagAccurate() + скорость GPS >2 м/с + возраст фикса <5 с.
+entryRemoved: recycle убран (безопасность drawBitmap).
+onDestroy: staticMapLoader.destroy() с ожиданием завершения.
+User-Agent: версия 0.2.8 + GitHub ссылка.

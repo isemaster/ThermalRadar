@@ -485,6 +485,7 @@ public class MainActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
         releaseWakeLock();
+        if (staticMapLoader != null) staticMapLoader.destroy();
         if (simHandler != null && simTask != null) {
             simHandler.removeCallbacks(simTask);
         }
@@ -1679,16 +1680,18 @@ public class MainActivity extends Activity {
     // ========================================================================
 
     private float getCompassHeading() {
-        // Всегда через SensorController (HeadingFilter + GPS feed + hold)
-        if (sensorController.isCompassReady()) {
+        boolean magReliable = sensorController.isCompassReady()
+                && sensorController.isMagAccurate();
+        if (magReliable) {
             return sensorController.getHeading();
         }
-        if (gpsManager.isReady()) {
-            // GPS fallback через тот же HeadingFilter
+        if (gpsManager.isReady() && gpsManager.getSpeed() > 2f
+                && gpsManager.getFixAgeMs() < 5000) {
             sensorController.updateGpsHeading(gpsManager.getHeading());
             return sensorController.getHeading();
         }
-        return 0.0f;
+        // Нет источника — держим последнее известное значение, НЕ 0
+        return sensorController.getHeading();
     }
 
     // ========================================================================

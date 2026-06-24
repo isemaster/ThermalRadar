@@ -2,6 +2,8 @@ package com.termo1.radar.map;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.graphics.Canvas;
+import android.graphics.Paint;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -16,18 +18,16 @@ import java.net.URL;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * StaticMapLoader — загрузка статической OSM-карты под компас.
+ * StaticMapLoader — загрузка тайлов CartoDB под компас.
  *
- * - HTTP-запрос к OpenStreetMap staticmap
+ * - Загружает 3×3 = 9 тайлов zoom 14, склеивает в composite 768×768 px
  * - Кэш: LruCache (32 MB) + диск (LRU евикция, макс 50 МБ)
- * - Обновление: при смещении > 500 м
- * - Формат: PNG 400×400, zoom 13-15
+ * - Обновление: при пересечении границы центрального тайла
  * - Threading: ExecutorService вместо депрекейтнутого AsyncTask
- *
- * URL: https://staticmap.openstreetmap.de/staticmap.php?center=lat,lon&zoom=Z&size=WxH&maptype=mapnik
  */
 public class StaticMapLoader {
 
@@ -35,14 +35,13 @@ public class StaticMapLoader {
     private static final String CACHE_SUBDIR = "map_cache";
     private static final int MAP_W = 768;
     private static final int MAP_H = 768;
+    private static final int TILE_GRID = 3;       // 3×3 тайлов
+    private static final int TILE_SIZE = 256;      // px
     private static final int DEFAULT_ZOOM = 14;
-    private static final double UPDATE_THRESHOLD_M = 500.0;
     private static final int MEM_CACHE_KB = 32 * 1024;       // 32 MB
     private static final long DISK_CACHE_MAX_BYTES = 50 * 1024 * 1024L; // 50 MB disk limit
 
-    // CartoDB light — чистая карта, без ключа, стабильно, работает в РФ
-    // https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png
-    // Subdomains a,b,c для балансировки
+    // CartoDB light — чистая карта, без ключа
     private static final String OSM_TILE_URL =
             "https://a.basemaps.cartocdn.com/light_all/%d/%d/%d.png";
 
@@ -66,10 +65,12 @@ public class StaticMapLoader {
     private final LruCache<String, Bitmap> memCache;
     private MapCallback callback;
 
-    // Текущий центр карты
+    // Текущий центр карты (координаты ЦЕНТРА тайла, не пилота)
     private double cachedCenterLat;
     private double cachedCenterLon;
     private int cachedZoom = DEFAULT_ZOOM;
+    private int cachedTileX;
+    private int cachedTileY;
     private boolean hasCachedCenter;
 
     // Флаг загрузки
@@ -92,11 +93,8 @@ public class StaticMapLoader {
             @Override
             protected void entryRemoved(boolean evicted, String key,
                                          Bitmap oldValue, Bitmap newValue) {
-                // BUG-14: recycle bitmap при вытеснении из кэша
-                if (evicted && oldValue != null && !oldValue.isRecycled()) {
-                    oldValue.recycle();
-                    Log.d(TAG, "Bitmap recycled: " + key);
-                }
+                // Не recycle — bitmap может ещё использоваться в RadarRenderer.
+                // GC заберёт, когда все ссылки уйдут.
             }
         };
 
@@ -109,7 +107,12 @@ public class StaticMapLoader {
 
     /** Освободить ресурсы */
     public void destroy() {
-        executor.shutdown();
+        executor.shutdownNow();
+        try {
+            executor.awaitTermination(2, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Log.w(TAG, "executor shutdown interrupted");
+        }
     }
 
     // ========================================================================
@@ -117,33 +120,34 @@ public class StaticMapLoader {
     // ========================================================================
 
     public void updateIfNeeded(double lat, double lon, int zoom) {
-        if (hasCachedCenter) {
-            double dist = haversineM(cachedCenterLat, cachedCenterLon, lat, lon);
-            if (dist < UPDATE_THRESHOLD_M && zoom == cachedZoom) {
-                return;
-            }
+        int tx = lonToTileX(lon, zoom);
+        int ty = latToTileY(lat, zoom);
+        if (hasCachedCenter && tx == cachedTileX && ty == cachedTileY && zoom == cachedZoom) {
+            return;
         }
-        double roundedLat = Math.round(lat * 100.0) / 100.0;
-        double roundedLon = Math.round(lon * 100.0) / 100.0;
-        cachedCenterLat = roundedLat;
-        cachedCenterLon = roundedLon;
+        cachedTileX = tx;
+        cachedTileY = ty;
         cachedZoom = zoom;
+        cachedCenterLat = tileYToLat(ty + 0.5, zoom);
+        cachedCenterLon = tileXToLon(tx + 0.5, zoom);
         hasCachedCenter = true;
-        loadMap(roundedLat, roundedLon, zoom);
+        loadMap(lat, lon, zoom);
     }
 
     public void forceUpdate(double lat, double lon, int zoom) {
-        double roundedLat = Math.round(lat * 100.0) / 100.0;
-        double roundedLon = Math.round(lon * 100.0) / 100.0;
-        cachedCenterLat = roundedLat;
-        cachedCenterLon = roundedLon;
+        int tx = lonToTileX(lon, zoom);
+        int ty = latToTileY(lat, zoom);
+        cachedTileX = tx;
+        cachedTileY = ty;
         cachedZoom = zoom;
+        cachedCenterLat = tileYToLat(ty + 0.5, zoom);
+        cachedCenterLon = tileXToLon(tx + 0.5, zoom);
         hasCachedCenter = true;
-        loadMap(roundedLat, roundedLon, zoom);
+        loadMap(lat, lon, zoom);
     }
 
     // ========================================================================
-    // Внутренняя загрузка
+    // Внутренняя загрузка — 9 тайлов, склейка в composite 768×768
     // ========================================================================
 
     private void loadMap(double lat, double lon, int zoom) {
@@ -153,7 +157,7 @@ public class StaticMapLoader {
         Bitmap cached = memCache.get(cacheKey);
         if (cached != null && !cached.isRecycled()) {
             Log.d(TAG, "Memory cache hit: " + cacheKey);
-            if (callback != null) callback.onMapLoaded(cached, lat, lon, zoom);
+            if (callback != null) callback.onMapLoaded(cached, cachedCenterLat, cachedCenterLon, zoom);
             return;
         }
 
@@ -165,7 +169,7 @@ public class StaticMapLoader {
                 if (diskBitmap != null) {
                     memCache.put(cacheKey, diskBitmap);
                     Log.d(TAG, "Disk cache hit: " + cacheKey);
-                    if (callback != null) callback.onMapLoaded(diskBitmap, lat, lon, zoom);
+                    if (callback != null) callback.onMapLoaded(diskBitmap, cachedCenterLat, cachedCenterLon, zoom);
                     return;
                 }
             } catch (Exception e) {
@@ -179,40 +183,78 @@ public class StaticMapLoader {
             return;
         }
 
-        final double fLat = lat, fLon = lon;
+        int centerTx = lonToTileX(lon, zoom);
+        int centerTy = latToTileY(lat, zoom);
+        final String url = String.format(Locale.US, OSM_TILE_URL, zoom, centerTx, centerTy);
+        Log.i(TAG, "Downloading 3x3 tiles centered on: " + url);
+
         final int fZoom = zoom;
-        // Преобразуем lat/lon в tile x/y для текущего zoom
-        int tileX = lonToTileX(lon, zoom);
-        int tileY = latToTileY(lat, zoom);
-        final String url = String.format(Locale.US, OSM_TILE_URL, zoom, tileX, tileY);
-        Log.i(TAG, "Downloading map: " + url);
+        final int fTx = centerTx;
+        final int fTy = centerTy;
+        final File fCacheFile = cacheFile;
 
         executor.submit(() -> {
-            Bitmap bitmap = downloadBitmap(url, cacheFile, cacheKey);
+            Bitmap composite = composeTiles(fTx, fTy, fZoom);
+            if (composite != null) {
+                // Сохраняем composite на диск
+                try {
+                    FileOutputStream fos = new FileOutputStream(fCacheFile);
+                    composite.compress(Bitmap.CompressFormat.PNG, 90, fos);
+                    fos.close();
+                    enforceDiskCacheLimit();
+                } catch (Exception e) {
+                    Log.w(TAG, "Failed to save cache file", e);
+                }
+            }
             loading.set(false);
-
+            final Bitmap result = composite;
             mainHandler.post(() -> {
-                if (bitmap != null && !bitmap.isRecycled()) {
-                    memCache.put(cacheKey, bitmap);
+                if (result != null && !result.isRecycled()) {
+                    memCache.put(cacheKey, result);
                     if (callback != null) {
-                        callback.onMapLoaded(bitmap, fLat, fLon, fZoom);
+                        callback.onMapLoaded(result, cachedCenterLat, cachedCenterLon, fZoom);
                     }
                 }
             });
         });
     }
 
+    /** Загрузить 3×3 тайла и склеить в один Bitmap 768×768 */
+    private Bitmap composeTiles(int centerTx, int centerTy, int zoom) {
+        Bitmap composite = Bitmap.createBitmap(
+                TILE_GRID * TILE_SIZE, TILE_GRID * TILE_SIZE, Bitmap.Config.RGB_565);
+        Canvas c = new Canvas(composite);
+        Paint p = new Paint(Paint.FILTER_BITMAP_FLAG);
+        boolean anyLoaded = false;
+
+        for (int dx = 0; dx < TILE_GRID; dx++) {
+            for (int dy = 0; dy < TILE_GRID; dy++) {
+                int tx = centerTx + dx - 1;
+                int ty = centerTy + dy - 1;
+                Bitmap tile = downloadSingleTile(tx, ty, zoom);
+                if (tile != null) {
+                    c.drawBitmap(tile, dx * TILE_SIZE, dy * TILE_SIZE, p);
+                    tile.recycle(); // безопасно — пиксели скопированы в composite
+                    anyLoaded = true;
+                }
+            }
+        }
+        return anyLoaded ? composite : null;
+    }
+
     // ========================================================================
-    // HTTP загрузка
+    // HTTP загрузка одного тайла 256×256
     // ========================================================================
 
-    private Bitmap downloadBitmap(String urlStr, File cacheFile, String cacheKey) {
+    private Bitmap downloadSingleTile(int tileX, int tileY, int zoom) {
+        String urlStr = String.format(Locale.US, OSM_TILE_URL, zoom, tileX, tileY);
         try {
             URL url = new URL(urlStr);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(5000);
             conn.setReadTimeout(10000);
-            conn.setRequestProperty("User-Agent", "ThermalRadar/0.2.6 (paragliding app)");
+            conn.setRequestProperty("User-Agent",
+                    "ThermalRadar/0.2.8 (+https://github.com/isemaster/ThermalRadar)");
             conn.connect();
 
             if (conn.getResponseCode() != 200) {
@@ -224,26 +266,9 @@ public class StaticMapLoader {
             Bitmap bitmap = BitmapFactory.decodeStream(is);
             is.close();
             conn.disconnect();
-
-            if (bitmap != null) {
-                // Сохраняем на диск
-                try {
-                    FileOutputStream fos = new FileOutputStream(cacheFile);
-                    bitmap.compress(Bitmap.CompressFormat.PNG, 90, fos);
-                    fos.close();
-
-                    // LRU евикция дискового кеша при превышении лимита
-                    enforceDiskCacheLimit();
-
-                } catch (Exception e) {
-                    Log.w(TAG, "Failed to save cache file", e);
-                }
-            }
-
             return bitmap;
-
         } catch (Exception e) {
-            Log.e(TAG, "Download failed: " + urlStr, e);
+            Log.e(TAG, "Tile download failed: " + urlStr, e);
             return null;
         }
     }
@@ -277,10 +302,6 @@ public class StaticMapLoader {
     // Утилиты
     // ========================================================================
 
-    private static String makeCacheKey(double lat, double lon, int zoom) {
-        return String.format(Locale.US, "%.2f_%.2f_z%d", lat, lon, zoom);
-    }
-
     /** Haversine distance in meters */
     private static double haversineM(double lat1, double lon1, double lat2, double lon2) {
         double R = 6371000.0;
@@ -293,7 +314,7 @@ public class StaticMapLoader {
     }
 
     // ========================================================================
-    // Преобразование lat/lon → tile x/y (для tile.openstreetmap.org)
+    // Преобразование lat/lon ↔ tile x/y
     // ========================================================================
 
     /** Долгота → tile X */
@@ -305,6 +326,17 @@ public class StaticMapLoader {
     private static int latToTileY(double lat, int zoom) {
         double latRad = Math.toRadians(lat);
         return (int) Math.floor((1.0 - Math.log(Math.tan(latRad) + 1.0 / Math.cos(latRad)) / Math.PI) / 2.0 * (1 << zoom));
+    }
+
+    /** Tile Y → широта центра тайла */
+    private static double tileYToLat(double ty, int zoom) {
+        double n = Math.PI - 2.0 * Math.PI * ty / (1 << zoom);
+        return Math.toDegrees(Math.atan(Math.sinh(n)));
+    }
+
+    /** Tile X → долгота центра тайла */
+    private static double tileXToLon(double tx, int zoom) {
+        return tx / (1 << zoom) * 360.0 - 180.0;
     }
 
     /** Формирует кэш-ключ из tile координат (вместо округлённых lat/lon) */
