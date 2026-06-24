@@ -221,18 +221,6 @@ public class RadarRenderer {
         // Background map paint (75% alpha)
         mapAlphaPaint.setAlpha(MAP_ALPHA);
 
-        // Posterize map: high contrast + saturation → 16-color look
-        ColorMatrix mapCm = new ColorMatrix();
-        mapCm.setSaturation(2.0f);
-        ColorMatrix mapContrast = new ColorMatrix(new float[]{
-            2.2f, 0, 0, 0, -102f,
-            0, 2.2f, 0, 0, -102f,
-            0, 0, 2.2f, 0, -102f,
-            0, 0, 0, 1, 0
-        });
-        mapCm.postConcat(mapContrast);
-        mapAlphaPaint.setColorFilter(new ColorMatrixColorFilter(mapCm));
-
         // Thermal core
         thermalCoreGlowPaint.setStyle(Paint.Style.FILL);
         thermalCoreGlowPaint.setColor(Color.RED);

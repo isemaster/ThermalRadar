@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; color: #ccc; font: 14px/1.4 sans-serif; padding: 20px; }
+h1 { color: #fff; margin-bottom: 6px; }
+h2 { color: #fa8; font-size: 15px; margin: 20px 0 10px; border-top: 1px solid #333; padding-top: 16px; }
+.group { display: flex; flex-wrap: wrap; gap: 12px; }
+.card { background: #1a1a1a; border-radius: 8px; padding: 6px; width: 270px; cursor: pointer; border: 2px solid transparent; transition: .15s; }
+.card:hover { border-color: #48f; }
+.card.selected { border-color: #4f4; background: #0a1a0a; }
+.card img { width: 256px; height: 256px; display: block; margin: 0 auto; image-rendering: pixelated; background: #000; }
+.card .label { margin-top: 4px; font-size: 12px; color: #aaa; text-align: center; }
+.card .desc { font-size: 10px; color: #555; text-align: center; }
+</style>
+</head>
+<body>
+<h1>Тайловые сервера — какой стиль лучше?</h1>
+<p style="color:#666;font-size:12px;margin-bottom:12px">Кликни на лучший вариант → он подсветится зелёным. Тайл 14/9570/4762, СПб.</p>
+<div id="content"></div>
+
+<script>
+const GROUPS = [
+  {
+    name: '▸ CartoDB (текущий провайдер)',
+    tiles: [
+      { url: 'https://a.basemaps.cartocdn.com/light_all/14/9570/4762.png', label: 'light_all (текущий)', desc: 'Светлая карта, дороги белые' },
+      { url: 'https://a.basemaps.cartocdn.com/light_nolabels/14/9570/4762.png', label: 'light_nolabels', desc: 'Светлая без подписей' },
+      { url: 'https://a.basemaps.cartocdn.com/dark_all/14/9570/4762.png', label: 'dark_all ★', desc: 'Тёмная, дороги светлые — как навигатор' },
+      { url: 'https://a.basemaps.cartocdn.com/dark_nolabels/14/9570/4762.png', label: 'dark_nolabels', desc: 'Тёмная без подписей' },
+    ]
+  },
+  {
+    name: '▸ OpenStreetMap (оригинал)',
+    tiles: [
+      { url: 'https://a.tile.openstreetmap.org/14/9570/4762.png', label: 'OSM Carto (стандарт)', desc: 'Классическая OSM карта, дороги/парки/вода' },
+    ]
+  },
+  {
+    name: '▸ Esri (ArcGIS)',
+    tiles: [
+      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/14/4762/9570', label: 'Esri World Topo', desc: 'Топографическая, контрастная, детальная' },
+      { url: 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/14/4762/9570', label: 'Esri Satellite', desc: 'Спутниковые снимки' },
+    ]
+  }
+];
+
+// Also add enhanced versions of CartoDB dark
+GROUPS.push({
+  name: '▸ CartoDB dark_all + обработка (пиксели)',
+  tiles: [
+    { url: 'https://a.basemaps.cartocdn.com/dark_all/14/9570/4762.png', label: 'dark_all (исходник)', desc: 'Без обработки', process: null },
+    { url: 'https://a.basemaps.cartocdn.com/dark_all/14/9570/4762.png', label: 'dark + sat 1.5 + cont 1.4', desc: 'Цвета ярче, контраст', process: { sat:1.5, contrast:1.4, off:-28, dark:1.0 } },
+    { url: 'https://a.basemaps.cartocdn.com/dark_all/14/9570/4762.png', label: 'dark + sat 1.8 + cont 1.6', desc: 'Максимальный контраст', process: { sat:1.8, contrast:1.6, off:-42, dark:1.0 } },
+  ]
+});
+
+function processPixels(ctx, w, h, opts) {
+  if (!opts) return;
+  const d = ctx.getImageData(0, 0, w, h);
+  const px = d.data;
+  for (let i = 0; i < px.length; i += 4) {
+    let r = px[i], g = px[i+1], b = px[i+2];
+    if (opts.dark != null) { r *= opts.dark; g *= opts.dark; b *= opts.dark; }
+    if (opts.sat != null) {
+      const lum = 0.299*r + 0.587*g + 0.114*b;
+      r = lum + (r - lum)*opts.sat; g = lum + (g - lum)*opts.sat; b = lum + (b - lum)*opts.sat;
+    }
+    if (opts.contrast != null) {
+      const off = opts.off || 0;
+      r = r*opts.contrast + off; g = g*opts.contrast + off; b = b*opts.contrast + off;
+    }
+    px[i] = Math.max(0, Math.min(255, r));
+    px[i+1] = Math.max(0, Math.min(255, g));
+    px[i+2] = Math.max(0, Math.min(255, b));
+  }
+  ctx.putImageData(d, 0, 0);
+}
+
+async function renderAll() {
+  const content = document.getElementById('content');
+
+  for (const group of GROUPS) {
+    const h = document.createElement('h2');
+    h.textContent = group.name;
+    content.appendChild(h);
+
+    const div = document.createElement('div');
+    div.className = 'group';
+    content.appendChild(div);
+
+    for (const tile of group.tiles) {
+      const card = document.createElement('div');
+      card.className = 'card';
+      card.onclick = () => {
+        document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+        card.classList.add('selected');
+        document.getElementById('selected').textContent = '✓ Выбрано: ' + tile.label;
+      };
+
+      // Load tile into canvas for processing
+      const canvas = document.createElement('canvas');
+      canvas.width = 256; canvas.height = 256;
+      const ctx = canvas.getContext('2d');
+
+      try {
+        const img = await new Promise((res, rej) => {
+          const img = new Image();
+          img.crossOrigin = 'anonymous';
+          img.onload = () => res(img);
+          img.onerror = () => { const c = document.createElement('canvas'); c.width=256; c.height=256; const cx = c.getContext('2d'); cx.fillStyle='#500'; cx.fillRect(0,0,256,256); cx.fillStyle='#fff'; cx.font='12px sans-serif'; cx.textAlign='center'; cx.fillText('Error',128,128); res(c); };
+          img.src = tile.url;
+        });
+
+        if (img instanceof HTMLCanvasElement) { ctx.drawImage(img, 0, 0); }
+        else { ctx.drawImage(img, 0, 0); }
+
+        processPixels(ctx, 256, 256, tile.process);
+      } catch(e) {
+        ctx.fillStyle = '#500';
+        ctx.fillRect(0, 0, 256, 256);
+      }
+
+      const imgEl = document.createElement('img');
+      imgEl.src = canvas.toDataURL();
+
+      const label = document.createElement('div');
+      label.className = 'label'; label.textContent = tile.label;
+      const desc = document.createElement('div');
+      desc.className = 'desc'; desc.textContent = tile.desc;
+
+      card.appendChild(imgEl); card.appendChild(label); card.appendChild(desc);
+      div.appendChild(card);
+    }
+  }
+
+  const sel = document.createElement('div');
+  sel.id = 'selected';
+  sel.style.cssText = 'color:#4f4;margin-top:16px;font-size:14px;';
+  sel.textContent = 'Кликни на вариант →';
+  content.appendChild(sel);
+}
+
+renderAll();
+</script>
+</body>
+</html>

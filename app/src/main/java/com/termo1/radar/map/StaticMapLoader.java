@@ -41,9 +41,10 @@ public class StaticMapLoader {
     private static final int MEM_CACHE_KB = 32 * 1024;       // 32 MB
     private static final long DISK_CACHE_MAX_BYTES = 50 * 1024 * 1024L; // 50 MB disk limit
 
-    // CartoDB light — чистая карта, без ключа
+    // Esri World Topo — контрастная топографическая карта (как в навигаторе)
+    // URL формат: /tile/{z}/{y}/{x} (y и x перевёрнуты!)
     private static final String OSM_TILE_URL =
-            "https://a.basemaps.cartocdn.com/light_all/%d/%d/%d.png";
+            "https://server.arcgisonline.com/ArcGIS/rest/services/World_Topo_Map/MapServer/tile/%d/%d/%d";
 
     // Threading: ExecutorService вместо AsyncTask
     private final ExecutorService executor = Executors.newSingleThreadExecutor();
@@ -185,7 +186,7 @@ public class StaticMapLoader {
 
         int centerTx = lonToTileX(lon, zoom);
         int centerTy = latToTileY(lat, zoom);
-        final String url = String.format(Locale.US, OSM_TILE_URL, zoom, centerTx, centerTy);
+        final String url = String.format(Locale.US, OSM_TILE_URL, zoom, centerTy, centerTx);
         Log.i(TAG, "Downloading 3x3 tiles centered on: " + url);
 
         final int fZoom = zoom;
@@ -247,14 +248,14 @@ public class StaticMapLoader {
     // ========================================================================
 
     private Bitmap downloadSingleTile(int tileX, int tileY, int zoom) {
-        String urlStr = String.format(Locale.US, OSM_TILE_URL, zoom, tileX, tileY);
+        String urlStr = String.format(Locale.US, OSM_TILE_URL, zoom, tileY, tileX);
         try {
             URL url = new URL(urlStr);
             HttpURLConnection conn = (HttpURLConnection) url.openConnection();
             conn.setConnectTimeout(5000);
             conn.setReadTimeout(10000);
             conn.setRequestProperty("User-Agent",
-                    "ThermalRadar/0.2.10 (+https://github.com/isemaster/ThermalRadar)");
+                    "ThermalRadar/0.2.11 (+https://github.com/isemaster/ThermalRadar)");
             conn.connect();
 
             if (conn.getResponseCode() != 200) {
