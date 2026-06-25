@@ -2050,6 +2050,12 @@ public class MainActivity extends Activity {
         private int glideBufHead = 0;
         private int glideBufCount = 0;
 
+        // Vario average buffer (30 samples at 1 Hz = 30 sec)
+        private static final int VARIO_AVG_COUNT = 30;
+        private final float[] varioBuf = new float[VARIO_AVG_COUNT];
+        private int varioBufIdx = 0;
+        private int varioBufLen = 0;
+
         public RadarView(Context context) {
             super(context);
             setFocusable(true);
@@ -2556,7 +2562,16 @@ public class MainActivity extends Activity {
                     : Color.argb(200, 255, 180, 50));
             canvas.drawText(String.format(java.util.Locale.US, "%s%.1f", varioSign, varioVal), colX_center, valueRowY, varioPaint);
 
-            // Flight time below vario, moved half line down (чч:мм, до 12 часов)
+            // Avg vario за 30с (мелко под варио)
+            pushVarioSample(varioVal);
+            float avgVario30 = getAvgVario30();
+            instrLabelPaint.setColor(Color.argb(140, 255, 180, 50));
+            instrLabelPaint.setTextSize(28);
+            instrLabelPaint.setTextAlign(Paint.Align.CENTER);
+            String avgStr = String.format(java.util.Locale.US, "avg %s%.1f", avgVario30 >= 0 ? "+" : "", avgVario30);
+            canvas.drawText(avgStr, colX_center, valueRowY + 40, instrLabelPaint);
+
+            // Flight time below vario, one full line down (чч:мм, до 12 часов)
             long flightTimeMs;
             if (simMode) {
                 flightTimeMs = SystemClock.elapsedRealtime() - simStartMs;
@@ -2572,7 +2587,7 @@ public class MainActivity extends Activity {
             long ftSec = flightTimeMs / 1000;
             String ftStr = String.format("%02d:%02d", ftSec / 3600, (ftSec % 3600) / 60);
             flightTimePaint.setColor(Color.argb(200, 0, 255, 255));
-            canvas.drawText(ftStr, colX_center, valueRowY + 110, flightTimePaint);
+            canvas.drawText(ftStr, colX_center, valueRowY + 150, flightTimePaint);
 
             // Right column: Wind label ABOVE value (поднято на 1 строку), AGL below
             float windDeg = circlingManager.getWindFromDeg();
@@ -2938,6 +2953,13 @@ public class MainActivity extends Activity {
                 coordLon = gpsManager.getLon();
             }
             if (coordLat != 0.0 && coordLon != 0.0) {
+                // Satellites count above coordinates
+                int satCount = gpsManager.getSatelliteCount();
+                glideBarPaint.setTextAlign(Paint.Align.CENTER);
+                glideBarPaint.setTextSize(24);
+                glideBarPaint.setColor(Color.argb(120, 0, 200, 100));
+                canvas.drawText("видно " + satCount + " спутников", w / 2f, glideBarY2 - 22, glideBarPaint);
+                // Coordinates
                 glideBarPaint.setTextAlign(Paint.Align.CENTER);
                 glideBarPaint.setColor(Color.argb(180, 100, 200, 255));
                 glideBarPaint.setTextSize(36);
@@ -3167,6 +3189,19 @@ public class MainActivity extends Activity {
                     canvas.drawRoundRect(barLeft, barY, barLeft + barW * progress, barY + barH, 5, 5, testBarFillPaint);
                 }
             }
+        }
+
+        // Vario average helpers
+        private void pushVarioSample(float val) {
+            varioBuf[varioBufIdx] = val;
+            varioBufIdx = (varioBufIdx + 1) % VARIO_AVG_COUNT;
+            if (varioBufLen < VARIO_AVG_COUNT) varioBufLen++;
+        }
+        private float getAvgVario30() {
+            if (varioBufLen == 0) return 0f;
+            float sum = 0;
+            for (int i = 0; i < varioBufLen; i++) sum += varioBuf[i];
+            return sum / varioBufLen;
         }
 
         private void drawGearButton(Canvas canvas) {

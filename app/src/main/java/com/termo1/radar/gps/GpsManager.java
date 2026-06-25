@@ -2,6 +2,9 @@ package com.termo1.radar.gps;
 
 import android.content.Context;
 import android.location.Location;
+import android.location.LocationManager;
+import android.location.GpsStatus;
+import android.location.GpsSatellite;
 import android.os.Looper;
 import android.os.SystemClock;
 
@@ -34,10 +37,29 @@ public class GpsManager {
     private volatile double gpsLon;
     private volatile float gpsAccuracy = 999f;
     private volatile long lastFixMs;
+    private volatile int satelliteCount = 0;
+    private LocationManager locationManager;
+    private GpsStatus.Listener gpsStatusListener;
     private SensorController sensorController; // для баро-калибровки (C-08)
 
     public GpsManager(Context context) {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(context);
+        locationManager = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
+        if (locationManager != null) {
+            gpsStatusListener = new GpsStatus.Listener() {
+                @Override
+                public void onGpsStatusChanged(int event) {
+                    if (event == GpsStatus.GPS_EVENT_SATELLITE_STATUS) {
+                        GpsStatus status = locationManager.getGpsStatus(null);
+                        int count = 0;
+                        for (GpsSatellite sat : status.getSatellites()) {
+                            if (sat.usedInFix()) count++;
+                        }
+                        satelliteCount = count;
+                    }
+                }
+            };
+        }
     }
 
     public void startGps() {
@@ -87,9 +109,16 @@ public class GpsManager {
                             .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY),
                     locationCallback, looper);
         }
+        // Register satellite status listener
+        if (locationManager != null && gpsStatusListener != null) {
+            locationManager.addGpsStatusListener(gpsStatusListener);
+        }
     }
 
     public void stopGps() {
+        if (locationManager != null && gpsStatusListener != null) {
+            locationManager.removeGpsStatusListener(gpsStatusListener);
+        }
         if (fusedLocationClient != null && locationCallback != null) {
             try {
                 fusedLocationClient.removeLocationUpdates(locationCallback);
@@ -118,4 +147,7 @@ public class GpsManager {
 
     /** Установить SensorController для баро-калибровки (C-08) */
     public void setSensorController(SensorController sc) { this.sensorController = sc; }
+
+    /** Количество спутников, используемых в fix */
+    public int getSatelliteCount() { return satelliteCount; }
 }
