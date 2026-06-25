@@ -1994,6 +1994,8 @@ public class MainActivity extends Activity {
         // REC indicator paints (мигающая красная точка + текст)
         private final Paint recDotPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint recTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        // Battery level
+        private final Paint batteryPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
         // Logging label
         private final Paint logLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -2037,6 +2039,16 @@ public class MainActivity extends Activity {
         // GPS trail render buffers (reused each frame)
         private final float[] trailPxBuf = new float[GPS_TRAIL_MAX];
         private final float[] trailPyBuf = new float[GPS_TRAIL_MAX];
+
+        // Glide ratio buffer (8 sec window, 1 Hz samples)
+        private static final int GLIDE_WINDOW_SEC = 8;
+        private static final int GLIDE_BUF_MAX = 16;
+        private final double[] glideLatBuf = new double[GLIDE_BUF_MAX];
+        private final double[] glideLonBuf = new double[GLIDE_BUF_MAX];
+        private final float[] glideAltBuf = new float[GLIDE_BUF_MAX];
+        private final long[] glideTimeBuf = new long[GLIDE_BUF_MAX];
+        private int glideBufHead = 0;
+        private int glideBufCount = 0;
 
         public RadarView(Context context) {
             super(context);
@@ -2159,6 +2171,13 @@ public class MainActivity extends Activity {
             recTextPaint.setTextSize(32);
             recTextPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
             recTextPaint.setTextAlign(Paint.Align.LEFT);
+
+            // Battery level paint
+            batteryPaint.setAntiAlias(true);
+            batteryPaint.setColor(Color.argb(200, 0, 255, 0));
+            batteryPaint.setTextSize(22);
+            batteryPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
+            batteryPaint.setTextAlign(Paint.Align.RIGHT);
 
             // Playback controls
             pbTrackPaint.setAntiAlias(true);
@@ -2502,12 +2521,17 @@ public class MainActivity extends Activity {
             // Below values — labels for speed/wind (ABOVE their values on next row)
             float instrLabelY = valueRowY + 20;
 
-            // Speed label ABOVE its value (поднято на 1 строку)
+            // Speed label (км/ч — крупно, м/с — мелко рядом)
             instrLabelPaint.setColor(Color.argb(160, 0, 255, 0));
-            canvas.drawText("скорость, м/с", colX_left, valueRowY - 40, instrLabelPaint);
-            // Speed value at same level as vario
+            canvas.drawText("скорость, км/ч", colX_left, valueRowY - 40, instrLabelPaint);
+            // Speed value in km/h (big); m/s small below
             instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
-            canvas.drawText(String.format(java.util.Locale.US, "%.1f", gpsSpeed), colX_left, valueRowY + 20, instrValuePaint);
+            canvas.drawText(String.format(java.util.Locale.US, "%.0f", gpsSpeed * 3.6f), colX_left, valueRowY + 20, instrValuePaint);
+            // m/s мелко под км/ч
+            instrLabelPaint.setTextSize(20);
+            instrLabelPaint.setColor(Color.argb(120, 0, 255, 0));
+            canvas.drawText(String.format(java.util.Locale.US, "%.1f м/с", gpsSpeed), colX_left, valueRowY + 20 + 28, instrLabelPaint);
+            instrLabelPaint.setTextSize(32);
 
             // MSL value and label (below speed)
             float gpsAltVal = gpsManager.getAltitude();
@@ -2615,6 +2639,21 @@ public class MainActivity extends Activity {
                     if (lastAge >= GPS_TRAIL_ADD_INTERVAL_MS) {
                         gpsTrail.add(new double[]{pilotLat, pilotLon, now, currentVario});
                     }
+                }
+
+                // Push to glide ratio buffer (same 1 Hz rate)
+                boolean isNewGlideSample = (glideBufCount == 0);
+                if (!isNewGlideSample) {
+                    int lastGi = (glideBufHead - 1 + GLIDE_BUF_MAX) % GLIDE_BUF_MAX;
+                    isNewGlideSample = (now - glideTimeBuf[lastGi]) >= 1000;
+                }
+                if (isNewGlideSample) {
+                    glideLatBuf[glideBufHead] = pilotLat;
+                    glideLonBuf[glideBufHead] = pilotLon;
+                    glideAltBuf[glideBufHead] = (float)gpsManager.getAltitude();
+                    glideTimeBuf[glideBufHead] = now;
+                    glideBufHead = (glideBufHead + 1) % GLIDE_BUF_MAX;
+                    if (glideBufCount < GLIDE_BUF_MAX) glideBufCount++;
                 }
 
                 Iterator<double[]> it = gpsTrail.iterator();
@@ -2823,34 +2862,95 @@ public class MainActivity extends Activity {
             canvas.restore();
 
             // ========================================================================
-            // GLIDE BAR (below radar, ~2%)
-            // ========================================================================
-            float glideBarY = localInstrH + localRadarH + localGlideH / 2f + 6;
-            float glideRange = gpsManager.isReady() ? 150.0f : 0f; // max range
-            // Дальность: use SNR-based estimate
-            float currentRange = glideRange;
-            if (thermalDetector != null) {
-                SignalProcessor sp2 = thermalDetector.getSignalProcessor();
-                if (sp2 != null && sp2.getSnr() > 0) {
-                    currentRange = Math.min(glideRange, 30f + sp2.getSnr() * 10f);
-                }
-            }
-            float quality = (thermalDetector != null && thermalDetector.getSignalProcessor() != null)
-                    ? thermalDetector.getSignalProcessor().getSnr() : 0f;
-
-            // ========================================================================
-            // GLIDE BAR — на место старых кнопок (выше разделителя)
+            // GLIDE BAR — L/D слева, координаты центр, дальность справа
             // ========================================================================
             float bottomPanelY = localInstrH + localRadarH + localGlideH + h * 0.05f;
-            float btnAreaTop = bottomPanelY - (50 + 24); // высота как у кнопок + отступ
+            float btnAreaTop = bottomPanelY - (50 + 24);
             float glideBarY2 = btnAreaTop + 30;
+
+            // L/D (quality планирования) — из буфера GPS
+            float glideRatio = 0f;
+            boolean glideValid = false;
+            if (glideBufCount >= 2) {
+                int newestIdx = (glideBufHead - 1 + GLIDE_BUF_MAX) % GLIDE_BUF_MAX;
+                // Ищем точку минимум за GLIDE_WINDOW_SEC секунд до текущей
+                int oldestIdx = newestIdx;
+                int checked = 0;
+                long targetTime = glideTimeBuf[newestIdx] - GLIDE_WINDOW_SEC * 1000L;
+                while (checked < glideBufCount - 1) {
+                    int prev = (oldestIdx - 1 + GLIDE_BUF_MAX) % GLIDE_BUF_MAX;
+                    if (glideTimeBuf[prev] <= targetTime) break;
+                    oldestIdx = prev;
+                    checked++;
+                }
+                // Суммируем расстояние между oldestIdx → newestIdx
+                double totalDist = 0;
+                int cur = oldestIdx;
+                int steps = 0;
+                while (cur != newestIdx && steps < GLIDE_BUF_MAX) {
+                    int next = (cur + 1) % GLIDE_BUF_MAX;
+                    if (glideTimeBuf[next] == 0) break;
+                    float[] res = new float[2];
+                    android.location.Location.distanceBetween(
+                            glideLatBuf[cur], glideLonBuf[cur],
+                            glideLatBuf[next], glideLonBuf[next], res);
+                    totalDist += res[0];
+                    cur = next;
+                    steps++;
+                }
+                float altDiff = glideAltBuf[oldestIdx] - glideAltBuf[newestIdx]; // + = снижение
+                if (altDiff > 0.5f) {
+                    glideRatio = (float)(totalDist / altDiff);
+                    glideValid = true;
+                }
+            }
+
+            // Range = AGL × L/D (сколько км пролетим с текущей высоты)
+            float aglForRange = gpsManager.isAltitudeInitialized()
+                    ? (gpsManager.getAltitude() - gpsManager.getStartAltitude()) : 0f;
+            float rangeKm = 0f;
+            if (glideValid && aglForRange > 0) {
+                rangeKm = aglForRange * glideRatio / 1000f;
+            } else {
+                // fallback: если нет L/D, используем AGL * 8 (среднее качество параплана)
+                rangeKm = aglForRange * 8f / 1000f;
+            }
+
+            // LEFT: дальность планирования (км)
             glideBarPaint.setTextAlign(Paint.Align.LEFT);
             glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
-            canvas.drawText(String.format(java.util.Locale.US, "%.1f км", currentRange / 1000f),
+            canvas.drawText(String.format(java.util.Locale.US, "%.1f км", rangeKm),
                     w * 0.04f, glideBarY2, glideBarPaint);
+
+            // CENTER: координаты (Google Maps format: lat, lon)
+            double coordLat = 0.0, coordLon = 0.0;
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                coordLat = trackReplayer.getLat();
+                coordLon = trackReplayer.getLon();
+            } else {
+                coordLat = gpsManager.getLat();
+                coordLon = gpsManager.getLon();
+            }
+            if (coordLat != 0.0 && coordLon != 0.0) {
+                glideBarPaint.setTextAlign(Paint.Align.CENTER);
+                glideBarPaint.setColor(Color.argb(180, 100, 200, 255));
+                glideBarPaint.setTextSize(36);
+                canvas.drawText(String.format(java.util.Locale.US, "%.5f, %.5f", coordLat, coordLon),
+                        w / 2f, glideBarY2, glideBarPaint);
+            }
+
+            // RIGHT: L/D
             glideBarPaint.setTextAlign(Paint.Align.RIGHT);
-            canvas.drawText(String.format(java.util.Locale.US, "%.1f", quality),
-                    w * 0.96f, glideBarY2, glideBarPaint);
+            glideBarPaint.setTextSize(112);
+            if (glideValid) {
+                glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
+                canvas.drawText(String.format(java.util.Locale.US, "L/D %.0f", glideRatio),
+                        w * 0.96f, glideBarY2, glideBarPaint);
+            } else {
+                glideBarPaint.setColor(Color.argb(140, 100, 200, 255));
+                canvas.drawText("L/D --", w * 0.96f, glideBarY2, glideBarPaint);
+            }
+            glideBarPaint.setTextSize(112);
 
             // ========================================================================
             // BOTTOM PANEL (~13%)
@@ -2996,6 +3096,16 @@ public class MainActivity extends Activity {
             drawExitButton(canvas);
             drawRecIndicator(canvas);
             drawGearButton(canvas);
+
+            // Battery level (top-right, near gear)
+            android.os.BatteryManager bm = (android.os.BatteryManager) getContext().getSystemService(Context.BATTERY_SERVICE);
+            int batteryPct = 0;
+            if (bm != null) {
+                batteryPct = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY);
+            }
+            String batStr = batteryPct + "%";
+            batteryPaint.setColor(batteryPct > 20 ? Color.argb(200, 0, 255, 0) : Color.argb(220, 255, 80, 80));
+            canvas.drawText(batStr, gearRect.left - 12, gearRect.centerY() + 8, batteryPaint);
 
             // Test mode overlay
             if (testMode) {
