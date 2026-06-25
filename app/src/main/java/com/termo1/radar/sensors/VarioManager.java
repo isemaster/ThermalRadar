@@ -30,9 +30,10 @@ public class VarioManager {
     /** Vario deadband — минимальное изменение для отображения (исправлено: 0.05→0.2 м/с) */
     private static final float VARIO_DEADBAND = 0.2f;
 
-    // Baro calibration
+    // База для расчёта высоты
     private float baselinePressure = 1013.25f;
     private int baroCalibCount;
+    private float baroOffset; // смещение для приведения к GPS-высоте (исправлено C-08)
 
     // Altitude / vario
     private volatile float vario;
@@ -200,8 +201,20 @@ public class VarioManager {
     public float getVario() { return vario; }
     public float getAltRaw() { return altRaw; }
     public float getAltFiltered() { return altFiltered; }
+    /** Высота с калибровкой по GPS (исправлено C-08) */
+    public float getAltCalibrated() { return altRaw + baroOffset; }
     public float getBaselinePressure() { return baselinePressure; }
     public float getRecentSnr() { return recentSnr; }
     public float getMaxSnr() { return maxSnr; }
     public boolean isCalibrated() { return baroCalibCount > BARO_CALIB_SAMPLES; }
+
+    /**
+     * Калибровать барометрическую высоту по GPS-высоте.
+     * Вызывать, когда GPS даёт точный фикс (<25м accuracy).
+     * baroOffset = gpsAltitude - altRaw — все последующие показания
+     * getAltCalibrated() будут скорректированы.
+     */
+    public void calibrateFromGps(float gpsAltitude) {
+        baroOffset = gpsAltitude - altRaw;
+    }
 }

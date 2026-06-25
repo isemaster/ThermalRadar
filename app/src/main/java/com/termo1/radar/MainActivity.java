@@ -16,6 +16,7 @@ import android.hardware.SensorManager;
 import android.location.Location;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
@@ -240,7 +241,8 @@ public class MainActivity extends Activity {
     private Handler renderHandler = new Handler(Looper.getMainLooper());
     private Runnable renderTask;
     // Фоновый таймер 10 Гц для обработки (работает при выкл экране)
-    private Handler bgHandler = new Handler(Looper.getMainLooper());
+    private HandlerThread bgThread;
+    private Handler bgHandler;
     private Runnable bgTask;
     private static final long BG_INTERVAL_MS = 100L;
 
@@ -493,6 +495,7 @@ public class MainActivity extends Activity {
 
         // GPS: всегда включён для логирования координат в лог
         gpsManager.startGps();
+        gpsManager.setSensorController(sensorController); // C-08
         try {
             gpsManager.requestUpdates(Looper.getMainLooper());
         } catch (SecurityException e) {
@@ -550,6 +553,11 @@ public class MainActivity extends Activity {
         }
         logManager.destroy();
         if (igcLogger != null) igcLogger.destroy();
+        if (bgThread != null) {
+            bgThread.quitSafely();
+            try { bgThread.join(1000); } catch (InterruptedException ignored) {}
+            bgThread = null;
+        }
         if (tts != null) {
             tts.stop();
             tts.shutdown();
@@ -796,12 +804,12 @@ public class MainActivity extends Activity {
             logManager.setBaseFileName(baseName);
             logManager.startLogging();
             igcLogger.startLogging();
-            // Автокалибровка при старте полёта (сенсоры уже работают)
-            resetCalibration();
+            // C-11: убрал resetCalibration() — баро калибруется на земле,
+            // а GPS-калибровка (baroOffset) происходит на первом точном фиксе
             sensorController.calibrateHeading();
             android.util.Log.i("TERMO1", "Flight START: " + baseName);
-            android.widget.Toast.makeText(MainActivity.this,
-                    "Полёт обнаружен, запись", android.widget.Toast.LENGTH_SHORT).show();
+            runOnUiThread(() -> android.widget.Toast.makeText(MainActivity.this,
+                    "Полёт обнаружен, запись", android.widget.Toast.LENGTH_SHORT).show());
         }
 
         @Override
@@ -822,10 +830,9 @@ public class MainActivity extends Activity {
             varioSoundManager.update(sensorController.getVario());
         }
 
-        // Flight state machine (на основе высоты MSL)
+        // Flight state machine (на основе барометрической высоты, C-08 fix)
         if (!testMode && !simMode && !scenarioMode && !trackMode) {
-            float alt = gpsManager.isAltitudeInitialized()
-                    ? gpsManager.getAltitude() : sensorController.getAltitudeRaw();
+            float alt = sensorController.getAltitudeRaw();
             flightStateMachine.update(alt, SystemClock.elapsedRealtime());
         }
     }
@@ -1023,6 +1030,9 @@ public class MainActivity extends Activity {
     }
 
     private void startBgProcessing() {
+        bgThread = new HandlerThread("termo1-bg");
+        bgThread.start();
+        bgHandler = new Handler(bgThread.getLooper());
         bgTask = new Runnable() {
             @Override
             public void run() {
@@ -1038,9 +1048,7 @@ public class MainActivity extends Activity {
                             gpsManager.getSpeed(),
                             gpsManager.getLat(),
                             gpsManager.getLon(),
-                            gpsManager.isAltitudeInitialized()
-                                ? gpsManager.getAltitude()
-                                : sensorController.getAltitudeRaw(),
+                            sensorController.getAltitudeRaw(), // C-08: баро, не GPS
                             bgNow);
                 }
                 circlingManager.update(

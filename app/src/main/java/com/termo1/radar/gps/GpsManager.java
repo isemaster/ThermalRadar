@@ -3,12 +3,15 @@ package com.termo1.radar.gps;
 import android.content.Context;
 import android.location.Location;
 import android.os.Looper;
+import android.os.SystemClock;
 
 import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationCallback;
 import com.google.android.gms.location.LocationRequest;
 import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
+
+import com.termo1.radar.sensors.SensorController;
 
 /**
  * GpsManager — управление GPS-локацией.
@@ -31,6 +34,7 @@ public class GpsManager {
     private volatile double gpsLon;
     private volatile float gpsAccuracy = 999f;
     private volatile long lastFixMs;
+    private SensorController sensorController; // для баро-калибровки (C-08)
 
     public GpsManager(Context context) {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(context);
@@ -55,13 +59,17 @@ public class GpsManager {
                     gpsLat = location.getLatitude();
                     gpsLon = location.getLongitude();
                     gpsAccuracy = location.hasAccuracy() ? location.getAccuracy() : 999f;
-                    lastFixMs = System.currentTimeMillis();
+                    lastFixMs = SystemClock.elapsedRealtime();
                     // Отсев неточных фиксов для стартовой высоты
                     if (location.hasAltitude() && gpsAccuracy < 25f) {
                         gpsAltitude = (float) location.getAltitude();
                         if (!altitudeInitialized) {
                             startAltitude = gpsAltitude;
                             altitudeInitialized = true;
+                        }
+                        // Калибровка баро по GPS-высоте (исправлено C-08)
+                        if (sensorController != null) {
+                            sensorController.calibrateBaroFromGps(gpsAltitude);
                         }
                     }
                 }
@@ -105,6 +113,9 @@ public class GpsManager {
     public double getLat() { return gpsLat; }
     public double getLon() { return gpsLon; }
     public float getAccuracy() { return gpsAccuracy; }
-    /** Возраст последнего fix (мс) — растёт, если GPS потерян */
-    public long getFixAgeMs() { return System.currentTimeMillis() - lastFixMs; }
+    /** Возраст последнего fix (мс) — растёт, если GPS потерян (исправлено C-09: elapsedRealtime) */
+    public long getFixAgeMs() { return SystemClock.elapsedRealtime() - lastFixMs; }
+
+    /** Установить SensorController для баро-калибровки (C-08) */
+    public void setSensorController(SensorController sc) { this.sensorController = sc; }
 }

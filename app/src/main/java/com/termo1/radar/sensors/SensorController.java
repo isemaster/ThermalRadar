@@ -654,4 +654,11 @@ public class SensorController implements SensorEventListener {
         rotOut[3] = fwdX;   rotOut[4] = fwdY;   rotOut[5] = fwdZ;
         rotOut[6] = upX;    rotOut[7] = upY;    rotOut[8] = upZ;
     }
+
+    /** Калибровка барометрической высоты по GPS (C-08) */
+    public void calibrateBaroFromGps(float gpsAltitude) {
+        if (varioManager != null) {
+            varioManager.calibrateFromGps(gpsAltitude);
+        }
+    }
 }

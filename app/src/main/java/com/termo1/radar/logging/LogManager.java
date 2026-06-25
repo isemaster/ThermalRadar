@@ -5,20 +5,24 @@ import android.os.HandlerThread;
 import android.os.SystemClock;
 import android.util.Log;
 
-import java.io.BufferedOutputStream;
-import java.io.ByteArrayOutputStream;
+import java.io.BufferedWriter;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
 /**
  * LogManager — companion sensor logger for IGC flights.
- * Writes a single .zip file per flight containing all sensor data as CSV.
- * - synchronized on all buffer access
+ * Streams CSV data to a temporary file during flight, then zips it on stop.
+ * This avoids OOM on long flights (was accumulating all data in StringBuilder).
+ * - synchronized on all file access
  * - async I/O on dedicated HandlerThread
+ * - periodic flush every 5 seconds
  * - base file name set externally (same as IGC file)
  */
 public class LogManager {
@@ -27,9 +31,16 @@ public class LogManager {
 
     private static final int SAMPLE_DECIMATION = 1;
 
+    /** Flush the writer every 5 seconds so we don't lose data on crash. */
+    private static final long FLUSH_INTERVAL_MS = 5000L;
+
     private boolean isLogging;
     private final Object bufferLock = new Object();
-    private StringBuilder logBuffer;
+
+    /** Temp file streamed to during flight. Null when not logging. */
+    private BufferedWriter csvWriter;
+    /** The temp file path. Deleted after zipping on stop. */
+    private File tempCsvFile;
 
     private long elapsedStartMs;
     private long wallStartMs;
@@ -39,6 +50,23 @@ public class LogManager {
 
     private HandlerThread ioThread;
     private Handler ioHandler;
+
+    /** Runnable that periodically flushes the CSV writer on the IO thread. */
+    private final Runnable flushRunnable = new Runnable() {
+        @Override
+        public void run() {
+            synchronized (bufferLock) {
+                if (!isLogging || csvWriter == null) return;
+                try {
+                    csvWriter.flush();
+                } catch (IOException e) {
+                    Log.e(TAG, "Periodic flush failed", e);
+                }
+            }
+            // Re-post as long as logging is active (checked at top of next run)
+            ioHandler.postDelayed(this, FLUSH_INTERVAL_MS);
+        }
+    };
 
     private volatile double cachedGpsLat;
     private volatile double cachedGpsLon;
@@ -81,7 +109,6 @@ public class LogManager {
     }
 
     public LogManager() {
-        logBuffer = new StringBuilder(65536);
         ioThread = new HandlerThread("termo1-log-io");
         ioThread.start();
         ioHandler = new Handler(ioThread.getLooper());
@@ -102,6 +129,14 @@ public class LogManager {
 
     public void startLogging() {
         if (isLogging) return;
+
+        final String fName = baseFileName;
+        final String logDirPath = externalLogDir;
+        if (fName == null || logDirPath == null) {
+            Log.w(TAG, "startLogging skipped: baseFileName or externalLogDir not set");
+            return;
+        }
+
         isLogging = true;
 
         elapsedStartMs = SystemClock.elapsedRealtime();
@@ -109,21 +144,47 @@ public class LogManager {
         sampleCounter = 0;
 
         synchronized (bufferLock) {
-            logBuffer.setLength(0);
-            // CSV header
-            logBuffer.append("dtMs,gpsSpeed,gpsHeading,gpsLat,gpsLon,gpsAlt,");
-            logBuffer.append("gpsFixAge,gpsAccuracy,vario,");
-            logBuffer.append("ax,ay,az,gx,gy,gz,mx,my,mz,pressure,pitch,roll,heading,");
-            logBuffer.append("thermalAngle,thermalStrength,thermalDist,thermalSource,snr,noiseFloor,");
-            logBuffer.append("detectStatus\n");
-        }
+            try {
+                File logDir = new File(logDirPath, "logs");
+                if (!logDir.exists()) {
+                    logDir.mkdirs();
+                }
 
-        Log.i(TAG, "Logging STARTED wall=" + wallStartMs + " elapsed=" + elapsedStartMs);
+                // Create a temp file for streaming CSV
+                tempCsvFile = new File(logDir, fName + ".tmp");
+                csvWriter = new BufferedWriter(
+                        new OutputStreamWriter(new FileOutputStream(tempCsvFile), StandardCharsets.UTF_8),
+                        8192 // 8 KB buffer
+                );
+
+                // CSV header
+                csvWriter.write("dtMs,gpsSpeed,gpsHeading,gpsLat,gpsLon,gpsAlt,");
+                csvWriter.write("gpsFixAge,gpsAccuracy,vario,");
+                csvWriter.write("ax,ay,az,gx,gy,gz,mx,my,mz,pressure,pitch,roll,heading,");
+                csvWriter.write("thermalAngle,thermalStrength,thermalDist,thermalSource,snr,noiseFloor,");
+                csvWriter.write("detectStatus\n");
+
+                // Start periodic flush
+                ioHandler.postDelayed(flushRunnable, FLUSH_INTERVAL_MS);
+
+                Log.i(TAG, "Logging STARTED wall=" + wallStartMs + " elapsed=" + elapsedStartMs
+                        + " tempFile=" + tempCsvFile.getAbsolutePath());
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to open temp CSV file for logging", e);
+                isLogging = false;
+                tempCsvFile = null;
+                csvWriter = null;
+            }
+        }
     }
 
     public void stopLogging() {
         if (!isLogging) return;
         isLogging = false;
+
+        // Remove the periodic flush runnable
+        ioHandler.removeCallbacks(flushRunnable);
+
         writeFinalZip();
         Log.i(TAG, "Logging STOPPED");
     }
@@ -151,32 +212,58 @@ public class LogManager {
         long dtMs = elapsedNow - elapsedStartMs;
 
         synchronized (bufferLock) {
-            logBuffer.append(dtMs).append(',');
-            logBuffer.append(cachedGpsSpeed).append(',');
-            logBuffer.append(cachedGpsHeading).append(',');
-            logBuffer.append(String.format(Locale.US, "%.6f", cachedGpsLat)).append(',');
-            logBuffer.append(String.format(Locale.US, "%.6f", cachedGpsLon)).append(',');
-            logBuffer.append(cachedGpsAlt).append(',');
-            logBuffer.append(cachedGpsFixAge).append(',');
-            logBuffer.append(cachedGpsAccuracy).append(',');
-            logBuffer.append(dataProvider.getVario()).append(',');
-            logBuffer.append(dataProvider.getAccelX() * 1000f).append(',');
-            logBuffer.append(dataProvider.getAccelY() * 1000f).append(',');
-            logBuffer.append(dataProvider.getAccelZ() * 1000f).append(',');
-            logBuffer.append(dataProvider.getGyroX() * 1000f).append(',');
-            logBuffer.append(dataProvider.getGyroY() * 1000f).append(',');
-            logBuffer.append(dataProvider.getGyroZ() * 1000f).append(',');
-            logBuffer.append(dataProvider.getMagX()).append(',');
-            logBuffer.append(dataProvider.getMagY()).append(',');
-            logBuffer.append(dataProvider.getMagZ()).append(',');
-            logBuffer.append(dataProvider.getPressure()).append(',');
-            logBuffer.append(dataProvider.getPitch()).append(',');
-            logBuffer.append(dataProvider.getRoll()).append(',');
-            logBuffer.append(dataProvider.getLogHeading());
-            logBuffer.append(dataProvider.getThermalLogSuffix());
-            logBuffer.append(',');
-            logBuffer.append(dataProvider.getDetectStatus());
-            logBuffer.append('\n');
+            if (csvWriter == null) return;
+            try {
+                csvWriter.write(String.valueOf(dtMs));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(cachedGpsSpeed));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(cachedGpsHeading));
+                csvWriter.write(',');
+                csvWriter.write(String.format(Locale.US, "%.6f", cachedGpsLat));
+                csvWriter.write(',');
+                csvWriter.write(String.format(Locale.US, "%.6f", cachedGpsLon));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(cachedGpsAlt));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(cachedGpsFixAge));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(cachedGpsAccuracy));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getVario()));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getAccelX() * 1000f));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getAccelY() * 1000f));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getAccelZ() * 1000f));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getGyroX() * 1000f));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getGyroY() * 1000f));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getGyroZ() * 1000f));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getMagX()));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getMagY()));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getMagZ()));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getPressure()));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getPitch()));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getRoll()));
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getLogHeading()));
+                csvWriter.write(dataProvider.getThermalLogSuffix());
+                csvWriter.write(',');
+                csvWriter.write(String.valueOf(dataProvider.getDetectStatus()));
+                csvWriter.write('\n');
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to write sample to temp CSV", e);
+            }
         }
     }
 
@@ -185,58 +272,109 @@ public class LogManager {
         // Kept as a no-op to preserve the interface contract.
     }
 
-    /** Write the final .zip with all collected sensor data to [externalLogDir]/logs/[baseName].zip */
+    /**
+     * Close the temp CSV writer, then zip the temp file to [externalLogDir]/logs/[baseName].zip
+     * on the IO handler thread. The temp file is deleted after zipping.
+     */
     private void writeFinalZip() {
+        // Capture local references under lock, then zip async outside the lock
+        final File tempFile;
+        final String fName;
+        final String logDirPath;
+
         synchronized (bufferLock) {
-            if (logBuffer.length() == 0) return;
-            final String csvData = logBuffer.toString();
-            logBuffer.setLength(0);
+            tempFile = this.tempCsvFile;
+            fName = this.baseFileName;
+            logDirPath = this.externalLogDir;
 
-            final String fName = baseFileName;
-            final String logDirPath = externalLogDir;
+            // Close the writer first
+            if (csvWriter != null) {
+                try {
+                    csvWriter.flush();
+                    csvWriter.close();
+                } catch (IOException e) {
+                    Log.e(TAG, "Error closing CSV temp file", e);
+                }
+                csvWriter = null;
+            }
+            this.tempCsvFile = null;
+        }
 
-            ioHandler.post(() -> {
-                if (logDirPath == null || fName == null) {
-                    Log.e(TAG, "Cannot write final ZIP: externalLogDir or baseFileName not set");
+        if (tempFile == null || fName == null || logDirPath == null) {
+            Log.e(TAG, "Cannot write final ZIP: tempFile, baseFileName, or externalLogDir not set");
+            return;
+        }
+
+        ioHandler.post(() -> {
+            File logDir = new File(logDirPath, "logs");
+            if (!logDir.exists()) {
+                logDir.mkdirs();
+            }
+
+            File zipFile = new File(logDir, fName + ".zip");
+
+            try {
+                // Read the temp file and zip it
+                byte[] csvBytes = readFileBytes(tempFile);
+                if (csvBytes == null) {
+                    Log.e(TAG, "Failed to read temp CSV file for zipping");
                     return;
                 }
-                File logDir = new File(logDirPath, "logs");
-                if (!logDir.exists()) logDir.mkdirs();
 
-                File zipFile = new File(logDir, fName + ".zip");
+                ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile));
+                zos.setLevel(9);
 
-                try {
-                    byte[] csvBytes = csvData.getBytes("UTF-8");
-                    ByteArrayOutputStream baos = new ByteArrayOutputStream(csvBytes.length / 2);
-                    ZipOutputStream zos = new ZipOutputStream(baos);
-                    zos.setLevel(9);
+                ZipEntry entry = new ZipEntry(fName + ".csv");
+                entry.setSize(csvBytes.length);
+                zos.putNextEntry(entry);
+                zos.write(csvBytes);
+                zos.closeEntry();
+                zos.close();
 
-                    ZipEntry entry = new ZipEntry(fName + ".csv");
-                    entry.setSize(csvBytes.length);
-                    zos.putNextEntry(entry);
-                    zos.write(csvBytes);
-                    zos.closeEntry();
-                    zos.close();
+                double ratio = (double) zipFile.length() / csvBytes.length * 100.0;
+                Log.i(TAG, String.format(Locale.US,
+                        "Final ZIP saved: %s (%d KB -> %d KB, %.0f%%)",
+                        zipFile.getAbsolutePath(),
+                        csvBytes.length / 1024,
+                        zipFile.length() / 1024,
+                        ratio));
 
-                    byte[] zipBytes = baos.toByteArray();
-                    FileOutputStream fos = new FileOutputStream(zipFile);
-                    BufferedOutputStream bos = new BufferedOutputStream(fos);
-                    bos.write(zipBytes);
-                    bos.flush();
-                    bos.close();
-
-                    double ratio = (double) zipBytes.length / csvBytes.length * 100.0;
-                    Log.i(TAG, String.format(Locale.US,
-                            "Final ZIP saved: %s (%d KB -> %d KB, %.0f%%)",
-                            zipFile.getAbsolutePath(),
-                            csvBytes.length / 1024,
-                            zipBytes.length / 1024,
-                            ratio));
-
-                } catch (IOException e) {
-                    Log.e(TAG, "Failed to write final ZIP: " + zipFile.getAbsolutePath(), e);
+            } catch (IOException e) {
+                Log.e(TAG, "Failed to write final ZIP: " + zipFile.getAbsolutePath(), e);
+            } finally {
+                // Delete the temp file regardless of success/failure
+                if (tempFile.exists()) {
+                    boolean deleted = tempFile.delete();
+                    if (!deleted) {
+                        Log.w(TAG, "Failed to delete temp CSV file: " + tempFile.getAbsolutePath());
+                    }
                 }
-            });
+            }
+        });
+    }
+
+    /** Read the full content of a file into a byte array. Returns null on error. */
+    private static byte[] readFileBytes(File file) {
+        if (file == null || !file.exists()) return null;
+        try {
+            byte[] data = new byte[(int) file.length()];
+            FileInputStream fis = new FileInputStream(file);
+            try {
+                int offset = 0;
+                int remaining = data.length;
+                while (remaining > 0) {
+                    int read = fis.read(data, offset, remaining);
+                    if (read < 0) break;
+                    offset += read;
+                    remaining -= read;
+                }
+            } finally {
+                fis.close();
+            }
+            return data;
+        } catch (IOException e) {
+            Log.e(TAG, "Error reading temp CSV file: " + file.getAbsolutePath(), e);
+            return null;
         }
     }
 
