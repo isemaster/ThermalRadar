@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * StaticMapLoader — загрузка тайлов CartoDB под компас.
  *
- * - Загружает 5×5 = 25 тайлов zoom 14, склеивает в composite 1280×1280 px
+ * - Загружает 7×7 = 49 тайлов zoom 14, склеивает в composite 1792×1792 px
  * - Кэш: LruCache (32 MB) + диск (LRU евикция, макс 50 МБ)
  * - Обновление: при пересечении границы центрального тайла
  * - Threading: ExecutorService вместо депрекейтнутого AsyncTask
@@ -33,9 +33,9 @@ public class StaticMapLoader {
 
     private static final String TAG = "TERMO1_MAP";
     private static final String CACHE_SUBDIR = "map_cache";
-    private static final int MAP_W = 1280;
-    private static final int MAP_H = 1280;
-    private static final int TILE_GRID = 5;       // 5×5 тайлов
+    private static final int MAP_W = 1792;
+    private static final int MAP_H = 1792;
+    private static final int TILE_GRID = 7;       // 7×7 тайлов
     private static final int TILE_SIZE = 256;      // px
     private static final int DEFAULT_ZOOM = 14;
     private static final int MEM_CACHE_KB = 64 * 1024;       // 64 MB (было 32, теперь 25 тайлов)
@@ -148,7 +148,7 @@ public class StaticMapLoader {
     }
 
     // ========================================================================
-    // Внутренняя загрузка — 25 тайлов, склейка в composite 1280×1280
+    // Внутренняя загрузка — 49 тайлов, склейка в composite 1792×1792
     // ========================================================================
 
     private void loadMap(double lat, double lon, int zoom) {
@@ -187,7 +187,7 @@ public class StaticMapLoader {
         int centerTx = lonToTileX(lon, zoom);
         int centerTy = latToTileY(lat, zoom);
         final String url = String.format(Locale.US, OSM_TILE_URL, zoom, centerTy, centerTx);
-        Log.i(TAG, "Downloading 5x5 tiles centered on: " + url);
+        Log.i(TAG, "Downloading 7x7 tiles centered on: " + url);
 
         final int fZoom = zoom;
         final int fTx = centerTx;

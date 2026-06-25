@@ -105,8 +105,8 @@ public class RadarRenderer {
     // Порог обновления: если смещение >30% от размера карты — пора грузить новую
     private static final float MAP_REFRESH_THRESHOLD = 0.30f;
     // Реальный размер карты на местности: 5 тайлов zoom 14 на 55°N
-    /** Отображаемая область карты в метрах (1:10 к радару: 300 м радар → 3000 м карта) */
-    private static final double MAP_METERS_TOTAL = 3000.0;
+    /** Отображаемая область карты в метрах (7×7 тайлов, покрытие ~70% экрана) */
+    private static final double MAP_METERS_TOTAL = 6000.0;
 
     // Кэш для haversine при вычислении сдвига карты
     private final float[] mapDistRes = new float[2];
