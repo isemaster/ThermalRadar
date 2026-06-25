@@ -2497,7 +2497,7 @@ public class MainActivity extends Activity {
             instrLabelPaint.setTextSize(32); // labels чуть крупнее
 
             // Top row (values): all values aligned horizontally
-            float valueRowY = instrMidY + 50;
+            float valueRowY = instrMidY + 10; // подняли на строку выше
 
             // Below values — labels for speed/wind (ABOVE their values on next row)
             float instrLabelY = valueRowY + 20;
@@ -2838,21 +2838,24 @@ public class MainActivity extends Activity {
             float quality = (thermalDetector != null && thermalDetector.getSignalProcessor() != null)
                     ? thermalDetector.getSignalProcessor().getSnr() : 0f;
 
+            // ========================================================================
+            // GLIDE BAR — на место старых кнопок (выше разделителя)
+            // ========================================================================
+            float bottomPanelY = localInstrH + localRadarH + localGlideH + h * 0.05f;
+            float btnAreaTop = bottomPanelY - (50 + 24); // высота как у кнопок + отступ
+            float glideBarY2 = btnAreaTop + 30;
             glideBarPaint.setTextAlign(Paint.Align.LEFT);
             glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
             canvas.drawText(String.format(java.util.Locale.US, "Дальность: %.1f км", currentRange / 1000f),
-                    w * 0.04f, glideBarY, glideBarPaint);
+                    w * 0.04f, glideBarY2, glideBarPaint);
             glideBarPaint.setTextAlign(Paint.Align.RIGHT);
             canvas.drawText(String.format(java.util.Locale.US, "Качество: %.1f", quality),
-                    w * 0.96f, glideBarY, glideBarPaint);
+                    w * 0.96f, glideBarY2, glideBarPaint);
 
             // ========================================================================
             // BOTTOM PANEL (~13%)
             // ========================================================================
-            float bottomPanelY = localInstrH + localRadarH + localGlideH + h * 0.05f; // +5% отступ
-            float bottomPanelH2 = h - bottomPanelY;
-
-            // Blue separator line at top of bottom panel
+            // Blue separator line
             canvas.drawRect(0, bottomPanelY, w, bottomPanelY + 2, bottomSepPaint);
 
             // Buttons: ЗАПИСЬ (left) and СТОП (right)
