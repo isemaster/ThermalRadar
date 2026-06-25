@@ -34,8 +34,8 @@ public class IgcLogger {
     // Константы
     // ========================================================================
 
-    /** Частота записи: 1 Гц */
-    private static final long LOG_INTERVAL_MS = 1000;
+    /** Частота записи: 5 Гц (1 Гц GPS + 5 Гц baro-altitude) */
+    private static final long LOG_INTERVAL_MS = 200;
 
     /** Формат времени IGC: HHMMSS — ThreadLocal для потокобезопасности */
     private static final ThreadLocal<SimpleDateFormat> IGC_TIME_FMT_TL =
@@ -214,8 +214,9 @@ public class IgcLogger {
     // ========================================================================
 
     /**
-     * Записать один IGC B-record. Вызывать в bgTask,
-     * внутренняя децимация до 1 Гц.
+     * Записать один IGC B-record. Вызывать из render loop,
+     * внутренняя децимация до 5 Гц.
+     * GPS обновляется 1 раз в секунду, baro-altitude — каждый раз.
      */
     public void recordSample() {
         if (!logging) return;
@@ -223,23 +224,32 @@ public class IgcLogger {
         long elapsedNow = SystemClock.elapsedRealtime();
         long elapsed = elapsedNow - startElapsedMs;
 
-        // 1 Гц децимация
+        // 5 Гц децимация
         if (elapsed - lastLogElapsedMs < LOG_INTERVAL_MS) return;
         lastLogElapsedMs = elapsed;
 
-        // Проверка валидности GPS — атомарное чтение снимка
+        // GPS snapshot — если нет, пишем без координат (только время)
         GpsSnapshot gps = gpsSnapshot;
-        if (gps == null) return;
-        if (gps.lat == 0.0 && gps.lon == 0.0) return;
-        if (gps.fixAgeMs > 5000) return;
+        double lat = 0, lon = 0;
+        float baroAlt = 0, gpsAlt = 0;
+        long fixAge = 99999;
+        float acc = 999;
+        boolean hasFix = false;
+        if (gps != null) {
+            lat = gps.lat;
+            lon = gps.lon;
+            baroAlt = gps.altBaro;
+            gpsAlt = gps.altGps;
+            fixAge = gps.fixAgeMs;
+            acc = gps.accuracy;
+            hasFix = !(lat == 0.0 && lon == 0.0);
+        }
 
         seqNum++;
 
-        // Формируем B-record
         String bRecord = formatBRecord(
-                elapsed, gps.lat, gps.lon,
-                gps.altBaro, gps.altGps, gps.fixAgeMs, gps.accuracy);
-
+                elapsed, lat, lon,
+                baroAlt, gpsAlt, fixAge, acc, hasFix);
         writeLine(bRecord);
     }
 
@@ -274,7 +284,8 @@ public class IgcLogger {
     private String formatBRecord(long elapsedMs,
                                  double lat, double lon,
                                  float baroAlt, float gpsAlt,
-                                 long fixAgeMs, float accuracy) {
+                                 long fixAgeMs, float accuracy,
+                                 boolean fixValid) {
         String timeStr = formatIGCTime(elapsedMs);
         String latStr = formatIGCLat(lat);
         String lonStr = formatIGCLon(lon);
@@ -289,8 +300,8 @@ public class IgcLogger {
         if (gpsAltInt < 0) gpsAltInt = 0;
         if (gpsAltInt > 99999) gpsAltInt = 99999;
 
-        // A = GPS fix validity — БЕЗ пробела (IGC spec: фиксированная длина, никаких пробелов)
-        char fixChar = (fixAgeMs < 3000 && accuracy < 50) ? 'A' : 'V';
+        // A/V = GPS fix validity (по hasFix, а не по fixAgeMs)
+        char fixChar = fixValid ? 'A' : 'V';
 
         return String.format(Locale.US, "B%s%s%s%s%s%c%05d%05d",
                 timeStr, latStr, (lat >= 0 ? "N" : "S"),
