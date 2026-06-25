@@ -2916,11 +2916,17 @@ public class MainActivity extends Activity {
                 rangeKm = aglForRange * 8f / 1000f;
             }
 
-            // LEFT: дальность планирования (км)
+            // LEFT: дальность планирования — число крупно, "км" мелко
             glideBarPaint.setTextAlign(Paint.Align.LEFT);
             glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
-            canvas.drawText(String.format(java.util.Locale.US, "%.1f км", rangeKm),
+            canvas.drawText(String.format(java.util.Locale.US, "%.1f", rangeKm),
                     w * 0.04f, glideBarY2, glideBarPaint);
+            instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
+            instrLabelPaint.setTextSize(32);
+            instrLabelPaint.setTextAlign(Paint.Align.LEFT);
+            canvas.drawText("км", w * 0.04f + glideBarPaint.measureText(String.format(java.util.Locale.US, "%.1f", rangeKm)) + 4,
+                    glideBarY2 - 4, instrLabelPaint);
+            instrLabelPaint.setTextSize(32);
 
             // CENTER: координаты (Google Maps format: lat, lon)
             double coordLat = 0.0, coordLon = 0.0;
@@ -2939,18 +2945,20 @@ public class MainActivity extends Activity {
                         w / 2f, glideBarY2, glideBarPaint);
             }
 
-            // RIGHT: L/D
+            // RIGHT: "L/D" мелко, число крупно
             glideBarPaint.setTextAlign(Paint.Align.RIGHT);
             glideBarPaint.setTextSize(112);
-            if (glideValid) {
-                glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
-                canvas.drawText(String.format(java.util.Locale.US, "L/D %.0f", glideRatio),
-                        w * 0.96f, glideBarY2, glideBarPaint);
-            } else {
-                glideBarPaint.setColor(Color.argb(140, 100, 200, 255));
-                canvas.drawText("L/D --", w * 0.96f, glideBarY2, glideBarPaint);
-            }
-            glideBarPaint.setTextSize(112);
+            String ldStr = glideValid ? String.format(java.util.Locale.US, "%.0f", glideRatio) : "--";
+            // Сначала рисуем "L/D" мелко, смещая влево от числа
+            float ldNumWidth = glideBarPaint.measureText(ldStr);
+            float ldRightX = w * 0.96f;
+            glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
+            canvas.drawText(ldStr, ldRightX, glideBarY2, glideBarPaint);
+            instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
+            instrLabelPaint.setTextSize(32);
+            instrLabelPaint.setTextAlign(Paint.Align.RIGHT);
+            canvas.drawText("L/D", ldRightX - ldNumWidth - 6, glideBarY2 - 4, instrLabelPaint);
+            instrLabelPaint.setTextSize(32);
 
             // ========================================================================
             // BOTTOM PANEL (~13%)
