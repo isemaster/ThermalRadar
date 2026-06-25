@@ -2502,12 +2502,12 @@ public class MainActivity extends Activity {
             // Below values — labels for speed/wind (ABOVE their values on next row)
             float instrLabelY = valueRowY + 20;
 
-            // Speed label ABOVE speed value
+            // Speed label ABOVE its value (поднято на 1 строку)
             instrLabelPaint.setColor(Color.argb(160, 0, 255, 0));
-            canvas.drawText("скорость, м/с", colX_left, instrLabelY, instrLabelPaint);
-            // Speed value below label
+            canvas.drawText("скорость, м/с", colX_left, valueRowY - 40, instrLabelPaint);
+            // Speed value at same level as vario
             instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
-            canvas.drawText(String.format(java.util.Locale.US, "%.1f", gpsSpeed), colX_left, instrLabelY + 60, instrValuePaint);
+            canvas.drawText(String.format(java.util.Locale.US, "%.1f", gpsSpeed), colX_left, valueRowY + 20, instrValuePaint);
 
             // MSL value and label (below speed)
             float gpsAltVal = gpsManager.getAltitude();
@@ -2532,7 +2532,7 @@ public class MainActivity extends Activity {
                     : Color.argb(200, 255, 180, 50));
             canvas.drawText(String.format(java.util.Locale.US, "%s%.1f", varioSign, varioVal), colX_center, valueRowY, varioPaint);
 
-            // Flight time below vario, one line down (чч:мм, до 12 часов)
+            // Flight time below vario, moved half line down (чч:мм, до 12 часов)
             long flightTimeMs;
             if (simMode) {
                 flightTimeMs = SystemClock.elapsedRealtime() - simStartMs;
@@ -2548,21 +2548,21 @@ public class MainActivity extends Activity {
             long ftSec = flightTimeMs / 1000;
             String ftStr = String.format("%02d:%02d", ftSec / 3600, (ftSec % 3600) / 60);
             flightTimePaint.setColor(Color.argb(200, 0, 255, 255));
-            canvas.drawText(ftStr, colX_center, instrLabelY + 60, flightTimePaint);
+            canvas.drawText(ftStr, colX_center, valueRowY + 110, flightTimePaint);
 
-            // Right column: Wind label ABOVE value, AGL below
+            // Right column: Wind label ABOVE value (поднято на 1 строку), AGL below
             float windDeg = circlingManager.getWindFromDeg();
             float windSpdMs = circlingManager.getDisplayWindSpeed();
             if (windDeg >= 0 && windSpdMs > 0) {
                 instrLabelPaint.setColor(Color.argb(160, 100, 200, 255));
-                canvas.drawText("ветер, м/с", colX_right, instrLabelY, instrLabelPaint);
+                canvas.drawText("ветер, м/с", colX_right, valueRowY - 40, instrLabelPaint);
                 instrValuePaint.setColor(Color.argb(220, 100, 200, 255));
-                canvas.drawText(String.format(java.util.Locale.US, "%.1f", windSpdMs), colX_right, instrLabelY + 60, instrValuePaint);
+                canvas.drawText(String.format(java.util.Locale.US, "%.1f", windSpdMs), colX_right, valueRowY + 20, instrValuePaint);
             } else {
                 instrLabelPaint.setColor(Color.argb(120, 100, 200, 255));
-                canvas.drawText("ветер, м/с", colX_right, instrLabelY, instrLabelPaint);
+                canvas.drawText("ветер, м/с", colX_right, valueRowY - 40, instrLabelPaint);
                 instrValuePaint.setColor(Color.argb(120, 100, 200, 255));
-                canvas.drawText("--", colX_right, instrLabelY + 60, instrValuePaint);
+                canvas.drawText("--", colX_right, valueRowY + 20, instrValuePaint);
             }
 
             // AGL value and label (below wind)
@@ -2846,10 +2846,10 @@ public class MainActivity extends Activity {
             float glideBarY2 = btnAreaTop + 30;
             glideBarPaint.setTextAlign(Paint.Align.LEFT);
             glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
-            canvas.drawText(String.format(java.util.Locale.US, "Дальность: %.1f км", currentRange / 1000f),
+            canvas.drawText(String.format(java.util.Locale.US, "%.1f км", currentRange / 1000f),
                     w * 0.04f, glideBarY2, glideBarPaint);
             glideBarPaint.setTextAlign(Paint.Align.RIGHT);
-            canvas.drawText(String.format(java.util.Locale.US, "Качество: %.1f", quality),
+            canvas.drawText(String.format(java.util.Locale.US, "%.1f", quality),
                     w * 0.96f, glideBarY2, glideBarPaint);
 
             // ========================================================================
@@ -2858,7 +2858,19 @@ public class MainActivity extends Activity {
             // Blue separator line
             canvas.drawRect(0, bottomPanelY, w, bottomPanelY + 2, bottomSepPaint);
 
-            // Buttons: ЗАПИСЬ (left) and СТОП (right)
+            // Buttons: ЗАПИСЬ (left) and СТОП (right) — ПОД синей линией
+            float btnH = 50f;
+            float btnW = w * 0.28f;
+            float btnRowY = bottomPanelY + 10;
+            calibBtnRect.set(w * 0.03f, btnRowY, w * 0.03f + btnW, btnRowY + btnH);
+            startBtnRect.set(w * 0.97f - btnW, btnRowY, w * 0.97f, btnRowY + btnH);
+
+            // Test/stop button (below ЗАПИСЬ/СТОП)
+            float testBtnW = 160f;
+            float testBtnH = 44f;
+            testBtnRect.set(w / 2f - testBtnW / 2f, btnRowY + btnH + 8,
+                    w / 2f + testBtnW / 2f, btnRowY + btnH + 8 + testBtnH);
+
             btnTextPaint.setTextSize(24);
             btnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
 
