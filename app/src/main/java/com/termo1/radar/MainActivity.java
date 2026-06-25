@@ -2002,6 +2002,22 @@ public class MainActivity extends Activity {
         // Sensor data
         private final Paint sensorDataPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
+        // === NEW: Instrument panel paints ===
+        private final Paint varioPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint flightTimePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint instrValuePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint instrLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        // === NEW: Glide bar paint ===
+        private final Paint glideBarPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        // === NEW: Bottom separator paint ===
+        private final Paint bottomSepPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        // Section heights (recalculated in onSizeChanged / onDraw)
+        private float instrH, radarH, glideH, bottomH;
+        private float radarCx, radarCy, radarR;
+
         private long lastAddedBlipBornMs = -1;
         private float touchX, touchY;
         private long touchDownTime;
@@ -2098,6 +2114,42 @@ public class MainActivity extends Activity {
             sensorDataPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
             sensorDataPaint.setTextAlign(Paint.Align.LEFT);
 
+            // === Instrument panel paints ===
+            varioPaint.setAntiAlias(true);
+            varioPaint.setTextSize(50);
+            varioPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            varioPaint.setTextAlign(Paint.Align.CENTER);
+
+            flightTimePaint.setAntiAlias(true);
+            flightTimePaint.setTextSize(22);
+            flightTimePaint.setTypeface(android.graphics.Typeface.MONOSPACE);
+            flightTimePaint.setTextAlign(Paint.Align.CENTER);
+            flightTimePaint.setColor(Color.argb(200, 0, 255, 255));
+
+            instrValuePaint.setAntiAlias(true);
+            instrValuePaint.setTextSize(24);
+            instrValuePaint.setTypeface(android.graphics.Typeface.MONOSPACE);
+            instrValuePaint.setTextAlign(Paint.Align.CENTER);
+            instrValuePaint.setColor(Color.argb(200, 0, 255, 0));
+
+            instrLabelPaint.setAntiAlias(true);
+            instrLabelPaint.setTextSize(16);
+            instrLabelPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
+            instrLabelPaint.setTextAlign(Paint.Align.CENTER);
+            instrLabelPaint.setColor(Color.argb(140, 0, 255, 0));
+
+            // === Glide bar paint ===
+            glideBarPaint.setAntiAlias(true);
+            glideBarPaint.setTextSize(22);
+            glideBarPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
+            glideBarPaint.setTextAlign(Paint.Align.LEFT);
+            glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
+
+            // === Bottom separator paint ===
+            bottomSepPaint.setStyle(Paint.Style.FILL);
+            bottomSepPaint.setColor(Color.argb(255, 30, 150, 255));
+            bottomSepPaint.setStrokeWidth(2);
+
             // REC indicator
             recDotPaint.setStyle(Paint.Style.FILL);
             recDotPaint.setColor(Color.argb(220, 255, 50, 50));
@@ -2133,24 +2185,37 @@ public class MainActivity extends Activity {
         protected void onSizeChanged(int w, int h, int oldw, int oldh) {
             super.onSizeChanged(w, h, oldw, oldh);
             if (w > 0 && h > 0) {
-                radarRenderer.onSizeChanged(w, h);
+                // Calculate section heights
+                instrH = h * 0.20f;
+                radarH = h * 0.65f;
+                glideH = h * 0.02f;   // small gap for glide bar
+                float remainder = h - (instrH + radarH + glideH);
+                bottomH = Math.max(remainder, h * 0.10f);
+
+                radarCx = w / 2f;
+                radarCy = instrH + radarH / 2f;
+                radarR = Math.min(w / 2f, radarH / 2f) - 4;
+
+                // Tell radarRenderer about reduced height so it centers correctly
+                radarRenderer.onSizeChanged(w, (int)radarH);
                 exitRect.set(8, 8, 8 + 84, 8 + 84);
                 float gearSize = 84f;
                 gearRect.set(w - gearSize - 24, 24, w - 24, gearSize + 24);
 
-                float btnY = 180f;
+                // ЗАПИСЬ button in bottom panel
+                float btnH = 50f;
                 float btnW = w * 0.28f;
-                float btnH = 60f;
-                calibBtnRect.set(w * 0.03f, btnY, w * 0.03f + btnW, btnY + btnH);
-                startBtnRect.set(w * 0.97f - btnW, btnY, w * 0.97f, btnY + btnH);
+                float bottomPanelY = h - bottomH;
+                float btnRowY = bottomPanelY + 12;
 
-                float radarCy = h / 2f;
-                float radarR = Math.min(w / 2f, radarCy) - 4;
-                float altY = radarCy + radarR + 80;
+                calibBtnRect.set(w * 0.03f, btnRowY, w * 0.03f + btnW, btnRowY + btnH);
+                startBtnRect.set(w * 0.97f - btnW, btnRowY, w * 0.97f, btnRowY + btnH);
+
+                // Test/stop button in bottom panel (below ЗАПИСЬ/СТОП)
                 float testBtnW = 160f;
-                float testBtnH = 54f;
-                testBtnRect.set(w / 2f - testBtnW / 2f, altY - 24,
-                        w / 2f + testBtnW / 2f, altY - 24 + testBtnH);
+                float testBtnH = 44f;
+                testBtnRect.set(w / 2f - testBtnW / 2f, btnRowY + btnH + 8,
+                        w / 2f + testBtnW / 2f, btnRowY + btnH + 8 + testBtnH);
             }
         }
 
@@ -2176,26 +2241,35 @@ public class MainActivity extends Activity {
                 blindDataPaint.setTextSize(36);
                 blindDataPaint.setFakeBoldText(false);
                 blindDataPaint.setColor(Color.argb(160, 100, 200, 255));
-                float varioVal = sensorController.getVario();
-                String varioStr = String.format(java.util.Locale.US, "%s%.1f м/с", varioVal >= 0 ? "+" : "", varioVal);
+                float varioVal2 = sensorController.getVario();
+                String varioStr = String.format(java.util.Locale.US, "%s%.1f м/с", varioVal2 >= 0 ? "+" : "", varioVal2);
                 canvas.drawText(varioStr, w/2f, h/2f, blindDataPaint);
 
                 blindDataPaint.setColor(Color.argb(120, 255, 255, 255));
                 blindDataPaint.setTextSize(28);
-                float alt = gpsManager.getAltitude();
-                float startAlt = gpsManager.getStartAltitude();
-                float agl = gpsManager.isAltitudeInitialized() ? (alt - startAlt) : 0f;
-                canvas.drawText(String.format(java.util.Locale.US, "%.0f м MSL  +%.0f м AGL", alt, agl), w/2f, h/2f + 60, blindDataPaint);
+                float alt2 = gpsManager.getAltitude();
+                float startAlt2 = gpsManager.getStartAltitude();
+                float agl2 = gpsManager.isAltitudeInitialized() ? (alt2 - startAlt2) : 0f;
+                canvas.drawText(String.format(java.util.Locale.US, "%.0f м MSL  +%.0f м AGL", alt2, agl2), w/2f, h/2f + 60, blindDataPaint);
 
                 // Время полёта
                 if (logManager.isLogging()) {
-                    long flightSec = (SystemClock.elapsedRealtime() - logManager.getFlightStartMs()) / 1000;
-                    long hh = flightSec / 3600, mm = (flightSec % 3600) / 60, ss = flightSec % 60;
+                    long flightSec2 = (SystemClock.elapsedRealtime() - logManager.getFlightStartMs()) / 1000;
+                    long hh2 = flightSec2 / 3600, mm2 = (flightSec2 % 3600) / 60, ss2 = flightSec2 % 60;
                     blindDataPaint.setColor(Color.argb(100, 255, 255, 255));
-                    canvas.drawText(String.format("%02d:%02d:%02d", hh, mm, ss), w/2f, h/2f + 100, blindDataPaint);
+                    canvas.drawText(String.format("%02d:%02d:%02d", hh2, mm2, ss2), w/2f, h/2f + 100, blindDataPaint);
                 }
                 return;
             }
+
+            // ===== Calculate section boundaries =====
+            float localInstrH = h * 0.20f;
+            float localRadarH = h * 0.65f;
+            float localGlideH = h * 0.02f;
+            float localBottomSectionH = h - (localInstrH + localRadarH + localGlideH);
+            if (localBottomSectionH < h * 0.10f) localBottomSectionH = h * 0.10f;
+            float localRadarCy2 = localRadarH / 2f; // center within radar section
+            float localRadarR2 = Math.min(w / 2f, localRadarH / 2f) - 4;
 
             // Sound + WakeLock refresh
             if (varioSoundManager != null) {
@@ -2210,7 +2284,6 @@ public class MainActivity extends Activity {
             }
 
             // Push GPS cache to LogManager (1 Гц данные, пишутся в каждом сэмпле)
-            // GPS cache for loggers
             logManager.updateGpsCache(
                 gpsManager.getLat(), gpsManager.getLon(),
                 gpsManager.getAltitude(), gpsManager.getSpeed(), gpsManager.getHeading(),
@@ -2227,7 +2300,6 @@ public class MainActivity extends Activity {
             }
             if (gpsManager.isReady() && mapLat != 0.0 && mapLon != 0.0) {
                 staticMapLoader.updateIfNeeded(mapLat, mapLon, 14);
-                // Принудительное обновление, если карта почти за краем
                 if (radarRenderer.isMapRefreshNeeded()) {
                     staticMapLoader.forceUpdate(mapLat, mapLon, 14);
                 }
@@ -2248,7 +2320,6 @@ public class MainActivity extends Activity {
             if (nowCircling && !prevCirclingState) {
                 logManager.recordEvent("CIRCLING_START", "circling confirmed");
                 igcLogger.recordEvent("C", "circling_start");
-                // Точка входа в термик
                 double lat = gpsManager.getLat();
                 double lon = gpsManager.getLon();
                 if (lat != 0.0 && lon != 0.0 && entryMarkers.size() < MAX_MARKERS) {
@@ -2257,7 +2328,6 @@ public class MainActivity extends Activity {
             } else if (!nowCircling && prevCirclingState) {
                 logManager.recordEvent("CIRCLING_END", "circling stopped");
                 igcLogger.recordEvent("C", "circling_stop");
-                // Точка выхода из термика
                 double lat = gpsManager.getLat();
                 double lon = gpsManager.getLon();
                 if (lat != 0.0 && lon != 0.0 && exitMarkers.size() < MAX_MARKERS) {
@@ -2312,7 +2382,6 @@ public class MainActivity extends Activity {
                     getWindow().setAttributes(lp);
                 }
             } else if (blindModeEnabled) {
-                // Blind mode: 15% яркости для экономии заряда
                 android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
                 if (lp.screenBrightness > 0.16f || lp.screenBrightness < 0.14f) {
                     lp.screenBrightness = 0.15f;
@@ -2379,7 +2448,6 @@ public class MainActivity extends Activity {
                                         + " angle=" + (int)detBlip.angle
                                         + " dist=" + (int)detBlip.distance
                                         + " strength=" + String.format(java.util.Locale.US, "%.1f", detBlip.strength));
-                                // TTS: голосовая подсказка направления на новый термик
                                 if (voicePromptsEnabled && ttsReady) {
                                     speakThermalDirection(detBlip.angle, detBlip.distance);
                                 }
@@ -2399,9 +2467,100 @@ public class MainActivity extends Activity {
             }
 
             // ========================================================================
-            // GPS trail update + precompute pixel positions
+            // INSTRUMENT PANEL (top 20%)
             // ========================================================================
-            float trailCy = h / 2f;
+            float instrMidY = localInstrH / 2f;
+            float colX_left = w * 0.12f;
+            float colX_center = w / 2f;
+            float colX_right = w * 0.88f;
+
+            // Left column: GPS speed, GPS altitude
+            float gpsSpeed = gpsManager.getSpeed(); // м/с
+            float gpsAlt = gpsManager.getAltitude(); // м MSL
+            float startAlt = gpsManager.getStartAltitude();
+            float gpsAgl = gpsManager.isAltitudeInitialized() ? (gpsAlt - startAlt) : 0f;
+
+            instrValuePaint.setTextAlign(Paint.Align.CENTER);
+            instrValuePaint.setTextSize(28);
+            instrLabelPaint.setTextAlign(Paint.Align.CENTER);
+
+            // GPS Speed (left)
+            instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
+            canvas.drawText(String.format(java.util.Locale.US, "%.1f", gpsSpeed), colX_left, instrMidY - 8, instrValuePaint);
+            instrLabelPaint.setColor(Color.argb(160, 0, 255, 0));
+            canvas.drawText("скорость", colX_left, instrMidY + 18, instrLabelPaint);
+
+            // GPS Altitude (left, below speed)
+            float gpsAltVal = gpsManager.getAltitude();
+            float startAltVal = gpsManager.getStartAltitude();
+            float aglVal = gpsManager.isAltitudeInitialized() ? (gpsAltVal - startAltVal) : 0f;
+            instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
+            canvas.drawText(String.format(java.util.Locale.US, "%.0f", gpsAltVal), colX_left, instrMidY + 55, instrValuePaint);
+            instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
+            canvas.drawText("высота MSL", colX_left, instrMidY + 80, instrLabelPaint);
+
+            // Center: Vario (×1.5 larger)
+            float varioVal = sensorController.getVario();
+            if (scenarioMode && flightSim != null && flightSim.isRunning()) {
+                varioVal = flightSim.getVario();
+            } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                varioVal = trackReplayer.getVario();
+            }
+            String varioSign = varioVal >= 0 ? "+" : "";
+            varioPaint.setColor(varioVal > 0.5f ? Color.argb(255, 255, 80, 80)
+                    : varioVal < -0.5f ? Color.argb(255, 100, 200, 100)
+                    : Color.argb(200, 255, 180, 50));
+            canvas.drawText(String.format(java.util.Locale.US, "%s%.1f", varioSign, varioVal), colX_center, instrMidY + 18, varioPaint);
+
+            // Flight time below vario
+            long flightTimeMs;
+            if (simMode) {
+                flightTimeMs = SystemClock.elapsedRealtime() - simStartMs;
+            } else if (scenarioMode) {
+                flightTimeMs = SystemClock.elapsedRealtime() - scenarioStartMs;
+            } else if (trackMode) {
+                flightTimeMs = SystemClock.elapsedRealtime() - trackStartMs;
+            } else if (logManager.isLogging()) {
+                flightTimeMs = System.currentTimeMillis() - logManager.getFlightStartMs();
+            } else {
+                flightTimeMs = 0;
+            }
+            long ftSec = flightTimeMs / 1000;
+            String ftStr = String.format("%02d:%02d", ftSec / 60, ftSec % 60);
+            flightTimePaint.setColor(Color.argb(200, 0, 255, 255));
+            canvas.drawText(ftStr, colX_center, instrMidY + 58, flightTimePaint);
+
+            // Right column: Wind speed, AGL
+            float windDeg = circlingManager.getWindFromDeg();
+            float windSpdMs = circlingManager.getDisplayWindSpeed();
+            if (windDeg >= 0 && windSpdMs > 0) {
+                instrValuePaint.setColor(Color.argb(220, 100, 200, 255));
+                canvas.drawText(String.format(java.util.Locale.US, "%.1f", windSpdMs), colX_right, instrMidY - 8, instrValuePaint);
+                instrLabelPaint.setColor(Color.argb(160, 100, 200, 255));
+                canvas.drawText("ветер м/с", colX_right, instrMidY + 18, instrLabelPaint);
+            } else {
+                instrValuePaint.setColor(Color.argb(120, 100, 200, 255));
+                canvas.drawText("--", colX_right, instrMidY - 8, instrValuePaint);
+                instrLabelPaint.setColor(Color.argb(120, 100, 200, 255));
+                canvas.drawText("ветер м/с", colX_right, instrMidY + 18, instrLabelPaint);
+            }
+
+            // AGL (right, below wind)
+            instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
+            canvas.drawText(String.format(java.util.Locale.US, "+%.0f", Math.max(0, aglVal)), colX_right, instrMidY + 55, instrValuePaint);
+            instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
+            canvas.drawText("AGL", colX_right, instrMidY + 80, instrLabelPaint);
+
+            // ========================================================================
+            // RADAR SECTION (middle 65%), drawn in translated canvas
+            // ========================================================================
+            canvas.save();
+            canvas.translate(0, localInstrH);
+            // Draw black background for radar area
+            canvas.drawColor(Color.rgb(0, 0, 0));
+
+            // GPS trail update + precompute pixel positions (using radar-local coordinates)
+            float trailCy = localRadarH / 2f;
             float trailR = Math.min(w / 2f, trailCy) - 4;
             int trailCount = 0;
             int mapTrailCount = 0;
@@ -2424,7 +2583,6 @@ public class MainActivity extends Activity {
             if (gpsOk) {
                 long now = System.currentTimeMillis();
 
-                // Добавляем точку с dedup: не чаще 1 раз/сек
                 float currentVario = sensorController.getVario();
                 if (gpsTrail.isEmpty()) {
                     gpsTrail.add(new double[]{pilotLat, pilotLon, now, currentVario});
@@ -2436,20 +2594,14 @@ public class MainActivity extends Activity {
                     }
                 }
 
-                // Фильтр: удаляем только точки старше 5 минут
-                // Точки НЕ удаляются по дистанции — при возвращении пилота они снова видны
                 Iterator<double[]> it = gpsTrail.iterator();
                 while (it.hasNext()) {
                     double[] pt = it.next();
                     long age = now - (long) pt[2];
                     if (age > GPS_TRAIL_MAX_AGE_MS) { it.remove(); }
                 }
-                // Лимит буфера
                 while (gpsTrail.size() > GPS_TRAIL_MAX) gpsTrail.remove(0);
 
-                // Конвертация в пиксели радара. Цвет — от варио (varioToColor),
-                // alpha — от возраста (5 мин → прозрачный)
-                // Одновременно считаем map-трек (синий, масштаб карты 3×3 км)
                 for (double[] pt : gpsTrail) {
                     long age = now - (long) pt[2];
                     float brightness = 1.0f - (float) age / (float) GPS_TRAIL_MAX_AGE_MS;
@@ -2459,17 +2611,15 @@ public class MainActivity extends Activity {
                     float dist = distanceResult[0];
                     float bearingRad = (float) Math.toRadians(distanceResult[1]);
 
-                    // Radar trail (150m scale, клип по радиусу)
                     float distPx = (dist / 150f) * trailR;
                     if (distPx <= trailR) {
                         trailPxBuf[trailCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
                         trailPyBuf[trailCount] = trailCy - (float) Math.cos(bearingRad) * distPx;
-                        float varioVal = (pt.length >= 4) ? (float) pt[3] : 0f;
-                        trailColorBuf[trailCount] = varioToColor(varioVal, brightness);
+                        float varioVal2 = (pt.length >= 4) ? (float) pt[3] : 0f;
+                        trailColorBuf[trailCount] = varioToColor(varioVal2, brightness);
                         trailCount++;
                     }
 
-                    // Map trail (3×3 км scale, клип по размеру карты)
                     float mapDistPx = (dist / 1500f) * trailR;
                     float mapHalf = (3671f / 1500f) * trailR / 2f;
                     if (mapDistPx <= mapHalf) {
@@ -2479,9 +2629,7 @@ public class MainActivity extends Activity {
                     }
                 }
 
-                // Конвертация entry/exit markers в пиксели радара
                 int markerCount = 0;
-
                 for (double[] pt : entryMarkers) {
                     Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], distanceResult);
                     float dist = distanceResult[0];
@@ -2511,7 +2659,6 @@ public class MainActivity extends Activity {
                 float[] liftValues = liftDatabase.getLiftValues();
                 radarRenderer.setSectorLiftData(liftValues);
             } else {
-                // GPS lost — очищаем трек
                 gpsTrail.clear();
             }
 
@@ -2523,7 +2670,6 @@ public class MainActivity extends Activity {
                     thermalsCopy.add(new ThermalBlip(t));
                 }
             }
-            // Thermal core + wind for radar renderer
             if (scenarioMode && flightSim != null && flightSim.isRunning()) {
                 radarRenderer.setThermalCore(
                     flightSim.isShowRedCore(),
@@ -2549,7 +2695,6 @@ public class MainActivity extends Activity {
                     circlingManager.getDisplayWindSpeed());
             }
 
-            // Phase 2: передаём LiftDatabase и ThermalLocator в RadarRenderer
             int bestSector = liftDatabase.getBestSectorIndex();
             if (bestSector >= 0) {
                 radarRenderer.setBestLiftSector(
@@ -2568,7 +2713,6 @@ public class MainActivity extends Activity {
                         thermalLocator.getThermalBearing(),
                         thermalLocator.getThermalDistance());
             }
-            // Добавляем снос в статистику, если есть
             if (lastDrift != null && Math.abs(lastDrift.driftAngle) > 2f) {
                 if (coreText.length() > 0) coreText += " | ";
                 coreText += lastDrift.guidanceText;
@@ -2585,7 +2729,6 @@ public class MainActivity extends Activity {
                     showStats);
 
             float headingDisplay = getCompassHeading();
-            // UI-сглаживание heading (Fix C — time-based SLERP, T12 §2.4.3)
             long headingFrameMs = SystemClock.elapsedRealtime();
             if (!headingDisplayInitialized) {
                 headingDisplaySmoothed = headingDisplay;
@@ -2594,11 +2737,9 @@ public class MainActivity extends Activity {
             } else {
                 double dtSec = (headingFrameMs - lastHeadingFrameMs) / 1000.0;
                 lastHeadingFrameMs = headingFrameMs;
-                // Time-based: за 100 мс проходим 90% расстояния
                 double smoothingFactor = 1.0 - Math.pow(0.1, dtSec / 0.1);
                 if (smoothingFactor > 1.0) smoothingFactor = 1.0;
                 if (smoothingFactor < 0.01) smoothingFactor = 0.01;
-                // SLERP-like для углов: учитываем wrap 0/360
                 float diff = ((headingDisplay - headingDisplaySmoothed + 540f) % 360f) - 180f;
                 headingDisplaySmoothed = (float)((headingDisplaySmoothed + diff * smoothingFactor + 360f) % 360f);
             }
@@ -2610,11 +2751,9 @@ public class MainActivity extends Activity {
             } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                 headingDisplay = trackReplayer.getHeading();
                 varioDisplay = trackReplayer.getVario();
-                // При реплее — север всегда сверху (телефон может болтаться в руках)
                 headingDisplayFinal = 0f;
             }
 
-            // Позиция пилота для плавного сдвига карты
             if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                 radarRenderer.setPilotPosition(trackReplayer.getLat(), trackReplayer.getLon());
             } else {
@@ -2627,27 +2766,27 @@ public class MainActivity extends Activity {
                     trailPxBuf, trailPyBuf, trailColorBuf, trailCount,
                     mapTrailPxBuf, mapTrailPyBuf, mapTrailCount);
 
-            // HUD
-            float cx = w / 2f;
-            uiManager.drawVario(canvas, cx, 130, varioDisplay);
-            uiManager.drawStatus(canvas, cx, currentStatus);
+            // HUD on radar
+            float radarCxLocal = w / 2f;
+            uiManager.drawVario(canvas, radarCxLocal, 130, varioDisplay);
+            uiManager.drawStatus(canvas, radarCxLocal, currentStatus);
 
-            // "крутим термик" — по центру, если накрутили 540°
+            // "крутим термик" — по центру радара
             if (circlingManager.isShowThermalLabel()) {
-                float labelY = h / 2f;
-                canvas.drawText("крутим термик", cx, labelY, thermalLabelPaint);
+                float labelY = trailCy; // center of radar section
+                canvas.drawText("крутим термик", radarCxLocal, labelY, thermalLabelPaint);
             }
 
-            // Guidance text from flight scenario
+            // Guidance text from flight scenario (on radar)
             boolean showGuide = (scenarioMode && flightSim != null && flightSim.isRunning())
                     || (trackMode && trackReplayer != null && trackReplayer.isRunning());
             if (showGuide) {
                 String guide = scenarioMode ? flightSim.getGuidanceText() : trackReplayer.getGuidanceText();
                 if (guide != null && guide.length() > 0) {
-                    float guideY = h / 2f + (scenarioMode && flightSim != null && flightSim.isCircling() ? 0 : -80);
+                    float guideY = trailCy + (scenarioMode && flightSim != null && flightSim.isCircling() ? 0 : -80);
                     thermalLabelPaint.setColor(Color.argb(200, 255, 235, 59));
                     thermalLabelPaint.setTextSize(36);
-                    canvas.drawText(guide, cx, guideY, thermalLabelPaint);
+                    canvas.drawText(guide, radarCxLocal, guideY, thermalLabelPaint);
                     thermalLabelPaint.setColor(Color.argb(220, 255, 193, 7));
                     thermalLabelPaint.setTextSize(42);
                 }
@@ -2655,62 +2794,61 @@ public class MainActivity extends Activity {
 
             if (testMode) updateTestFeedback();
 
-            // Info panel
+            // Info panel (drawn at bottom of radar section)
             if (thermalDetector != null) {
                 SignalProcessor sp = thermalDetector.getSignalProcessor();
                 if (sp != null) {
-                    uiManager.drawInfo(canvas, 0, h, sp.getTurbulenceMs2(), sp.getSnr(),
+                    uiManager.drawInfo(canvas, 0, (int)localRadarH, sp.getTurbulenceMs2(), sp.getSnr(),
                             thermalsCopy.size(), sp.getBpX(), sp.getBpY(),
                             sp.getStableDirDeg(), thermalDetector.getStatusText());
                 } else {
-                    uiManager.drawInfo(canvas, 0, h,
+                    uiManager.drawInfo(canvas, 0, (int)localRadarH,
                             sensorController.getVario(), sensorController.getRecentSnr(),
                             thermalsCopy.size(), 0, 0, 0, currentStatus);
                 }
             } else {
-                uiManager.drawInfo(canvas, 0, h,
+                uiManager.drawInfo(canvas, 0, (int)localRadarH,
                         sensorController.getVario(), sensorController.getRecentSnr(),
                         thermalsCopy.size(), 0, 0, 0, currentStatus);
             }
 
-            // Altitude
-            float radarCy = h / 2f;
-            float radarR = Math.min(w / 2f, radarCy) - 4;
-            float gpsAlt, startAlt, altAgl;
-            if (scenarioMode && flightSim != null && flightSim.isRunning()) {
-                gpsAlt = flightSim.getAltitudeMsl();
-                startAlt = 0f;
-                altAgl = gpsAlt;
-            } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
-                gpsAlt = trackReplayer.getAltitude();
-                startAlt = 0f;
-                altAgl = gpsAlt;
-            } else {
-                gpsAlt = gpsManager.getAltitude();
-                startAlt = gpsManager.getStartAltitude();
-                altAgl = gpsManager.isAltitudeInitialized() ? (gpsAlt - startAlt) : 0f;
-            }
-            float altY = radarCy + radarR + 80;
-            float leftMargin = w * 0.05f;
-            float rightMargin = w * 0.95f;
-            uiManager.drawAltitude(canvas, leftMargin, rightMargin, altY, gpsAlt, altAgl);
+            canvas.restore();
 
-            // Stop buttons — показываем при активном сценарии или треке
-            if (!scenarioMode && !trackMode) {
-                testBtnBgPaint.setColor(Color.TRANSPARENT);
-            } else {
-                testBtnBgPaint.setColor(Color.argb(50, 255, 80, 80));
+            // ========================================================================
+            // GLIDE BAR (below radar, ~2%)
+            // ========================================================================
+            float glideBarY = localInstrH + localRadarH + localGlideH / 2f + 6;
+            float glideRange = gpsManager.isReady() ? 150.0f : 0f; // max range
+            // Дальность: use SNR-based estimate
+            float currentRange = glideRange;
+            if (thermalDetector != null) {
+                SignalProcessor sp2 = thermalDetector.getSignalProcessor();
+                if (sp2 != null && sp2.getSnr() > 0) {
+                    currentRange = Math.min(glideRange, 30f + sp2.getSnr() * 10f);
+                }
             }
-            canvas.drawRoundRect(testBtnRect, 12, 12, testBtnBgPaint);
-            if (scenarioMode || trackMode) {
-                testBtnTextPaint.setTextSize(26);
-                testBtnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
-                testBtnTextPaint.setColor(Color.argb(220, 255, 80, 80));
-                canvas.drawText("СТОП ТЕСТ", testBtnRect.centerX(), testBtnRect.centerY() + 10, testBtnTextPaint);
-            }
+            float quality = (thermalDetector != null && thermalDetector.getSignalProcessor() != null)
+                    ? thermalDetector.getSignalProcessor().getSnr() : 0f;
 
-            // Кнопки СТАРТ (слева) и СТОП (справа)
-            btnTextPaint.setTextSize(26);
+            glideBarPaint.setTextAlign(Paint.Align.LEFT);
+            glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
+            canvas.drawText(String.format(java.util.Locale.US, "Дальность: %.1f км", currentRange / 1000f),
+                    w * 0.04f, glideBarY, glideBarPaint);
+            glideBarPaint.setTextAlign(Paint.Align.RIGHT);
+            canvas.drawText(String.format(java.util.Locale.US, "Качество: %.1f", quality),
+                    w * 0.96f, glideBarY, glideBarPaint);
+
+            // ========================================================================
+            // BOTTOM PANEL (~13%)
+            // ========================================================================
+            float bottomPanelY = localInstrH + localRadarH + localGlideH;
+            float bottomPanelH2 = h - bottomPanelY;
+
+            // Blue separator line at top of bottom panel
+            canvas.drawRect(0, bottomPanelY, w, bottomPanelY + 2, bottomSepPaint);
+
+            // Buttons: ЗАПИСЬ (left) and СТОП (right)
+            btnTextPaint.setTextSize(24);
             btnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
 
             // Старт записи (слева)
@@ -2718,7 +2856,7 @@ public class MainActivity extends Activity {
             btnTextPaint.setColor(Color.argb(200, 0, 255, 0));
             canvas.drawText("ЗАПИСЬ", calibBtnRect.centerX(), calibBtnRect.centerY() + 9, btnTextPaint);
 
-            // Sensor data below start button
+            // Debug data in bottom panel (between buttons)
             if (thermalDetector != null) {
                 SignalProcessor sp = thermalDetector.getSignalProcessor();
                 float amp = 0f, freq = 0f, dir = 0f;
@@ -2731,95 +2869,91 @@ public class MainActivity extends Activity {
                 if (dir < 0) dir += 360f;
                 if (dir >= 360f) dir -= 360f;
 
-                float dataX = calibBtnRect.left;
                 float density = getResources().getDisplayMetrics().density;
-                float dataY = calibBtnRect.bottom + 58 + 27f * density;
+                float dataX = calibBtnRect.right + 8;
+                float dataY = bottomPanelY + 20;
                 sensorDataPaint.setColor(Color.argb(160, 0, 255, 0));
-                sensorDataPaint.setTextSize(27f * density);
+                sensorDataPaint.setTextSize(20);
                 sensorDataPaint.setTextAlign(Paint.Align.LEFT);
 
                 String labAmp = "\u00B1" + String.format(java.util.Locale.US, "%.2f", amp);
                 canvas.drawText(labAmp, dataX, dataY, sensorDataPaint);
-                float advX = sensorDataPaint.measureText(labAmp) + 24;
+                float advX = sensorDataPaint.measureText(labAmp) + 16;
 
                 String labFreq = String.format(java.util.Locale.US, "%.2f\u0413\u0446", freq);
                 canvas.drawText(labFreq, dataX + advX, dataY, sensorDataPaint);
-                advX += sensorDataPaint.measureText(labFreq) + 24;
+                advX += sensorDataPaint.measureText(labFreq) + 16;
 
                 String labDir = String.format(java.util.Locale.US, "%.0f\u00B0", dir);
                 canvas.drawText(labDir, dataX + advX, dataY, sensorDataPaint);
 
-                // Строка наклона (всегда, 0° если не откалибровано)
-                float tiltY = dataY + 20 + 27f * density;
-                sensorDataPaint.setTextSize(16f * getResources().getDisplayMetrics().density);
+                // Вторая строка: наклон + GPS статус
+                float tiltY = dataY + 22;
+                sensorDataPaint.setTextSize(15);
                 sensorDataPaint.setColor(Color.argb(120, 0, 255, 0));
-                {
-                    float mountTilt = sensorController.getMountTiltDeg();
-                    float currTilt = sensorController.getCurrentTiltDeg();
-                    // GPS статус на одной строке с креплением
-                    String gpsLabel = (gpsManager.isReady() && gpsManager.getFixAgeMs() < 5000)
-                            ? " | gps OK" : " | gps OFF";
-                    String tiltTxt;
-                    if (mountTilt > 0.5f) {
-                        tiltTxt = String.format("Крепление: %.0f° | Крен: %.0f°", mountTilt, currTilt);
-                    } else {
-                        tiltTxt = String.format("Крен: %.0f° (нет калибровки)", currTilt);
-                    }
-                    sensorDataPaint.setColor(Color.argb(120, 0, 255, 0));
-                    canvas.drawText(tiltTxt + gpsLabel, dataX, tiltY, sensorDataPaint);
+                float mountTilt = sensorController.getMountTiltDeg();
+                float currTilt = sensorController.getCurrentTiltDeg();
+                String gpsLabel = (gpsManager.isReady() && gpsManager.getFixAgeMs() < 5000)
+                        ? " | gps OK" : " | gps OFF";
+                String tiltTxt;
+                if (mountTilt > 0.5f) {
+                    tiltTxt = String.format("Крепление: %.0f° | Крен: %.0f°", mountTilt, currTilt);
+                } else {
+                    tiltTxt = String.format("Крен: %.0f° (нет калибровки)", currTilt);
+                }
+                sensorDataPaint.setColor(Color.argb(120, 0, 255, 0));
+                canvas.drawText(tiltTxt + gpsLabel, dataX, tiltY, sensorDataPaint);
+
+                // Ветер под debug строкой
+                if (windDeg >= 0 && windSpdMs > 0) {
+                    float windY2 = tiltY + 20;
+                    sensorDataPaint.setColor(Color.argb(160, 100, 200, 255));
+                    sensorDataPaint.setTextSize(15);
+                    canvas.drawText(String.format(java.util.Locale.US, "ветер %.1f м/с %d°", windSpdMs, (int)windDeg),
+                            dataX, windY2, sensorDataPaint);
                 }
 
-                // Track player panel — под "Крепление" в info-колонке
-                    if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
-                    float ppY = tiltY + 24;
-                    drawPlaybackPanel(canvas, dataX, ppY);
-                    }
-
-                    // Logging label — над дебаг строкой
+                // Logging label
                 if (logManager.isLogging()) {
-                    logLabelPaint.setTextSize(27f * density);
-                    float labelY = dataY - 35f * density;
-                    logLabelPaint.setColor(Color.argb(220, 33, 150, 243)); // всегда синяя
-                    float shiftRight = logLabelPaint.measureText("пише");
-                    canvas.drawText("пишем лог", dataX + 5f + shiftRight, labelY, logLabelPaint);
+                    logLabelPaint.setTextSize(20);
+                    float labelY = dataY - 28;
+                    logLabelPaint.setColor(Color.argb(220, 33, 150, 243));
+                    canvas.drawText("пишем лог", dataX, labelY, logLabelPaint);
+                }
+
+                // Track player panel (if replay)
+                if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                    drawPlaybackPanel(canvas, dataX, tiltY + 40);
                 }
             }
 
-            // Стоп (справа) — всегда виден
+            // Стоп (справа)
             canvas.drawRoundRect(startBtnRect, 10, 10, btnBgPaint);
             if (logManager.isLogging()) {
                 btnTextPaint.setColor(Color.argb(255, 255, 80, 80));
             } else {
                 btnTextPaint.setColor(Color.argb(60, 255, 80, 80));
             }
+            btnTextPaint.setTextSize(24);
             canvas.drawText("СТОП", startBtnRect.centerX(), startBtnRect.centerY() + 9, btnTextPaint);
 
-            // Ветер м/с под кнопкой СТОП
-            float windDeg = circlingManager.getWindFromDeg();
-            float windSpdMs = circlingManager.getDisplayWindSpeed();
-            if (windDeg >= 0 && windSpdMs > 0) {
-                sensorDataPaint.setColor(Color.argb(160, 100, 200, 255));
-                sensorDataPaint.setTextSize(16f * getResources().getDisplayMetrics().density);
-                sensorDataPaint.setTextAlign(Paint.Align.CENTER);
-                canvas.drawText(String.format(java.util.Locale.US, "ветер %.1f м/с", windSpdMs),
-                        startBtnRect.centerX(), startBtnRect.bottom + 22, sensorDataPaint);
+            // Stop test button
+            if (!scenarioMode && !trackMode) {
+                testBtnBgPaint.setColor(Color.TRANSPARENT);
+            } else {
+                testBtnBgPaint.setColor(Color.argb(50, 255, 80, 80));
+            }
+            canvas.drawRoundRect(testBtnRect, 12, 12, testBtnBgPaint);
+            if (scenarioMode || trackMode) {
+                testBtnTextPaint.setTextSize(24);
+                testBtnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
+                testBtnTextPaint.setColor(Color.argb(220, 255, 80, 80));
+                canvas.drawText("СТОП ТЕСТ", testBtnRect.centerX(), testBtnRect.centerY() + 9, testBtnTextPaint);
             }
 
-            // Flight time
-            long flightTimeMs;
-            if (simMode) {
-                flightTimeMs = SystemClock.elapsedRealtime() - simStartMs;
-            } else if (scenarioMode) {
-                flightTimeMs = SystemClock.elapsedRealtime() - scenarioStartMs;
-            } else if (trackMode) {
-                flightTimeMs = SystemClock.elapsedRealtime() - trackStartMs;
-            } else if (logManager.isLogging()) {
-                flightTimeMs = System.currentTimeMillis() - logManager.getFlightStartMs();
-            } else {
-                flightTimeMs = 0;
-            }
-            uiManager.drawFlightTime(canvas, cx, altY + 100 + 10 + 35f * getResources().getDisplayMetrics().density, flightTimeMs / 1000);
-            uiManager.drawSystemTime(canvas, cx, altY + 100 + 10 + 75 + 5 + 70f * getResources().getDisplayMetrics().density);
+            // ========================================================================
+            // OVERLAYS (drawn on top of everything)
+            // ========================================================================
 
             // Night filter
             uiManager.drawNightFilter(canvas, w, h);
@@ -2845,18 +2979,18 @@ public class MainActivity extends Activity {
                 String instr = getTestInstruction();
                 String fb = getTestFeedback();
                 if (instr != null && instr.length() > 0) {
-                    float radarCx = w / 2f;
-                    float radarCy2 = h / 2f;
-                    float radarR2 = Math.min(w / 2f, radarCy2) - 4;
+                    float radarCx2 = w / 2f;
+                    float radarCy3 = localInstrH + localRadarCy2;
+                    float radarR3 = localRadarR2;
                     testBgPaint.setColor(Color.argb(180, 5, 5, 5));
-                    canvas.drawCircle(radarCx, radarCy2, radarR2 * 0.55f, testBgPaint);
+                    canvas.drawCircle(radarCx2, radarCy3, radarR3 * 0.55f, testBgPaint);
                     testBorderPaint.setStyle(Paint.Style.STROKE);
                     testBorderPaint.setStrokeWidth(1);
                     testBorderPaint.setColor(Color.argb(40, 0, 255, 0));
-                    canvas.drawCircle(radarCx, radarCy2, radarR2 * 0.55f, testBorderPaint);
+                    canvas.drawCircle(radarCx2, radarCy3, radarR3 * 0.55f, testBorderPaint);
 
                     String[] lines = instr.split("\n");
-                    float textY = radarCy2 - radarR2 * 0.35f;
+                    float textY = radarCy3 - radarR3 * 0.35f;
                     testTextPaint.setTextAlign(Paint.Align.CENTER);
                     for (String line : lines) {
                         if (line.startsWith("ШАГ")) {
@@ -2868,22 +3002,22 @@ public class MainActivity extends Activity {
                             testTextPaint.setTextSize(26);
                             testTextPaint.setFakeBoldText(false);
                         }
-                        canvas.drawText(line, radarCx, textY, testTextPaint);
+                        canvas.drawText(line, radarCx2, textY, testTextPaint);
                         textY += 38;
                     }
 
                     if (fb != null && fb.length() > 0) {
-                        float fbY = radarCy2 + radarR2 * 0.08f;
+                        float fbY2 = radarCy3 + radarR3 * 0.08f;
                         testTextPaint.setColor(getTestFeedbackColor());
                         testTextPaint.setTextSize(28);
                         testTextPaint.setFakeBoldText(true);
-                        canvas.drawText(fb, radarCx, fbY, testTextPaint);
+                        canvas.drawText(fb, radarCx2, fbY2, testTextPaint);
                     }
 
-                    float barY = radarCy2 + radarR2 * 0.28f;
-                    float barW = radarR2 * 0.8f;
+                    float barY = radarCy3 + radarR3 * 0.28f;
+                    float barW = radarR3 * 0.8f;
                     float barH = 10f;
-                    float barLeft = radarCx - barW / 2f;
+                    float barLeft = radarCx2 - barW / 2f;
                     testBarBgPaint.setColor(Color.argb(30, 0, 255, 0));
                     canvas.drawRoundRect(barLeft, barY, barLeft + barW, barY + barH, 5, 5, testBarBgPaint);
                     testBarFillPaint.setColor(Color.argb(180, 76, 175, 80));
@@ -2921,20 +3055,20 @@ public class MainActivity extends Activity {
             canvas.drawLine(cx + inset, cy - inset, cx - inset, cy + inset, exitXPaint);
         }
 
-        /** Панель управления трек-плеером (в info-колонке слева) */
+        /** Панель управления трек-плеером */
         private void drawPlaybackPanel(Canvas canvas, float x, float y) {
             int w = getWidth();
-            float panelW = w - x - 16; // до правого края
+            float panelW = w - x - 16;
 
             // Строка 1: синее имя трека
-            pbTrackPaint.setTextSize(22);
+            pbTrackPaint.setTextSize(20);
             String name = trackFileName;
             if (name.length() > 24) name = name.substring(0, 21) + "...";
             canvas.drawText("Трек: " + name, x, y, pbTrackPaint);
 
-            // Строка 2: seekbar на всю ширину
-            float barY = y + 20;
-            float barH = 8;
+            // Строка 2: seekbar
+            float barY = y + 16;
+            float barH = 6;
             float barLeft = x, barRight = w - 16;
             float barMidY = barY + barH / 2f;
 
@@ -2942,35 +3076,36 @@ public class MainActivity extends Activity {
             float progress = trackReplayer != null ? trackReplayer.getProgress() : 0;
             float thumbX = barLeft + (barRight - barLeft) * progress;
             canvas.drawRect(barLeft, barY, thumbX, barY + barH, pbThumbPaint);
-            canvas.drawCircle(thumbX, barMidY, 14, pbThumbPaint);
+            canvas.drawCircle(thumbX, barMidY, 10, pbThumbPaint);
 
             // Время
             String curTime = formatTime(trackReplayer != null ? (long)trackReplayer.getCurrentTime() : 0);
             String totalTime = formatTime(trackReplayer != null ? (long)trackReplayer.getTotalTime() : 0);
-            pbTextPaint.setTextSize(20);
-            canvas.drawText(curTime, barLeft, barY + barH + 20, pbTextPaint);
-            canvas.drawText(totalTime, barRight, barY + barH + 20, pbTextPaint);
+            pbTextPaint.setTextSize(18);
+            canvas.drawText(curTime, barLeft, barY + barH + 18, pbTextPaint);
+            canvas.drawText(totalTime, barRight, barY + barH + 18, pbTextPaint);
 
             pbSeekbarRect.set(barLeft - 16, barY - 16, barRight + 16, barY + barH + 32);
 
-            // Строка 3: кнопки ×2 размера
-            float btnY = barY + barH + 32;
-            float btnW = 100, btnH = 56;
-            pbBtnPaint.setStrokeWidth(6);
+            // Строка 3: кнопки
+            float btnY = barY + barH + 28;
+            float btnW = 80, btnH = 44;
+            pbBtnPaint.setStrokeWidth(5);
 
             pbPlayBtn.set(x, btnY, x + btnW, btnY + btnH);
             canvas.drawRoundRect(pbPlayBtn, 8, 8, pbBtnPaint);
             boolean isPaused = trackReplayer != null && trackReplayer.isPaused();
-            pbTextPaint.setTextSize(36);
-            canvas.drawText(isPaused ? "▶" : "❚❚", pbPlayBtn.centerX(), pbPlayBtn.centerY() + 12, pbTextPaint);
+            pbTextPaint.setTextSize(30);
+            canvas.drawText(isPaused ? "▶" : "❚❚", pbPlayBtn.centerX(), pbPlayBtn.centerY() + 10, pbTextPaint);
 
-            float speedBtnLeft = pbPlayBtn.right + 20;
-            float speedBtnW = 100;
+            float speedBtnLeft = pbPlayBtn.right + 12;
+            float speedBtnW = 80;
             pbSpeedBtn.set(speedBtnLeft, btnY, speedBtnLeft + speedBtnW, btnY + btnH);
             canvas.drawRoundRect(pbSpeedBtn, 8, 8, pbBtnPaint);
             float speed = (trackSpeedIdx >= 0 && trackSpeedIdx < PLAYBACK_SPEEDS.length)
                     ? PLAYBACK_SPEEDS[trackSpeedIdx] : 1f;
-            canvas.drawText((int)speed + "x", pbSpeedBtn.centerX(), pbSpeedBtn.centerY() + 12, pbTextPaint);
+            pbTextPaint.setTextSize(30);
+            canvas.drawText((int)speed + "x", pbSpeedBtn.centerX(), pbSpeedBtn.centerY() + 10, pbTextPaint);
         }
 
         /** Форматировать секунды в MM:SS */
@@ -3058,7 +3193,7 @@ public class MainActivity extends Activity {
                     startActivity(new Intent(MainActivity.this, SettingsActivity.class));
                     return true;
                 }
-                // СТАРТ: тап = старт лога (только старт, не стоп!), долгое нажатие = сброс калибровки
+                // СТАРТ: тап = старт лога, долгое нажатие = сброс калибровки
                 if (calibBtnRect.contains(touchX, touchY)) {
                     if (touchDuration > 600) {
                         resetCalibration();
