@@ -529,14 +529,9 @@ public class MainActivity extends Activity {
         super.onPause();
         running = false;
         stopRendering();
-        // При активной записи лога — не убиваем сенсоры/GPS/ваклок
-        // чтобы прибор продолжал работать при выключенном экране
-        if (!logManager.isLogging()) {
-            sensorController.unregisterSensors();
-            releaseWakeLock();
-            gpsManager.stopGps();
-            if (varioSoundManager != null) varioSoundManager.stop();
-        }
+        // Сенсоры/GPS/WakeLock НЕ трогаем (C-02 fix: иначе автостарт не сработает
+        // при выключенном экране до взлёта).
+        // ThermalRadarService держит foreground и WakeLock.
         stopTestMode();
     }
 
@@ -953,7 +948,8 @@ public class MainActivity extends Activity {
                 .setMessage("Лог будет сохранён. Вы уверены?")
                 .setPositiveButton("Да", (d, w) -> {
                     flightStateMachine.reset();
-                    logManager.stopLogging();
+                        igcLogger.stopLogging();    // ← C-03 fix: забыт!
+                        logManager.stopLogging();
                     android.widget.Toast.makeText(MainActivity.this,
                             "Лог сохранён", android.widget.Toast.LENGTH_SHORT).show();
                 })
@@ -1028,6 +1024,20 @@ public class MainActivity extends Activity {
                 // Обновляем FSM, circlingManager, лог — всё что нужно для TTS/лога
                 processSample();
                 long bgNow = SystemClock.elapsedRealtime();
+
+                // Speed-based flight detection (C-01 fix: was dead code!)
+                if (!testMode && !simMode && !scenarioMode && !trackMode
+                        && gpsManager.isReady()
+                        && gpsManager.getFixAgeMs() < 5000) {
+                    flightStateMachine.updateSpeedBased(
+                            gpsManager.getSpeed(),
+                            gpsManager.getLat(),
+                            gpsManager.getLon(),
+                            gpsManager.isAltitudeInitialized()
+                                ? gpsManager.getAltitude()
+                                : sensorController.getAltitudeRaw(),
+                            bgNow);
+                }
                 circlingManager.update(
                     sensorController.getGyroZ(),
                     getCompassHeading(),

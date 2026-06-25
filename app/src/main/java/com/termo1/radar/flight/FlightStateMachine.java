@@ -97,6 +97,13 @@ public class FlightStateMachine {
             if (state.get() == STATE_FINISHED) {
                 state.set(STATE_ON_GROUND);
                 lastCheckMs = 0;
+                // C-07: сброс истории — новый полёт с чистого листа
+                histHead = 0;
+                histFill = 0;
+                movingClockActive = false;
+                stationaryClockActive = false;
+                movingSinceMs = 0;
+                stationarySinceMs = 0;
             }
 
             // Сохраняем в историю (для altitude-based) — под тем же lock
@@ -138,7 +145,10 @@ public class FlightStateMachine {
     public void updateSpeedBased(float gpsSpeed, double gpsLat, double gpsLon,
                                  float altitude, long nowMs) {
         synchronized (stateLock) {
-            if (state.get() == STATE_FINISHED) return;
+            if (state.get() == STATE_FINISHED) {
+                state.set(STATE_ON_GROUND);
+                // moving/stationary clocks уже сброшены в update()
+            }
 
             if (gpsSpeed >= TAKEOFF_SPEED_MS) {
                 // Moving — увеличиваем moving_clock, сбрасываем stationary

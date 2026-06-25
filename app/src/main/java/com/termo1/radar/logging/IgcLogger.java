@@ -73,6 +73,7 @@ public class IgcLogger {
 
     // Текущий файл
     private BufferedOutputStream currentOut;
+    private FileOutputStream currentFos; // для fsync
     private String currentFileName;
 
     // Для подсчёта CRC32 всего содержимого файла
@@ -80,6 +81,7 @@ public class IgcLogger {
 
     // Временные метки (элапсед)
     private long startElapsedMs;
+    private long lastFlushMs;
 
     // Для 1 Гц децимации
     private long lastLogElapsedMs;
@@ -184,9 +186,11 @@ public class IgcLogger {
         File file = new File(dir, currentFileName);
 
         try {
-            currentOut = new BufferedOutputStream(new FileOutputStream(file));
+            currentFos = new FileOutputStream(file);
+            currentOut = new BufferedOutputStream(currentFos);
             writeHeader();
             headerWritten = true;
+            lastFlushMs = SystemClock.elapsedRealtime();
             Log.i(TAG, "IGC logging STARTED: " + currentFileName);
         } catch (IOException e) {
             Log.e(TAG, "Failed to create IGC file: " + currentFileName, e);
@@ -366,7 +370,7 @@ public class IgcLogger {
         }
     }
 
-    /** Записать строку + CRLF в файл + обновить CRC32 */
+    /** Записать строку + CRLF в файл + обновить CRC32 + периодический flush (C-06) */
     private void writeLine(String line) {
         if (currentOut == null) return;
         try {
@@ -374,6 +378,14 @@ public class IgcLogger {
             currentOut.write(bytes);
             if (crc32 != null) {
                 crc32.update(bytes);
+            }
+            long now = SystemClock.elapsedRealtime();
+            if (now - lastFlushMs > 5000) {
+                currentOut.flush();
+                if (currentFos != null) {
+                    currentFos.getFD().sync();
+                }
+                lastFlushMs = now;
             }
         } catch (IOException e) {
             Log.e(TAG, "IGC write error", e);
