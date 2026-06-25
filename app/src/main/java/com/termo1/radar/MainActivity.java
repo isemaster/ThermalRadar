@@ -2817,23 +2817,8 @@ public class MainActivity extends Activity {
 
             if (testMode) updateTestFeedback();
 
-            // Info panel (drawn at bottom of radar section)
-            if (thermalDetector != null) {
-                SignalProcessor sp = thermalDetector.getSignalProcessor();
-                if (sp != null) {
-                    uiManager.drawInfo(canvas, 0, (int)localRadarH, sp.getTurbulenceMs2(), sp.getSnr(),
-                            thermalsCopy.size(), sp.getBpX(), sp.getBpY(),
-                            sp.getStableDirDeg(), thermalDetector.getStatusText());
-                } else {
-                    uiManager.drawInfo(canvas, 0, (int)localRadarH,
-                            sensorController.getVario(), sensorController.getRecentSnr(),
-                            thermalsCopy.size(), 0, 0, 0, currentStatus);
-                }
-            } else {
-                uiManager.drawInfo(canvas, 0, (int)localRadarH,
-                        sensorController.getVario(), sensorController.getRecentSnr(),
-                        thermalsCopy.size(), 0, 0, 0, currentStatus);
-            }
+            // Info panel (moved to bottom panel under ЗАПИСЬ button)
+            // (actual drawing is now in the bottom panel section)
 
             canvas.restore();
 
