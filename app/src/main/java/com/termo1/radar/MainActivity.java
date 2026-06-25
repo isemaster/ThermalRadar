@@ -2140,7 +2140,8 @@ public class MainActivity extends Activity {
 
             // === Glide bar paint ===
             glideBarPaint.setAntiAlias(true);
-            glideBarPaint.setTextSize(22);
+            glideBarPaint.setTextSize(112); // шрифт как у высот
+            glideBarPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
             glideBarPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
             glideBarPaint.setTextAlign(Paint.Align.LEFT);
             glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
@@ -2495,26 +2496,28 @@ public class MainActivity extends Activity {
             instrLabelPaint.setTextAlign(Paint.Align.CENTER);
             instrLabelPaint.setTextSize(32); // labels чуть крупнее
 
-            // Top row (values): left speed, right wind, center vario
-            float valueRowY = instrMidY + 10;
+            // Top row (values): all values aligned horizontally
+            float valueRowY = instrMidY + 50;
 
-            // Bottom row (labels): left below values
-            float instrLabelY = valueRowY + 30;
+            // Below values — labels for speed/wind (ABOVE their values on next row)
+            float instrLabelY = valueRowY + 20;
 
-            // GPS Speed (left, top row)
-            instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
-            canvas.drawText(String.format(java.util.Locale.US, "%.1f", gpsSpeed), colX_left, valueRowY, instrValuePaint);
+            // Speed label ABOVE speed value
             instrLabelPaint.setColor(Color.argb(160, 0, 255, 0));
-            canvas.drawText("скорость", colX_left, instrLabelY + 32, instrLabelPaint);
+            canvas.drawText("скорость, м/с", colX_left, instrLabelY, instrLabelPaint);
+            // Speed value below label
+            instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
+            canvas.drawText(String.format(java.util.Locale.US, "%.1f", gpsSpeed), colX_left, instrLabelY + 60, instrValuePaint);
 
-            // GPS Altitude (left, below speed label)
+            // MSL value and label (below speed)
             float gpsAltVal = gpsManager.getAltitude();
             float startAltVal = gpsManager.getStartAltitude();
             float aglVal = gpsManager.isAltitudeInitialized() ? (gpsAltVal - startAltVal) : 0f;
             instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
-            canvas.drawText(String.format(java.util.Locale.US, "%.0f", gpsAltVal), colX_left, instrLabelY + 90, instrValuePaint);
+            canvas.drawText(String.format(java.util.Locale.US, "%.0f", gpsAltVal), colX_left, instrLabelY + 130, instrValuePaint);
+            // MSL label ONE LINE BELOW value
             instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
-            canvas.drawText("высота MSL", colX_left, instrLabelY + 122, instrLabelPaint);
+            canvas.drawText("высота MSL", colX_left, instrLabelY + 162, instrLabelPaint);
 
             // Center: Vario (×1.5 larger)
             float varioVal = sensorController.getVario();
@@ -2527,9 +2530,9 @@ public class MainActivity extends Activity {
             varioPaint.setColor(varioVal > 0.5f ? Color.argb(255, 255, 80, 80)
                     : varioVal < -0.5f ? Color.argb(255, 100, 200, 100)
                     : Color.argb(200, 255, 180, 50));
-            canvas.drawText(String.format(java.util.Locale.US, "%s%.1f", varioSign, varioVal), colX_center, instrMidY + 18, varioPaint);
+            canvas.drawText(String.format(java.util.Locale.US, "%s%.1f", varioSign, varioVal), colX_center, valueRowY, varioPaint);
 
-            // Flight time below vario
+            // Flight time below vario, one line down (чч:мм, до 12 часов)
             long flightTimeMs;
             if (simMode) {
                 flightTimeMs = SystemClock.elapsedRealtime() - simStartMs;
@@ -2543,30 +2546,31 @@ public class MainActivity extends Activity {
                 flightTimeMs = 0;
             }
             long ftSec = flightTimeMs / 1000;
-            String ftStr = String.format("%02d:%02d", ftSec / 60, ftSec % 60);
+            String ftStr = String.format("%02d:%02d", ftSec / 3600, (ftSec % 3600) / 60);
             flightTimePaint.setColor(Color.argb(200, 0, 255, 255));
-            canvas.drawText(ftStr, colX_center, instrMidY + 58, flightTimePaint);
+            canvas.drawText(ftStr, colX_center, instrLabelY + 60, flightTimePaint);
 
-            // Right column: Wind speed, AGL
+            // Right column: Wind label ABOVE value, AGL below
             float windDeg = circlingManager.getWindFromDeg();
             float windSpdMs = circlingManager.getDisplayWindSpeed();
             if (windDeg >= 0 && windSpdMs > 0) {
-                instrValuePaint.setColor(Color.argb(220, 100, 200, 255));
-                canvas.drawText(String.format(java.util.Locale.US, "%.1f", windSpdMs), colX_right, valueRowY, instrValuePaint);
                 instrLabelPaint.setColor(Color.argb(160, 100, 200, 255));
-                canvas.drawText("ветер м/с", colX_right, instrLabelY + 32, instrLabelPaint);
+                canvas.drawText("ветер, м/с", colX_right, instrLabelY, instrLabelPaint);
+                instrValuePaint.setColor(Color.argb(220, 100, 200, 255));
+                canvas.drawText(String.format(java.util.Locale.US, "%.1f", windSpdMs), colX_right, instrLabelY + 60, instrValuePaint);
             } else {
-                instrValuePaint.setColor(Color.argb(120, 100, 200, 255));
-                canvas.drawText("--", colX_right, valueRowY, instrValuePaint);
                 instrLabelPaint.setColor(Color.argb(120, 100, 200, 255));
-                canvas.drawText("ветер м/с", colX_right, instrLabelY + 32, instrLabelPaint);
+                canvas.drawText("ветер, м/с", colX_right, instrLabelY, instrLabelPaint);
+                instrValuePaint.setColor(Color.argb(120, 100, 200, 255));
+                canvas.drawText("--", colX_right, instrLabelY + 60, instrValuePaint);
             }
 
-            // AGL (right, below wind)
+            // AGL value and label (below wind)
             instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
-            canvas.drawText(String.format(java.util.Locale.US, "+%.0f", Math.max(0, aglVal)), colX_right, instrLabelY + 90, instrValuePaint);
+            canvas.drawText(String.format(java.util.Locale.US, "+%.0f", Math.max(0, aglVal)), colX_right, instrLabelY + 130, instrValuePaint);
+            // AGL label ONE LINE BELOW value
             instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
-            canvas.drawText("AGL", colX_right, instrLabelY + 122, instrLabelPaint);
+            canvas.drawText("AGL", colX_right, instrLabelY + 162, instrLabelPaint);
 
             // ========================================================================
             // RADAR SECTION (middle 65%), drawn in translated canvas
@@ -2860,7 +2864,7 @@ public class MainActivity extends Activity {
             // ========================================================================
             // BOTTOM PANEL (~13%)
             // ========================================================================
-            float bottomPanelY = localInstrH + localRadarH + localGlideH;
+            float bottomPanelY = localInstrH + localRadarH + localGlideH + h * 0.05f; // +5% отступ
             float bottomPanelH2 = h - bottomPanelY;
 
             // Blue separator line at top of bottom panel
