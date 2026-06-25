@@ -259,10 +259,20 @@ public class ThermalDetector {
             ThermalBlip updated = new ThermalBlip(currentBlip.angle, strength, dist, "accel", now);
             updated.sizeFactor = sizeFactor;
             updated.bornMs = currentBlip.bornMs; // сохраняем original bornMs — blip не дублируется
+            // Адаптивное время жизни: INSIDE = 15с, сильный = 12с, слабый = 8с
+            if (status == STATUS_INSIDE) {
+                updated.lifeMs = 15000L;
+            } else if (strength > 3f) {
+                updated.lifeMs = 12000L;
+            } else {
+                updated.lifeMs = 8000L;
+            }
             currentBlip = updated;
         } else {
             currentBlip = new ThermalBlip(angleDeg, strength, dist, "accel", now);
             currentBlip.sizeFactor = sizeFactor;
+            // Пробный (тусклый) блип — живёт 3с, не отвлекает
+            currentBlip.lifeMs = blipConfirmed ? 12000L : 3000L;
             if (blipConfirmed) {
                 // Запомнили угол первого подтверждения
                 lastConfirmedAngle = angleDeg;

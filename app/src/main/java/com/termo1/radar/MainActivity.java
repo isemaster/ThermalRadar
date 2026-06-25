@@ -1591,7 +1591,7 @@ public class MainActivity extends Activity {
                     ThermalBlip detBlip = thermalDetector.getCurrentBlip();
                     if (detBlip != null) {
                         long now = System.currentTimeMillis();
-                        if (now - detBlip.bornMs < ThermalBlip.LIFE_MS) {
+                        if (now - detBlip.bornMs < detBlip.lifeMs) {
                             synchronized (thermalLock) {
                                 boolean found = false;
                                 for (ThermalBlip tb : thermals) {
@@ -1732,7 +1732,7 @@ public class MainActivity extends Activity {
                     ThermalBlip detBlip = thermalDetector.getCurrentBlip();
                     if (detBlip != null) {
                         long nowMs = System.currentTimeMillis();
-                        if (nowMs - detBlip.bornMs < ThermalBlip.LIFE_MS) {
+                        if (nowMs - detBlip.bornMs < detBlip.lifeMs) {
                             synchronized (thermalLock) {
                                 boolean found = false;
                                 for (ThermalBlip tb : thermals) {
@@ -2441,7 +2441,7 @@ public class MainActivity extends Activity {
                 ThermalBlip detBlip = thermalDetector.getCurrentBlip();
                 if (detBlip != null) {
                     long now = System.currentTimeMillis();
-                    if (now - detBlip.bornMs < ThermalBlip.LIFE_MS) {
+                    if (now - detBlip.bornMs < detBlip.lifeMs) {
                         synchronized (thermalLock) {
                             Iterator<ThermalBlip> it = thermals.iterator();
                             while (it.hasNext()) {

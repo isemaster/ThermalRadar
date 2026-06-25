@@ -689,7 +689,8 @@ public class RadarRenderer {
             float alpha = brightness * distFactor
                         * (0.6f + 0.4f * (float) Math.sin(nowMs / 200.0 + t.strength));
 
-            float size = Math.max(8f, 42f - dist * 0.25f) * t.sizeFactor;
+            float size = Math.max(8f, 42f - dist * 0.25f) * t.sizeFactor
+                        * (0.5f + 0.5f * Math.min(t.strength, 8f) / 8f);
 
             thermalGlowPaint.setColor(Color.argb((int) (alpha * 40), 255, 193, 7));
             c.drawCircle(px, py, size * 2, thermalGlowPaint);

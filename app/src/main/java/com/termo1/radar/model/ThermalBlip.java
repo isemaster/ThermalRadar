@@ -10,19 +10,8 @@ public class ThermalBlip {
     public String source;    // "skew" or "spiral"
     public float sizeFactor; // 0.5–1.0, от частоты колебаний (частота→узкий→меньше)
 
-    public static final long LIFE_MS = 6667; // visible for ~6.7 seconds max
-
-    // Яркость по времени жизни (все времена ×1.5 короче):
-    //   0–2 с: 100%
-    //   2–4 с:  спад со 100% до 30%
-    //   4–6.7 с: спад с 30% до 10%
-    //   6.7+ с:  погас
-    private static final long T_FULL  = 2000;
-    private static final long T_DIM   = 4000;
-    private static final long T_GONE  = 6667;
-    private static final float BRIGHT_FULL   = 1.0f;
-    private static final float BRIGHT_DIM    = 0.3f;
-    private static final float BRIGHT_GHOST  = 0.1f;
+    /** Время жизни блипа (мс). Устанавливается при создании */
+    public long lifeMs = 6667;
 
     public ThermalBlip() {}
 
@@ -36,6 +25,7 @@ public class ThermalBlip {
         this.py = other.py;
         this.source = other.source;
         this.sizeFactor = other.sizeFactor;
+        this.lifeMs = other.lifeMs;
     }
 
     public ThermalBlip(float angle, float strength, float distance, String source, long nowMs) {
@@ -49,32 +39,26 @@ public class ThermalBlip {
         this.sizeFactor = 1.0f;
     }
 
-    public boolean isAlive(long nowMs) { return (nowMs - bornMs) < T_GONE; }
-
-    /** @deprecated используйте getBrightness() */
-    @Deprecated
-    public float lifeLeft(long nowMs) {
-        return 1f - (float)(nowMs - bornMs) / LIFE_MS;
-    }
+    public boolean isAlive(long nowMs) { return (nowMs - bornMs) < lifeMs; }
 
     /**
      * Яркость blip на радаре в зависимости от возраста.
-     * Ступенчатое затухание: 100% → 30% → 10% → 0%
+     * Времена масштабируются пропорционально lifeMs.
      */
     public float getBrightness(long nowMs) {
         long age = nowMs - bornMs;
-        if (age < 0) return BRIGHT_FULL;
-        if (age < T_FULL) return BRIGHT_FULL;
-        if (age < T_DIM) {
-            // Плавный спад от 100% до 30% за 3 секунды
-            float t = (float)(age - T_FULL) / (T_DIM - T_FULL);
-            return BRIGHT_FULL - (BRIGHT_FULL - BRIGHT_DIM) * t;
+        if (age < 0) return 1.0f;
+        if (age >= lifeMs) return 0f;
+        float t = (float)age / lifeMs;
+        // 0-30% жизни: полная яркость
+        if (t < 0.3f) return 1.0f;
+        // 30-60%: спад от 1.0 до 0.3
+        if (t < 0.6f) {
+            float p = (t - 0.3f) / 0.3f;
+            return 1.0f - (1.0f - 0.3f) * p;
         }
-        if (age < T_GONE) {
-            // Плавный спад от 30% до 10% за 4 секунды
-            float t = (float)(age - T_DIM) / (T_GONE - T_DIM);
-            return BRIGHT_DIM - (BRIGHT_DIM - BRIGHT_GHOST) * t;
-        }
-        return 0f;
+        // 60-100%: спад от 0.3 до 0.0
+        float p = (t - 0.6f) / 0.4f;
+        return 0.3f * (1.0f - p);
     }
 }
