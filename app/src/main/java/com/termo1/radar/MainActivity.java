@@ -952,6 +952,12 @@ public class MainActivity extends Activity {
 
     public void startManualLogging() {
         if (logManager.isLogging()) return;
+        // Единое имя файла для IGC и sensor companion
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US);
+        sdf.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+        String baseName = "Flight_" + sdf.format(new java.util.Date());
+        igcLogger.setBaseFileName(baseName);
+        logManager.setBaseFileName(baseName);
         logManager.startLogging();
         igcLogger.startLogging();
         // H-06: переводим FSM в полёт при ручном старте
