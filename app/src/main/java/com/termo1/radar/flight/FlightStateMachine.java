@@ -39,11 +39,11 @@ public class FlightStateMachine {
     // Speed-based detection (из XCSoar FlyingComputer)
     // ========================================================================
     /** Скорость для детекции взлёта (м/с) */
-    private static final float TAKEOFF_SPEED_MS = 5.0f;
-    /** Порог посадки (м/с) — гистерезис: взлёт при >5, посадка при <1.0 */
+    private static final float TAKEOFF_SPEED_MS = 3.0f;
+    /** Порог посадки (м/с) — гистерезис: взлёт при >3, посадка при <1.0 */
     private static final float LANDING_SPEED_MS = 1.0f;
     /** Время непрерывного движения для подтверждения взлёта (с) */
-    private static final long TAKEOFF_CONFIRM_MS = 10_000;  // 10 секунд
+    private static final long TAKEOFF_CONFIRM_MS = 5_000;  // 5 секунд
     /** Время непрерывной неподвижности для подтверждения посадки (с) */
     private static final long LANDING_CONFIRM_MS = 60_000;  // 60 секунд
 
@@ -132,9 +132,9 @@ public class FlightStateMachine {
      * Дополняет altitude-based детекцию.
      *
      * Гистерезис скорости (BUG-09):
-     *   > 5.0 м/с → взлёт (moving)
+     *   > 3.0 м/с → взлёт (moving)
      *   < 1.0 м/с → посадка (stationary)
-     *   1.0–5.0 м/с → сохранять текущее состояние (таймеры НЕ сбрасываются)
+     *   1.0–3.0 м/с → сохранять текущее состояние (таймеры НЕ сбрасываются)
      *
      * @param gpsSpeed  скорость по GPS (м/с)
      * @param gpsLat    широта
