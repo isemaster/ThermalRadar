@@ -353,6 +353,12 @@ public class SettingsActivity extends Activity {
         });
         root.addView(calResetBtn);
 
+        // 5. Pilot config (H-03)
+        root.addView(createLabel("Пилот / дельтаплан"));
+        root.addView(createInputField("Имя пилота", "pilot_name", "UNKNOWN"));
+        root.addView(createInputField("Тип дельтаплана", "glider_type", "Paraglider"));
+        root.addView(createInputField("ID дельтаплана", "glider_id", "UNKNOWN"));
+
         // Spacer
         View spacer3 = new View(this);
         spacer3.setLayoutParams(new LinearLayout.LayoutParams(
@@ -436,6 +442,45 @@ public class SettingsActivity extends Activity {
         lp.setMargins(0, 8, 0, 8);
         btn.setLayoutParams(lp);
         return btn;
+    }
+
+    /** Создать текстовую метку */
+    private android.widget.TextView createLabel(String text) {
+        android.widget.TextView label = new android.widget.TextView(this);
+        label.setText(text);
+        label.setTextSize(12);
+        label.setTypeface(android.graphics.Typeface.MONOSPACE);
+        label.setTextColor(android.graphics.Color.argb(120, 0, 255, 0));
+        label.setPadding(8, 16, 8, 4);
+        return label;
+    }
+
+    /** Создать поле ввода, сохранённое в SharedPreferences */
+    private android.widget.EditText createInputField(String hint, String prefKey, String defValue) {
+        final android.content.SharedPreferences prefs = getSharedPreferences("termo1_settings", MODE_PRIVATE);
+        android.widget.EditText edit = new android.widget.EditText(this);
+        edit.setHint(hint);
+        edit.setText(prefs.getString(prefKey, defValue));
+        edit.setTextSize(14);
+        edit.setTypeface(android.graphics.Typeface.MONOSPACE);
+        edit.setTextColor(android.graphics.Color.argb(220, 0, 255, 0));
+        edit.setBackgroundColor(android.graphics.Color.argb(20, 0, 255, 0));
+        edit.setPadding(12, 8, 12, 8);
+        edit.setSingleLine(true);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(0, 4, 0, 8);
+        edit.setLayoutParams(lp);
+        // Save on text change
+        edit.addTextChangedListener(new android.text.TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            public void afterTextChanged(android.text.Editable s) {
+                prefs.edit().putString(prefKey, s.toString()).apply();
+            }
+        });
+        return edit;
     }
 
     // ========================================================================

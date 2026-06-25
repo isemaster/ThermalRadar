@@ -531,20 +531,40 @@ public class TrackReplayer {
         return totalSimSec;
     }
 
-    /** Перемотать на позицию (сек от начала) */
+    /** Перемотать на позицию (сек от начала) — NEW-02: интерполяция без телепорта */
     public void seekTo(float timeSec) {
+        if (track == null || track.size() < 2) return;
         totalSimSec = Math.max(0, Math.min(timeSec, getTotalTime()));
+
+        // Найти индекс ближайшей точки
         currentIdx = 0;
-        // Пересчитать позицию на первом update
-        double oldLat = pilotLat, oldLon = pilotLon;
-        if (track != null && track.size() > 0) {
-            TrackPoint first = track.get(0);
-            pilotLat = first.lat;
-            pilotLon = first.lon;
-            altitude = first.altMeters;
+        float target = track.get(0).timeSec + totalSimSec;
+        for (int i = 0; i < track.size() - 1; i++) {
+            if (target >= track.get(i).timeSec && target < track.get(i + 1).timeSec) {
+                currentIdx = i;
+                break;
+            }
         }
-        heading = 0;
-        vario = 0;
+
+        // Интерполировать позицию
+        TrackPoint a = track.get(currentIdx);
+        TrackPoint b = track.get(Math.min(currentIdx + 1, track.size() - 1));
+        float segStart = a.timeSec;
+        float segEnd = b.timeSec;
+        float t = (segEnd > segStart) ? (target - segStart) / (segEnd - segStart) : 0;
+        pilotLat = a.lat + (b.lat - a.lat) * t;
+        pilotLon = a.lon + (b.lon - a.lon) * t;
+        altitude = a.altMeters + (b.altMeters - a.altMeters) * t;
+
+        // Heading по направлению к следующей точке (с учётом схождения меридианов)
+        double dLat = b.lat - a.lat;
+        double dLon = b.lon - a.lon;
+        double dLonAdj = dLon * Math.cos(Math.toRadians((a.lat + b.lat) / 2.0));
+        heading = (float) Math.toDegrees(Math.atan2(dLonAdj, dLat));
+        if (heading < 0) heading += 360;
+
+        // Vario по изменению высоты между точками
+        vario = (segEnd > segStart) ? (b.altMeters - a.altMeters) / (segEnd - segStart) : 0;
     }
 
     /** Пауза/продолжить */

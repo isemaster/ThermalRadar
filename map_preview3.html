@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #111; color: #ccc; font: 14px/1.4 sans-serif; padding: 20px; }
+h1 { color: #fff; margin-bottom: 6px; }
+h2 { color: #fa8; font-size: 14px; margin: 20px 0 8px; border-top: 1px solid #333; padding-top: 16px; }
+.cards { display: flex; flex-wrap: wrap; gap: 12px; }
+.card { background: #1a1a1a; border-radius: 8px; padding: 8px; width: 274px; cursor: pointer; border: 2px solid transparent; transition: .15s; }
+.card:hover { border-color: #48f; }
+.card.selected { border-color: #4f4; background: #0a1a0a; }
+.card canvas { width: 256px; height: 256px; display: block; margin: 0 auto; image-rendering: pixelated; }
+.card .label { margin-top: 4px; font-size: 12px; color: #aaa; text-align: center; }
+.card .desc { font-size: 10px; color: #555; text-align: center; }
+</style>
+</head>
+<body>
+<h1>Стили карты — как в навигаторе</h1>
+<div id="content"></div>
+
+<script>
+// Tile styles
+const TILES = {
+  light_all: 'https://a.basemaps.cartocdn.com/light_all/14/9570/4762.png',
+  dark_all:   'https://a.basemaps.cartocdn.com/dark_all/14/9570/4762.png',
+};
+
+const VARIANTS = [
+  // ===== LIGHT TILE =====
+  { id: 'light_raw', tile: 'light_all', label: 'Light_all оригинал', desc: 'Без обработки', enhance: null },
+  { id: 'light_dark65', tile: 'light_all', label: 'Light ×0.65 + контраст 1.6', desc: 'Затемнение + контраст', enhance: { dark:0.65, contrast:1.6, off:-42, blue:1.0 } },
+  { id: 'light_dark55', tile: 'light_all', label: 'Light ×0.55 + контраст 1.8', desc: 'Сильное затемнение', enhance: { dark:0.55, contrast:1.8, off:-60, blue:1.1 } },
+  { id: 'light_nav', tile: 'light_all', label: 'Light — навигатор', desc: '×0.6, cont 1.7, blue 1.2', enhance: { dark:0.6, contrast:1.7, off:-50, blue:1.2 } },
+  { id: 'light_sat20', tile: 'light_all', label: 'Light sat 2.0 (как было)', desc: 'Только sat 2.0 (baseline)', enhance: { dark:1.0, sat:2.0 } },
+
+  // ===== DARK TILE =====
+  { id: 'dark_raw', tile: 'dark_all', label: 'Dark_all оригинал', desc: 'Без обработки', enhance: null },
+  { id: 'dark_contrast', tile: 'dark_all', label: 'Dark + контраст 1.4', desc: 'Чётче дороги', enhance: { dark:1.0, contrast:1.4, off:-28 } },
+  { id: 'dark_sat', tile: 'dark_all', label: 'Dark + sat 1.5', desc: 'Цвета ярче на тёмном', enhance: { dark:1.0, sat:1.5, contrast:1.3, off:-20 } },
+  { id: 'dark_bright', tile: 'dark_all', label: 'Dark + яркость 1.2', desc: 'Чуть светлее, sat 1.3', enhance: { dark:1.2, sat:1.3, contrast:1.2, off:-10 } },
+  { id: 'dark_nav', tile: 'dark_all', label: 'Dark — навигатор', desc: 'sat 1.6, cont 1.4', enhance: { dark:1.0, sat:1.6, contrast:1.4, off:-28 } },
+];
+
+function processPixels(ctx, w, h, opts) {
+  if (!opts) return;
+  const d = ctx.getImageData(0, 0, w, h);
+  const px = d.data;
+  for (let i = 0; i < px.length; i += 4) {
+    let r = px[i], g = px[i+1], b = px[i+2];
+
+    // 1. Saturation
+    if (opts.sat != null) {
+      const lum = 0.299*r + 0.587*g + 0.114*b;
+      r = lum + (r - lum) * opts.sat;
+      g = lum + (g - lum) * opts.sat;
+      b = lum + (b - lum) * opts.sat;
+    }
+
+    // 2. Darken/brighten
+    if (opts.dark != null) {
+      r *= opts.dark; g *= opts.dark; b *= opts.dark;
+    }
+
+    // 3. Contrast
+    if (opts.contrast != null) {
+      const off = opts.off || 0;
+      r = r * opts.contrast + off;
+      g = g * opts.contrast + off;
+      b = b * opts.contrast + off;
+    }
+
+    // 4. Blue shift
+    if (opts.blue != null) {
+      b *= opts.blue;
+    }
+
+    px[i]   = Math.max(0, Math.min(255, r));
+    px[i+1] = Math.max(0, Math.min(255, g));
+    px[i+2] = Math.max(0, Math.min(255, b));
+  }
+  ctx.putImageData(d, 0, 0);
+}
+
+function loadTile(url) {
+  return new Promise(res => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => res(img);
+    img.onerror = () => {
+      const c = document.createElement('canvas'); c.width = 256; c.height = 256;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#444'; ctx.fillRect(0,0,256,256);
+      ctx.fillStyle = '#888'; ctx.font = '13px sans-serif'; ctx.textAlign = 'center';
+      ctx.fillText('Load error', 128, 128);
+      res(c);
+    };
+    img.src = url;
+  });
+}
+
+async function renderAll() {
+  const loaded = {};
+  for (const [name, url] of Object.entries(TILES)) {
+    loaded[name] = await loadTile(url);
+  }
+
+  const content = document.getElementById('content');
+  let currentHeading = '';
+
+  for (const v of VARIANTS) {
+    // Section heading
+    const sectionKey = v.tile === 'light_all' ? 'light' : 'dark';
+    if (currentHeading !== sectionKey) {
+      currentHeading = sectionKey;
+      const h = document.createElement('h2');
+      h.textContent = sectionKey === 'light' ? '▸ CartoDB light_all' : '▸ CartoDB dark_all (рекомендую)';
+      content.appendChild(h);
+      const cards = document.createElement('div');
+      cards.className = 'cards';
+      cards.id = 'cards-' + sectionKey;
+      content.appendChild(cards);
+    }
+
+    const container = document.getElementById('cards-' + sectionKey);
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.onclick = () => {
+      document.querySelectorAll('.card').forEach(c => c.classList.remove('selected'));
+      card.classList.add('selected');
+      document.getElementById('selected').textContent = 'Выбран: ' + v.label;
+    };
+
+    const canvas = document.createElement('canvas');
+    canvas.width = 256; canvas.height = 256;
+    const ctx = canvas.getContext('2d');
+
+    const src = loaded[v.tile];
+    if (src instanceof HTMLCanvasElement) {
+      ctx.drawImage(src, 0, 0);
+    } else {
+      ctx.drawImage(src, 0, 0);
+    }
+
+    processPixels(ctx, 256, 256, v.enhance);
+
+    // Always 75% alpha
+    if (v.enhance !== null || true) {
+      const d = ctx.getImageData(0,0,256,256);
+      for (let i = 3; i < d.data.length; i += 4) d.data[i] = Math.round(d.data[i] * 0.75);
+      ctx.putImageData(d, 0, 0);
+    }
+
+    const label = document.createElement('div');
+    label.className = 'label'; label.textContent = v.label;
+    const desc = document.createElement('div');
+    desc.className = 'desc'; desc.textContent = v.desc;
+
+    card.appendChild(canvas); card.appendChild(label); card.appendChild(desc);
+    container.appendChild(card);
+  }
+
+  // Selected indicator
+  const sel = document.createElement('div');
+  sel.id = 'selected';
+  sel.style.cssText = 'color:#4f4;margin-top:16px;font-size:14px;';
+  sel.textContent = 'Кликни на вариант →';
+  content.appendChild(sel);
+}
+
+renderAll();
+</script>
+</body>
+</html>

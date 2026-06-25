@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
-import java.util.zip.CRC32;
 
 /**
  * IgcLogger — запись IGC-формата (FR), 1 Гц, весь полёт в ОДИН файл.
@@ -21,7 +20,7 @@ import java.util.zip.CRC32;
  * - Один файл от startLogging() до stopLogging() — без чанков
  * - В заголовке полный набор H-записей
  * - B-records каждую секунду с валидными GPS-координатами
- * - G-record в конце с CRC32 от всего содержимого (корректный для IGC-совместимых программ)
+ * - G-record в конце с CRC-16-CCITT от всего содержимого (корректный для IGC-совместимых программ)
  *
  * Формат B-записи:
  *   B HHMMSS DDMMmmm N DDDMMmmm E A PPPPP GGGGG
@@ -60,6 +59,9 @@ public class IgcLogger {
                 return f;
             });
 
+    // CRC-16-CCITT constants
+    private static final int CRC16_POLY = 0x1021;
+
     // ========================================================================
     // Состояние
     // ========================================================================
@@ -76,11 +78,17 @@ public class IgcLogger {
     private FileOutputStream currentFos; // для fsync
     private String currentFileName;
 
-    // Для подсчёта CRC32 всего содержимого файла
-    private CRC32 crc32;
+    // Для подсчёта CRC-16-CCITT всего содержимого файла
+    private int crc16 = 0xFFFF;
+
+    // Pilot/glider configuration
+    private String pilotName = "UNKNOWN";
+    private String gliderType = "Paraglider";
+    private String gliderId = "UNKNOWN";
 
     // Временные метки (элапсед)
     private long startElapsedMs;
+    private long wallStartMs; // H-08: зафиксировано при startLogging
     private long lastFlushMs;
 
     // Для 1 Гц децимации
@@ -144,6 +152,38 @@ public class IgcLogger {
         this.baseFileName = name;
     }
 
+    // ========================================================================
+    // Pilot/glider setters
+    // ========================================================================
+
+    public void setPilotName(String pilotName) {
+        this.pilotName = pilotName;
+    }
+
+    public void setGliderType(String gliderType) {
+        this.gliderType = gliderType;
+    }
+
+    public void setGliderId(String gliderId) {
+        this.gliderId = gliderId;
+    }
+
+    // ========================================================================
+    // Pilot/glider getters
+    // ========================================================================
+
+    public String getPilotName() {
+        return pilotName;
+    }
+
+    public String getGliderType() {
+        return gliderType;
+    }
+
+    public String getGliderId() {
+        return gliderId;
+    }
+
     /**
      * Обновить GPS данные (вызывать из MainActivity в bgTask).
      * Атомарно заменяет весь снимок.
@@ -160,7 +200,10 @@ public class IgcLogger {
 
     /** Начать запись IGC-лога — создаёт ОДИН файл на весь полёт */
     public void startLogging() {
-        if (logging) return;
+        // Defensive check: if already logging, stop first before restarting (R11)
+        if (logging) {
+            stopLogging();
+        }
         if (logDir == null) {
             Log.e(TAG, "Log directory not set");
             return;
@@ -168,10 +211,11 @@ public class IgcLogger {
 
         logging = true;
         startElapsedMs = SystemClock.elapsedRealtime();
+        wallStartMs = System.currentTimeMillis() - (SystemClock.elapsedRealtime() - startElapsedMs); // H-08
         seqNum = 0;
         lastLogElapsedMs = 0;
         headerWritten = false;
-        crc32 = new CRC32();
+        crc16 = 0xFFFF;
 
         // Создаём файл с единым именем на весь полёт
         File dir = new File(logDir, "igc");
@@ -311,10 +355,9 @@ public class IgcLogger {
 
     /**
      * Форматировать время IGC: HHMMSS из elapsed ms.
-     */
+     /** Форматировать время IGC: HHMMSS из elapsed ms (H-08: wallStartMs фикс) */
     private String formatIGCTime(long elapsedMs) {
-        long wallMs = System.currentTimeMillis()
-                - (SystemClock.elapsedRealtime() - startElapsedMs) + elapsedMs;
+        long wallMs = wallStartMs + elapsedMs;
         Date d = new Date(wallMs);
         return IGC_TIME_FMT_TL.get().format(d);
     }
@@ -340,6 +383,28 @@ public class IgcLogger {
     }
 
     // ========================================================================
+    // CRC-16-CCITT
+    // ========================================================================
+
+    /**
+     * Update CRC-16-CCITT with new data bytes.
+     * Polynomial: 0x1021, init: 0xFFFF, no reflection, no final XOR.
+     */
+    private void updateCrc16(byte[] data) {
+        for (byte b : data) {
+            crc16 ^= (b & 0xFF) << 8;
+            for (int i = 0; i < 8; i++) {
+                if ((crc16 & 0x8000) != 0) {
+                    crc16 = (crc16 << 1) ^ CRC16_POLY;
+                } else {
+                    crc16 <<= 1;
+                }
+            }
+            crc16 &= 0xFFFF;
+        }
+    }
+
+    // ========================================================================
     // Файловые операции
     // ========================================================================
 
@@ -349,30 +414,29 @@ public class IgcLogger {
                 - (SystemClock.elapsedRealtime() - startElapsedMs);
         Date startDate = new Date(wallStart);
 
-        writeLine("A" + IGC_DATE_FMT_TL.get().format(startDate));
+        writeLine("ATER");
         writeLine("HFDTE" + IGC_DATE_FMT_TL.get().format(startDate));
-        writeLine("HFPLTPILOT:ARTHUR");
-        writeLine("HFGTYGLIDERTYPE:Paraglider");
-        writeLine("HFGIDGLIDERID:TERMO1");
+        writeLine("HFPLTPILOT:" + pilotName);
+        writeLine("HFGTYGLIDERTYPE:" + gliderType);
+        writeLine("HFGIDGLIDERID:" + gliderId);
         writeLine("HFFXA035");
         writeLine("HFALGALTPRESSURE:1013.25");
         writeLine("HFGPS:Internal");
         writeLine("I000000");
     }
 
-    /** Закрыть файл — пишет G-record (CRC32) и flush + close */
+    /** Закрыть файл — пишет G-record (CRC-16-CCITT) и flush + close */
     private void closeCurrentFile() {
         if (currentOut == null) return;
 
         try {
-            // G-record — CRC32 от всего байтового содержимого (без байт самого G-record)
-            // Стандартный подход для IGC: G + 4-байтный CRC32 в hex
-            long crcValue = crc32.getValue();
-            writeLine("G" + String.format("%08X", crcValue & 0xFFFFFFFFL));
+            // G-record — CRC-16-CCITT от всего байтового содержимого (без байт самого G-record)
+            // IGC формат: G + 4-значный CRC-16 в hex
+            writeLine("G" + String.format("%04X", crc16 & 0xFFFF));
 
             currentOut.flush();
             currentOut.close();
-            Log.i(TAG, "File closed: " + currentFileName + " (" + seqNum + " records, CRC=" + String.format("%08X", crcValue) + ")");
+            Log.i(TAG, "File closed: " + currentFileName + " (" + seqNum + " records, CRC=" + String.format("%04X", crc16 & 0xFFFF) + ")");
         } catch (IOException e) {
             Log.e(TAG, "Failed to close IGC file", e);
         } finally {
@@ -381,15 +445,13 @@ public class IgcLogger {
         }
     }
 
-    /** Записать строку + CRLF в файл + обновить CRC32 + периодический flush (C-06) */
+    /** Записать строку + CRLF в файл + обновить CRC-16 + периодический flush (C-06) */
     private void writeLine(String line) {
         if (currentOut == null) return;
         try {
             byte[] bytes = (line + "\r\n").getBytes("ISO-8859-1");
             currentOut.write(bytes);
-            if (crc32 != null) {
-                crc32.update(bytes);
-            }
+            updateCrc16(bytes);
             long now = SystemClock.elapsedRealtime();
             if (now - lastFlushMs > 5000) {
                 currentOut.flush();

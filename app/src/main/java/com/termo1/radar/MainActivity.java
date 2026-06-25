@@ -490,6 +490,13 @@ public class MainActivity extends Activity {
         if (varioSoundManager != null) {
             varioSoundManager.setSoundEnabled(soundEnabled);
         }
+
+        // Pilot/glider config (H-03) — читаем из pref, передаём в IgcLogger
+        if (igcLogger != null) {
+            igcLogger.setPilotName(prefs.getString("pilot_name", "UNKNOWN"));
+            igcLogger.setGliderType(prefs.getString("glider_type", "Paraglider"));
+            igcLogger.setGliderId(prefs.getString("glider_id", "UNKNOWN"));
+        }
         boolean vibrateEnabled = prefs.getBoolean("vibrate_enabled", true);
         // сохраняем для использования в коде вибрации
 
@@ -947,6 +954,8 @@ public class MainActivity extends Activity {
         if (logManager.isLogging()) return;
         logManager.startLogging();
         igcLogger.startLogging();
+        // H-06: переводим FSM в полёт при ручном старте
+        flightStateMachine.setStateFlying();
         // Калибровка компаса: считаем направление стабильным 2 сек
         sensorController.calibrateHeading();
         android.widget.Toast.makeText(this,
@@ -1770,14 +1779,17 @@ public class MainActivity extends Activity {
                     }
                 }
 
-                trackHandler.postDelayed(this, 20);
+                // NEW-03: не постить если на паузе
+                if (!trackReplayer.isPaused()) {
+                    trackHandler.postDelayed(this, 20);
+                }
             }
         };
         trackHandler.postDelayed(trackTask, 20);
 
         // Статус и подгрузка карты под трек
         trackFileName = filePath != null ? new java.io.File(filePath).getName() : "встроенный";
-        trackSpeedIdx = 0; // 5x по умолчанию
+        trackSpeedIdx = 0; // 1x по умолчанию (NEW-01)
         String trackName = trackFileName;
         currentStatus = "▶ Проигрываем: " + trackName;
         android.widget.Toast.makeText(MainActivity.this,

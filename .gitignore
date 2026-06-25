@@ -1,36 +1,8 @@
-# Gradle
-.gradle/
+*.apk
+*.py
+*.tmp
 build/
-app/build/
-
-# IDE
 .idea/
 *.iml
-
-# OS
-Thumbs.db
-.DS_Store
-
-# Secrets
-.github_token.sh
-
-# Local
 local.properties
-kimi.txt
-
-# Temp
-._release_body*
-release_body_v014.txt
-
-# Dev scripts (not part of app)
-analyze_igc.py
-analyze_igc2.py
-analyze_track.py
-analyze_track2.py
-settings-screen.html
-
-# APKs
-*.apk
-T6.md
-*.html
-map_preview_screenshot.png
+.DS_Store
