@@ -2116,12 +2116,12 @@ public class MainActivity extends Activity {
 
             // === Instrument panel paints ===
             varioPaint.setAntiAlias(true);
-            varioPaint.setTextSize(50);
+            varioPaint.setTextSize(200); // 4x от 50
             varioPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
             varioPaint.setTextAlign(Paint.Align.CENTER);
 
             flightTimePaint.setAntiAlias(true);
-            flightTimePaint.setTextSize(22);
+            flightTimePaint.setTextSize(88); // 4x
             flightTimePaint.setTypeface(android.graphics.Typeface.MONOSPACE);
             flightTimePaint.setTextAlign(Paint.Align.CENTER);
             flightTimePaint.setColor(Color.argb(200, 0, 255, 255));
@@ -2469,6 +2469,16 @@ public class MainActivity extends Activity {
             // ========================================================================
             // INSTRUMENT PANEL (top 20%)
             // ========================================================================
+            // Status text at the VERY TOP line
+            Paint.FontMetrics fm = instrLabelPaint.getFontMetrics();
+            float topStatusH = 28;
+            instrLabelPaint.setColor(Color.argb(220, 255, 193, 7));
+            instrLabelPaint.setTextSize(topStatusH);
+            instrLabelPaint.setTextAlign(Paint.Align.CENTER);
+            canvas.drawText(currentStatus, w / 2f, topStatusH, instrLabelPaint);
+            instrLabelPaint.setTextSize(32);
+            instrLabelPaint.setTextAlign(Paint.Align.CENTER);
+
             float instrMidY = localInstrH / 2f;
             float colX_left = w * 0.12f;
             float colX_center = w / 2f;
@@ -2481,23 +2491,30 @@ public class MainActivity extends Activity {
             float gpsAgl = gpsManager.isAltitudeInitialized() ? (gpsAlt - startAlt) : 0f;
 
             instrValuePaint.setTextAlign(Paint.Align.CENTER);
-            instrValuePaint.setTextSize(28);
+            instrValuePaint.setTextSize(112); // 4x
             instrLabelPaint.setTextAlign(Paint.Align.CENTER);
+            instrLabelPaint.setTextSize(32); // labels чуть крупнее
 
-            // GPS Speed (left)
+            // Top row (values): left speed, right wind, center vario
+            float valueRowY = instrMidY + 10;
+
+            // Bottom row (labels): left below values
+            float instrLabelY = valueRowY + 30;
+
+            // GPS Speed (left, top row)
             instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
-            canvas.drawText(String.format(java.util.Locale.US, "%.1f", gpsSpeed), colX_left, instrMidY - 8, instrValuePaint);
+            canvas.drawText(String.format(java.util.Locale.US, "%.1f", gpsSpeed), colX_left, valueRowY, instrValuePaint);
             instrLabelPaint.setColor(Color.argb(160, 0, 255, 0));
-            canvas.drawText("скорость", colX_left, instrMidY + 18, instrLabelPaint);
+            canvas.drawText("скорость", colX_left, instrLabelY + 32, instrLabelPaint);
 
-            // GPS Altitude (left, below speed)
+            // GPS Altitude (left, below speed label)
             float gpsAltVal = gpsManager.getAltitude();
             float startAltVal = gpsManager.getStartAltitude();
             float aglVal = gpsManager.isAltitudeInitialized() ? (gpsAltVal - startAltVal) : 0f;
             instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
-            canvas.drawText(String.format(java.util.Locale.US, "%.0f", gpsAltVal), colX_left, instrMidY + 55, instrValuePaint);
+            canvas.drawText(String.format(java.util.Locale.US, "%.0f", gpsAltVal), colX_left, instrLabelY + 90, instrValuePaint);
             instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
-            canvas.drawText("высота MSL", colX_left, instrMidY + 80, instrLabelPaint);
+            canvas.drawText("высота MSL", colX_left, instrLabelY + 122, instrLabelPaint);
 
             // Center: Vario (×1.5 larger)
             float varioVal = sensorController.getVario();
@@ -2535,21 +2552,21 @@ public class MainActivity extends Activity {
             float windSpdMs = circlingManager.getDisplayWindSpeed();
             if (windDeg >= 0 && windSpdMs > 0) {
                 instrValuePaint.setColor(Color.argb(220, 100, 200, 255));
-                canvas.drawText(String.format(java.util.Locale.US, "%.1f", windSpdMs), colX_right, instrMidY - 8, instrValuePaint);
+                canvas.drawText(String.format(java.util.Locale.US, "%.1f", windSpdMs), colX_right, valueRowY, instrValuePaint);
                 instrLabelPaint.setColor(Color.argb(160, 100, 200, 255));
-                canvas.drawText("ветер м/с", colX_right, instrMidY + 18, instrLabelPaint);
+                canvas.drawText("ветер м/с", colX_right, instrLabelY + 32, instrLabelPaint);
             } else {
                 instrValuePaint.setColor(Color.argb(120, 100, 200, 255));
-                canvas.drawText("--", colX_right, instrMidY - 8, instrValuePaint);
+                canvas.drawText("--", colX_right, valueRowY, instrValuePaint);
                 instrLabelPaint.setColor(Color.argb(120, 100, 200, 255));
-                canvas.drawText("ветер м/с", colX_right, instrMidY + 18, instrLabelPaint);
+                canvas.drawText("ветер м/с", colX_right, instrLabelY + 32, instrLabelPaint);
             }
 
             // AGL (right, below wind)
             instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
-            canvas.drawText(String.format(java.util.Locale.US, "+%.0f", Math.max(0, aglVal)), colX_right, instrMidY + 55, instrValuePaint);
+            canvas.drawText(String.format(java.util.Locale.US, "+%.0f", Math.max(0, aglVal)), colX_right, instrLabelY + 90, instrValuePaint);
             instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
-            canvas.drawText("AGL", colX_right, instrMidY + 80, instrLabelPaint);
+            canvas.drawText("AGL", colX_right, instrLabelY + 122, instrLabelPaint);
 
             // ========================================================================
             // RADAR SECTION (middle 65%), drawn in translated canvas
