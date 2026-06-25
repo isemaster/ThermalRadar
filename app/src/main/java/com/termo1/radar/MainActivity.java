@@ -2707,10 +2707,10 @@ public class MainActivity extends Activity {
             btnTextPaint.setTextSize(26);
             btnTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
 
-            // Старт (слева)
+            // Старт записи (слева)
             canvas.drawRoundRect(calibBtnRect, 10, 10, btnBgPaint);
             btnTextPaint.setColor(Color.argb(200, 0, 255, 0));
-            canvas.drawText("СТАРТ", calibBtnRect.centerX(), calibBtnRect.centerY() + 9, btnTextPaint);
+            canvas.drawText("ЗАПИСЬ", calibBtnRect.centerX(), calibBtnRect.centerY() + 9, btnTextPaint);
 
             // Sensor data below start button
             if (thermalDetector != null) {
@@ -2993,7 +2993,8 @@ public class MainActivity extends Activity {
         }
 
         private void drawRecIndicator(Canvas canvas) {
-            boolean isLogging = logManager != null && logManager.isLogging();
+            boolean isLogging = (logManager != null && logManager.isLogging())
+                    || (igcLogger != null && igcLogger.isLogging());
             if (!isLogging) return;
             // Мигание: 500 мс вкл, 500 мс выкл
             long now = SystemClock.elapsedRealtime();
@@ -3001,6 +3002,10 @@ public class MainActivity extends Activity {
             float dotX = gearRect.left - 16;
             float cy = gearRect.centerY();
             float dotR = 14;
+            // Защита от off-screen при неинициализированном gearRect
+            if (dotX < 10 || cy < 10) {
+                dotX = 50; cy = 50;
+            }
             canvas.drawCircle(dotX - 26, cy, dotR, recDotPaint);
             canvas.drawText("REC", dotX - 12, cy + 12, recTextPaint);
         }
