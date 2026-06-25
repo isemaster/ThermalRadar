@@ -2761,6 +2761,16 @@ public class MainActivity extends Activity {
                     }
                     }
 
+                    // GPS статус — после "Крепление"
+                    float gpsY = tiltY + 18;
+                    if (gpsManager.isReady() && gpsManager.getFixAgeMs() < 5000) {
+                        sensorDataPaint.setColor(Color.argb(180, 50, 200, 50));
+                        canvas.drawText("gps OK", dataX, gpsY, sensorDataPaint);
+                    } else {
+                        sensorDataPaint.setColor(Color.argb(180, 200, 50, 50));
+                        canvas.drawText("gps OFF", dataX, gpsY, sensorDataPaint);
+                    }
+
                     // Track player panel — под "Крепление" в info-колонке
                     if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                     float ppY = tiltY + 24;
