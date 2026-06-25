@@ -2896,52 +2896,53 @@ public class MainActivity extends Activity {
         /** Панель управления трек-плеером (в info-колонке слева) */
         private void drawPlaybackPanel(Canvas canvas, float x, float y) {
             int w = getWidth();
-            float panelW = w * 0.45f;
+            float panelW = w - x - 16; // до правого края
 
-            // Строка 1: синее имя трека (обрезанное)
-            pbTrackPaint.setTextSize(20);
+            // Строка 1: синее имя трека
+            pbTrackPaint.setTextSize(22);
             String name = trackFileName;
-            if (name.length() > 22) name = name.substring(0, 19) + "...";
+            if (name.length() > 24) name = name.substring(0, 21) + "...";
             canvas.drawText("Трек: " + name, x, y, pbTrackPaint);
 
-            // Строка 2: seekbar
-            float barY = y + 14;
-            float barH = 6;
-            float barLeft = x, barRight = x + panelW - 100;
+            // Строка 2: seekbar на всю ширину
+            float barY = y + 20;
+            float barH = 8;
+            float barLeft = x, barRight = w - 16;
             float barMidY = barY + barH / 2f;
 
             canvas.drawRect(barLeft, barY, barRight, barY + barH, pbBarPaint);
             float progress = trackReplayer != null ? trackReplayer.getProgress() : 0;
             float thumbX = barLeft + (barRight - barLeft) * progress;
             canvas.drawRect(barLeft, barY, thumbX, barY + barH, pbThumbPaint);
-            canvas.drawCircle(thumbX, barMidY, 10, pbThumbPaint);
+            canvas.drawCircle(thumbX, barMidY, 14, pbThumbPaint);
 
             // Время
             String curTime = formatTime(trackReplayer != null ? (long)trackReplayer.getCurrentTime() : 0);
             String totalTime = formatTime(trackReplayer != null ? (long)trackReplayer.getTotalTime() : 0);
-            pbTextPaint.setTextSize(18);
-            canvas.drawText(curTime, barLeft, barY + barH + 16, pbTextPaint);
-            canvas.drawText(totalTime, barRight, barY + barH + 16, pbTextPaint);
+            pbTextPaint.setTextSize(20);
+            canvas.drawText(curTime, barLeft, barY + barH + 20, pbTextPaint);
+            canvas.drawText(totalTime, barRight, barY + barH + 20, pbTextPaint);
 
-            pbSeekbarRect.set(barLeft - 10, barY - 10, barRight + 10, barY + barH + 24);
+            pbSeekbarRect.set(barLeft - 16, barY - 16, barRight + 16, barY + barH + 32);
 
-            // Строка 3: кнопки (×2 размера)
-            float btnY = barY + barH + 30;
-            float btnW = 56, btnH = 36;
-            pbBtnPaint.setStrokeWidth(4);
+            // Строка 3: кнопки ×2 размера
+            float btnY = barY + barH + 32;
+            float btnW = 100, btnH = 56;
+            pbBtnPaint.setStrokeWidth(6);
 
             pbPlayBtn.set(x, btnY, x + btnW, btnY + btnH);
-            canvas.drawRoundRect(pbPlayBtn, 6, 6, pbBtnPaint);
+            canvas.drawRoundRect(pbPlayBtn, 8, 8, pbBtnPaint);
             boolean isPaused = trackReplayer != null && trackReplayer.isPaused();
-            pbTextPaint.setTextSize(26);
-            canvas.drawText(isPaused ? "▶" : "❚❚", pbPlayBtn.centerX(), pbPlayBtn.centerY() + 9, pbTextPaint);
+            pbTextPaint.setTextSize(36);
+            canvas.drawText(isPaused ? "▶" : "❚❚", pbPlayBtn.centerX(), pbPlayBtn.centerY() + 12, pbTextPaint);
 
-            float speedBtnLeft = pbPlayBtn.right + 14;
-            pbSpeedBtn.set(speedBtnLeft, btnY, speedBtnLeft + btnW + 16, btnY + btnH);
-            canvas.drawRoundRect(pbSpeedBtn, 6, 6, pbBtnPaint);
+            float speedBtnLeft = pbPlayBtn.right + 20;
+            float speedBtnW = 100;
+            pbSpeedBtn.set(speedBtnLeft, btnY, speedBtnLeft + speedBtnW, btnY + btnH);
+            canvas.drawRoundRect(pbSpeedBtn, 8, 8, pbBtnPaint);
             float speed = (trackSpeedIdx >= 0 && trackSpeedIdx < PLAYBACK_SPEEDS.length)
                     ? PLAYBACK_SPEEDS[trackSpeedIdx] : 1f;
-            canvas.drawText((int)speed + "x", pbSpeedBtn.centerX(), pbSpeedBtn.centerY() + 9, pbTextPaint);
+            canvas.drawText((int)speed + "x", pbSpeedBtn.centerX(), pbSpeedBtn.centerY() + 12, pbTextPaint);
         }
 
         /** Форматировать секунды в MM:SS */
