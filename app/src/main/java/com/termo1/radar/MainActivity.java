@@ -1958,6 +1958,10 @@ public class MainActivity extends Activity {
         private final Paint blindDataPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final Paint blindVarioPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
+        // REC indicator paints (мигающая красная точка + текст)
+        private final Paint recDotPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint recTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
         // Logging label
         private final Paint logLabelPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
         // Thermal label "крутим термик" (cached)
@@ -2048,6 +2052,15 @@ public class MainActivity extends Activity {
             sensorDataPaint.setTextSize(20);
             sensorDataPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
             sensorDataPaint.setTextAlign(Paint.Align.LEFT);
+
+            // REC indicator
+            recDotPaint.setStyle(Paint.Style.FILL);
+            recDotPaint.setColor(Color.argb(220, 255, 50, 50));
+            recTextPaint.setAntiAlias(true);
+            recTextPaint.setColor(Color.argb(220, 255, 50, 50));
+            recTextPaint.setTextSize(32);
+            recTextPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            recTextPaint.setTextAlign(Paint.Align.LEFT);
         }
 
         @Override
@@ -2750,6 +2763,7 @@ public class MainActivity extends Activity {
             }
 
             drawExitButton(canvas);
+            drawRecIndicator(canvas);
             drawGearButton(canvas);
 
             // Test mode overlay
@@ -2831,6 +2845,20 @@ public class MainActivity extends Activity {
             float inset = radius * 0.30f;
             canvas.drawLine(cx - inset, cy - inset, cx + inset, cy + inset, exitXPaint);
             canvas.drawLine(cx + inset, cy - inset, cx - inset, cy + inset, exitXPaint);
+        }
+
+        /** Мигающий 🔴 REC — слева от шестерёнки, только при записи */
+        private void drawRecIndicator(Canvas canvas) {
+            boolean isLogging = logManager != null && logManager.isLogging();
+            if (!isLogging) return;
+            // Мигание: 500 мс вкл, 500 мс выкл
+            long now = SystemClock.elapsedRealtime();
+            if ((now / 500) % 2 == 0) return;
+            float dotX = gearRect.left - 16;
+            float cy = gearRect.centerY();
+            float dotR = 14;
+            canvas.drawCircle(dotX - 26, cy, dotR, recDotPaint);
+            canvas.drawText("REC", dotX - 12, cy + 12, recTextPaint);
         }
 
         @Override
