@@ -24,7 +24,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * StaticMapLoader — загрузка тайлов CartoDB под компас.
  *
- * - Загружает 3×3 = 9 тайлов zoom 14, склеивает в composite 768×768 px
+ * - Загружает 5×5 = 25 тайлов zoom 14, склеивает в composite 1280×1280 px
  * - Кэш: LruCache (32 MB) + диск (LRU евикция, макс 50 МБ)
  * - Обновление: при пересечении границы центрального тайла
  * - Threading: ExecutorService вместо депрекейтнутого AsyncTask
@@ -33,12 +33,12 @@ public class StaticMapLoader {
 
     private static final String TAG = "TERMO1_MAP";
     private static final String CACHE_SUBDIR = "map_cache";
-    private static final int MAP_W = 768;
-    private static final int MAP_H = 768;
-    private static final int TILE_GRID = 3;       // 3×3 тайлов
+    private static final int MAP_W = 1280;
+    private static final int MAP_H = 1280;
+    private static final int TILE_GRID = 5;       // 5×5 тайлов
     private static final int TILE_SIZE = 256;      // px
     private static final int DEFAULT_ZOOM = 14;
-    private static final int MEM_CACHE_KB = 32 * 1024;       // 32 MB
+    private static final int MEM_CACHE_KB = 64 * 1024;       // 64 MB (было 32, теперь 25 тайлов)
     private static final long DISK_CACHE_MAX_BYTES = 50 * 1024 * 1024L; // 50 MB disk limit
 
     // Esri World Topo — контрастная топографическая карта (как в навигаторе)
@@ -148,7 +148,7 @@ public class StaticMapLoader {
     }
 
     // ========================================================================
-    // Внутренняя загрузка — 9 тайлов, склейка в composite 768×768
+    // Внутренняя загрузка — 25 тайлов, склейка в composite 1280×1280
     // ========================================================================
 
     private void loadMap(double lat, double lon, int zoom) {
@@ -187,7 +187,7 @@ public class StaticMapLoader {
         int centerTx = lonToTileX(lon, zoom);
         int centerTy = latToTileY(lat, zoom);
         final String url = String.format(Locale.US, OSM_TILE_URL, zoom, centerTy, centerTx);
-        Log.i(TAG, "Downloading 3x3 tiles centered on: " + url);
+        Log.i(TAG, "Downloading 5x5 tiles centered on: " + url);
 
         final int fZoom = zoom;
         final int fTx = centerTx;
@@ -230,8 +230,8 @@ public class StaticMapLoader {
 
         for (int dx = 0; dx < TILE_GRID; dx++) {
             for (int dy = 0; dy < TILE_GRID; dy++) {
-                int tx = centerTx + dx - 1;
-                int ty = centerTy + dy - 1;
+                int tx = centerTx + dx - TILE_GRID / 2;
+                int ty = centerTy + dy - TILE_GRID / 2;
                 Bitmap tile = downloadSingleTile(tx, ty, zoom);
                 if (tile != null) {
                     c.drawBitmap(tile, dx * TILE_SIZE, dy * TILE_SIZE, p);
