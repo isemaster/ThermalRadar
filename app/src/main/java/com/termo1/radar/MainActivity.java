@@ -2553,9 +2553,11 @@ public class MainActivity extends Activity {
 
             // ========================================================================
             // RADAR SECTION (middle 65%), drawn in translated canvas
-            // ========================================================================
+            // RADAR SECTION (middle 65%), drawn in translated canvas
             canvas.save();
             canvas.translate(0, localInstrH);
+            // Clip radar area so drawColor doesn't paint over instruments
+            canvas.clipRect(0, 0, w, localRadarH);
             // Draw black background for radar area
             canvas.drawColor(Color.rgb(0, 0, 0));
 
