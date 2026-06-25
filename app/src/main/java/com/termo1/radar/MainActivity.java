@@ -244,6 +244,11 @@ public class MainActivity extends Activity {
     private Runnable bgTask;
     private static final long BG_INTERVAL_MS = 100L;
 
+    // Track replay
+    private static final float[] PLAYBACK_SPEEDS = {5f, 1f, 2f, 10f};
+    private int trackSpeedIdx;
+    private String trackFileName;
+
     // ========================================================================
     // Power
     // ========================================================================
@@ -1763,7 +1768,9 @@ public class MainActivity extends Activity {
         trackHandler.postDelayed(trackTask, 20);
 
         // Статус и подгрузка карты под трек
-        String trackName = filePath != null ? new java.io.File(filePath).getName() : "встроенный";
+        trackFileName = filePath != null ? new java.io.File(filePath).getName() : "встроенный";
+        trackSpeedIdx = 0; // 5x по умолчанию
+        String trackName = trackFileName;
         currentStatus = "▶ Проигрываем: " + trackName;
         android.widget.Toast.makeText(MainActivity.this,
                 "▶ " + trackName + " (5x)", android.widget.Toast.LENGTH_SHORT).show();
@@ -1973,6 +1980,18 @@ public class MainActivity extends Activity {
         private float touchX, touchY;
         private long touchDownTime;
 
+        // Playback controls geometry (track mode)
+        private final RectF pbSeekbarRect = new RectF();
+        private final RectF pbPlayBtn = new RectF();
+        private final RectF pbSpeedBtn = new RectF();
+        private boolean pbDragging;
+        private final Paint pbTrackPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint pbBgPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint pbTextPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint pbBarPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint pbThumbPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Paint pbBtnPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
         // GPS trail render buffers (reused each frame)
         private final float[] trailPxBuf = new float[GPS_TRAIL_MAX];
         private final float[] trailPyBuf = new float[GPS_TRAIL_MAX];
@@ -2061,6 +2080,27 @@ public class MainActivity extends Activity {
             recTextPaint.setTextSize(32);
             recTextPaint.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
             recTextPaint.setTextAlign(Paint.Align.LEFT);
+
+            // Playback controls
+            pbTrackPaint.setAntiAlias(true);
+            pbTrackPaint.setColor(Color.argb(220, 50, 150, 255));
+            pbTrackPaint.setTextSize(26);
+            pbTrackPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
+            pbTrackPaint.setTextAlign(Paint.Align.LEFT);
+            pbBgPaint.setStyle(Paint.Style.FILL);
+            pbBgPaint.setColor(Color.argb(180, 10, 10, 10));
+            pbTextPaint.setAntiAlias(true);
+            pbTextPaint.setColor(Color.argb(200, 200, 200, 200));
+            pbTextPaint.setTextSize(22);
+            pbTextPaint.setTypeface(android.graphics.Typeface.MONOSPACE);
+            pbTextPaint.setTextAlign(Paint.Align.CENTER);
+            pbBarPaint.setStyle(Paint.Style.FILL);
+            pbBarPaint.setColor(Color.argb(100, 100, 100, 100));
+            pbThumbPaint.setStyle(Paint.Style.FILL);
+            pbThumbPaint.setColor(Color.argb(220, 50, 150, 255));
+            pbBtnPaint.setStyle(Paint.Style.STROKE);
+            pbBtnPaint.setStrokeWidth(3);
+            pbBtnPaint.setColor(Color.argb(200, 200, 200, 200));
         }
 
         @Override
@@ -2765,6 +2805,9 @@ public class MainActivity extends Activity {
             drawExitButton(canvas);
             drawRecIndicator(canvas);
             drawGearButton(canvas);
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                drawPlaybackPanel(canvas);
+            }
 
             // Test mode overlay
             if (testMode) {
@@ -2847,7 +2890,81 @@ public class MainActivity extends Activity {
             canvas.drawLine(cx + inset, cy - inset, cx - inset, cy + inset, exitXPaint);
         }
 
-        /** Мигающий 🔴 REC — слева от шестерёнки, только при записи */
+        /** Панель управления трек-плеером (trackMode) */
+        private void drawPlaybackPanel(Canvas canvas) {
+            int w = getWidth(), h = getHeight();
+            float panelY = h - 120;
+            float panelH = 110;
+            float left = 16, right = w - 16;
+
+            // Полупрозрачный фон
+            canvas.drawRect(left, panelY, right, panelY + panelH, pbBgPaint);
+
+            // Строка 1: синее имя трека
+            canvas.drawText("Трек: " + trackFileName, left + 8, panelY + 24, pbTrackPaint);
+
+            // Строка 2: seekbar
+            float barY = panelY + 44;
+            float barH = 6;
+            float barLeft = left + 8, barRight = right - 100;
+            float barMidY = barY + barH / 2f;
+
+            // Фон seekbar
+            canvas.drawRect(barLeft, barY, barRight, barY + barH, pbBarPaint);
+
+            // Заполненная часть
+            float progress = trackReplayer != null ? trackReplayer.getProgress() : 0;
+            float thumbX = barLeft + (barRight - barLeft) * progress;
+            canvas.drawRect(barLeft, barY, thumbX, barY + barH, pbThumbPaint);
+
+            // Бегунок
+            canvas.drawCircle(thumbX, barMidY, 10, pbThumbPaint);
+
+            // Время слева и справа от seekbar
+            String curTime = formatTime(trackReplayer != null ? (long)trackReplayer.getCurrentTime() : 0);
+            String totalTime = formatTime(trackReplayer != null ? (long)trackReplayer.getTotalTime() : 0);
+            canvas.drawText(curTime, barLeft, barY + barH + 20, pbTextPaint);
+            canvas.drawText(totalTime, barRight, barY + barH + 20, pbTextPaint);
+
+            // Сохраняем геометрию seekbar для touch
+            pbSeekbarRect.set(barLeft - 10, barY - 10, barRight + 10, barY + barH + 30);
+
+            // Строка 3: кнопки Play/Pause и Speed
+            float btnY = panelY + 78;
+            float btnW = 56, btnH = 28;
+
+            // Кнопка Play/Pause
+            pbPlayBtn.set(left + 8, btnY, left + 8 + btnW, btnY + btnH);
+            canvas.drawRoundRect(pbPlayBtn, 4, 4, pbBtnPaint);
+            boolean isPaused = trackReplayer != null && trackReplayer.isPaused();
+            canvas.drawText(isPaused ? "▶" : "❚❚", pbPlayBtn.centerX(), pbPlayBtn.centerY() + 8, pbTextPaint);
+
+            // Кнопка Speed
+            float speedBtnLeft = pbPlayBtn.right + 12;
+            pbSpeedBtn.set(speedBtnLeft, btnY, speedBtnLeft + btnW + 10, btnY + btnH);
+            canvas.drawRoundRect(pbSpeedBtn, 4, 4, pbBtnPaint);
+            float speed = (trackSpeedIdx >= 0 && trackSpeedIdx < PLAYBACK_SPEEDS.length)
+                    ? PLAYBACK_SPEEDS[trackSpeedIdx] : 5f;
+            canvas.drawText((int)speed + "x", pbSpeedBtn.centerX(), pbSpeedBtn.centerY() + 8, pbTextPaint);
+        }
+
+        /** Форматировать секунды в MM:SS */
+        private String formatTime(long sec) {
+            long m = sec / 60, s = sec % 60;
+            return (m < 10 ? "0" : "") + m + ":" + (s < 10 ? "0" : "") + s;
+        }
+
+        /** Обновить позицию плеера по касанию seekbar */
+        private void updateSeekFromTouch(float x) {
+            if (trackReplayer == null) return;
+            float barLeft = pbSeekbarRect.left + 10;
+            float barRight = pbSeekbarRect.right - 10;
+            float frac = (x - barLeft) / (barRight - barLeft);
+            frac = Math.max(0, Math.min(1, frac));
+            float total = trackReplayer.getTotalTime();
+            trackReplayer.seekTo(frac * total);
+        }
+
         private void drawRecIndicator(Canvas canvas) {
             boolean isLogging = logManager != null && logManager.isLogging();
             if (!isLogging) return;
@@ -2869,11 +2986,38 @@ public class MainActivity extends Activity {
             if (event.getAction() == MotionEvent.ACTION_DOWN) {
                 // Запоминаем время для детекции долгого нажатия
                 touchDownTime = System.currentTimeMillis();
+                // Seekbar drag start
+                if (trackMode && trackReplayer != null && trackReplayer.isRunning()
+                        && pbSeekbarRect.contains(touchX, touchY)) {
+                    pbDragging = true;
+                    trackReplayer.setPaused(true);
+                    updateSeekFromTouch(touchX);
+                    return true;
+                }
+                return true;
+            }
+
+            if (event.getAction() == MotionEvent.ACTION_MOVE && pbDragging) {
+                updateSeekFromTouch(touchX);
                 return true;
             }
 
             if (event.getAction() == MotionEvent.ACTION_UP) {
                 long touchDuration = System.currentTimeMillis() - touchDownTime;
+                pbDragging = false;
+
+                // Playback controls (track mode)
+                if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                    if (pbPlayBtn.contains(touchX, touchY)) {
+                        trackReplayer.setPaused(!trackReplayer.isPaused());
+                        return true;
+                    }
+                    if (pbSpeedBtn.contains(touchX, touchY)) {
+                        trackSpeedIdx = (trackSpeedIdx + 1) % PLAYBACK_SPEEDS.length;
+                        trackReplayer.setSpeed(PLAYBACK_SPEEDS[trackSpeedIdx]);
+                        return true;
+                    }
+                }
 
                 if (exitRect.contains(touchX, touchY)) {
                     showExitOnScreenDialog();

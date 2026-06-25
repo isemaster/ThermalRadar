@@ -70,6 +70,7 @@ public class TrackReplayer {
     private boolean thermalActive;
     private boolean showRedCore;
     private boolean hasSensorData; // true = есть ZIP с сенсорами, false = только IGC
+    private boolean paused; // принудительная пауза
     private float thermalBearing;     // from pilot
     private float thermalDistance;    // from pilot
     private float thermalRadiusM = 25f; // radius in meters
@@ -240,6 +241,7 @@ public class TrackReplayer {
      */
     public void update(long realDeltaMs) {
         if (!running || track == null || track.size() < 2) return;
+        if (paused) return;
 
         float dt = realDeltaMs / 1000f;
         if (dt <= 0) return;
@@ -511,9 +513,41 @@ public class TrackReplayer {
 
     /** Progress 0..1 */
     public float getProgress() {
-        if (track == null || track.size() < 2) return 0;
-        float totalDur = track.get(track.size() - 1).timeSec - track.get(0).timeSec;
-        if (totalDur <= 0) return 0;
-        return Math.min(1, totalSimSec / totalDur);
+        float total = getTotalTime();
+        if (total <= 0) return 0;
+        return Math.min(1, totalSimSec / total);
     }
+
+    // ===== Player controls (трек-плеер) =====
+
+    /** Полная длительность трека (сек) */
+    public float getTotalTime() {
+        if (track == null || track.size() < 2) return 0;
+        return track.get(track.size() - 1).timeSec - track.get(0).timeSec;
+    }
+
+    /** Текущая позиция (сек от начала) */
+    public float getCurrentTime() {
+        return totalSimSec;
+    }
+
+    /** Перемотать на позицию (сек от начала) */
+    public void seekTo(float timeSec) {
+        totalSimSec = Math.max(0, Math.min(timeSec, getTotalTime()));
+        currentIdx = 0;
+        // Пересчитать позицию на первом update
+        double oldLat = pilotLat, oldLon = pilotLon;
+        if (track != null && track.size() > 0) {
+            TrackPoint first = track.get(0);
+            pilotLat = first.lat;
+            pilotLon = first.lon;
+            altitude = first.altMeters;
+        }
+        heading = 0;
+        vario = 0;
+    }
+
+    /** Пауза/продолжить */
+    public void setPaused(boolean v) { this.paused = v; }
+    public boolean isPaused() { return paused; }
 }
