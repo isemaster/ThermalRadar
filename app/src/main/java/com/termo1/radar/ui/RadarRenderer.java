@@ -104,8 +104,9 @@ public class RadarRenderer {
     private boolean pilotPositionValid;
     // Порог обновления: если смещение >30% от размера карты — пора грузить новую
     private static final float MAP_REFRESH_THRESHOLD = 0.30f;
-    // Реальный размер карты на местности: 3 тайла zoom 14 на 60°N
-    private static final double MAP_METERS_TOTAL = 3671.0;
+    // Реальный размер карты на местности: 5 тайлов zoom 14 на 55°N
+    /** Полный размер карты в метрах (5×5 тайлов × 256 px × 5.48 м/px ≈ 7000 м на широте 55°) */
+    private static final double MAP_METERS_TOTAL = 7000.0;
 
     // Кэш для haversine при вычислении сдвига карты
     private final float[] mapDistRes = new float[2];
@@ -343,7 +344,7 @@ public class RadarRenderer {
             float[] offset = computeMapOffsetPx();
 
             // Карта 768×768, масштаб: край радара r = 1500 м
-            // 3×3 тайла = 3671 м, mapSize = 3671/1500 × r = 2.447 × r
+            // 5×5 тайлов = 7000 м, mapSize = 7000/1500 × r = 4.667 × r
             float mapSize = r * (float)(MAP_METERS_TOTAL / 1500.0);
             float mapLeft = cx - mapSize / 2f - offset[0];
             float mapTop = cy - mapSize / 2f + offset[1];
