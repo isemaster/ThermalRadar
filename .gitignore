@@ -2,7 +2,15 @@
 *.py
 *.tmp
 build/
+.gradle/
 .idea/
 *.iml
 local.properties
 .DS_Store
+*.txt
+*.html
+*.png
+R3*.md
+R9.md
+R11.md
+33.txt
