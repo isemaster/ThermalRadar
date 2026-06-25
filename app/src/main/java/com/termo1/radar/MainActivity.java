@@ -2750,28 +2750,20 @@ public class MainActivity extends Activity {
                 {
                     float mountTilt = sensorController.getMountTiltDeg();
                     float currTilt = sensorController.getCurrentTiltDeg();
+                    // GPS статус на одной строке с креплением
+                    String gpsLabel = (gpsManager.isReady() && gpsManager.getFixAgeMs() < 5000)
+                            ? " | gps OK" : " | gps OFF";
+                    String tiltTxt;
                     if (mountTilt > 0.5f) {
-                        canvas.drawText(String.format(java.util.Locale.US,
-                                "\u041A\u0440\u0435\u043F\u043B\u0435\u043D\u0438\u0435: %.0f\u00B0 | \u041A\u0440\u0435\u043D: %.0f\u00B0",
-                                mountTilt, currTilt), dataX, tiltY, sensorDataPaint);
+                        tiltTxt = String.format("Крепление: %.0f° | Крен: %.0f°", mountTilt, currTilt);
                     } else {
-                        canvas.drawText(String.format(java.util.Locale.US,
-                                "\u041A\u0440\u0435\u043D: %.0f\u00B0 (\u043D\u0435\u0442 \u043A\u0430\u043B\u0438\u0431\u0440\u043E\u0432\u043A\u0438)",
-                                currTilt), dataX, tiltY, sensorDataPaint);
+                        tiltTxt = String.format("Крен: %.0f° (нет калибровки)", currTilt);
                     }
-                    }
+                    sensorDataPaint.setColor(Color.argb(120, 0, 255, 0));
+                    canvas.drawText(tiltTxt + gpsLabel, dataX, tiltY, sensorDataPaint);
+                }
 
-                    // GPS статус — после "Крепление"
-                    float gpsY = tiltY + 18;
-                    if (gpsManager.isReady() && gpsManager.getFixAgeMs() < 5000) {
-                        sensorDataPaint.setColor(Color.argb(180, 50, 200, 50));
-                        canvas.drawText("gps OK", dataX, gpsY, sensorDataPaint);
-                    } else {
-                        sensorDataPaint.setColor(Color.argb(180, 200, 50, 50));
-                        canvas.drawText("gps OFF", dataX, gpsY, sensorDataPaint);
-                    }
-
-                    // Track player panel — под "Крепление" в info-колонке
+                // Track player panel — под "Крепление" в info-колонке
                     if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                     float ppY = tiltY + 24;
                     drawPlaybackPanel(canvas, dataX, ppY);
@@ -3007,7 +2999,8 @@ public class MainActivity extends Activity {
                 dotX = 50; cy = 50;
             }
             canvas.drawCircle(dotX - 26, cy, dotR, recDotPaint);
-            canvas.drawText("REC", dotX - 12, cy + 12, recTextPaint);
+            // REC сдвинут на 2 символа влево
+            canvas.drawText("REC", dotX - 48, cy + 12, recTextPaint);
         }
 
         @Override
@@ -3072,7 +3065,7 @@ public class MainActivity extends Activity {
                     return true;
                 }
                 if (startBtnRect.contains(touchX, touchY)) {
-                    if (logManager.isLogging()) confirmStopLogging();
+                    if (logManager.isLogging() || igcLogger.isLogging()) confirmStopLogging();
                     return true;
                 }
                 if (testBtnRect.contains(touchX, touchY)) {
