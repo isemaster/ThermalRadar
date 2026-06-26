@@ -161,7 +161,7 @@ public class LiftDatabase {
 
     /**
      * Индекс лучшего сектора (с максимальным подъёмом).
-     * @return 0-35, или -1 если данных нет
+     * @return 0-{SECTOR_COUNT-1}, или -1 если данных нет
      */
     public synchronized int getBestSectorIndex() {
         return bestSectorIndex;
@@ -226,7 +226,7 @@ public class LiftDatabase {
      * Сектор 0 = 350°..10°, сектор 1 = 10°..20°, и т.д.
      *
      * @param heading курс в градусах 0-360
-     * @return индекс 0-35
+     * @return индекс 0-{SECTOR_COUNT-1}
      */
     public static int headingToSector(float heading) {
         // Нормализуем: добавляем полсектора, чтобы 0° попадало в сектор 0
@@ -241,7 +241,7 @@ public class LiftDatabase {
     /**
      * Преобразовать индекс сектора в центральный heading.
      *
-     * @param sector  индекс 0-35
+     * @param sector  индекс 0-{SECTOR_COUNT-1}
      * @return центральный heading (градусы)
      */
     public static float sectorToHeading(int sector) {
@@ -252,7 +252,7 @@ public class LiftDatabase {
     /**
      * Диапазон heading для сектора (начало, конец).
      *
-     * @param sector  индекс 0-35
+     * @param sector  индекс 0-{SECTOR_COUNT-1}
      * @return float[]{startDeg, endDeg}
      */
     public static float[] sectorRange(int sector) {

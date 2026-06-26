@@ -788,7 +788,7 @@ public class CirclingManager {
 
     /** Установить воздушную скорость (м/с) */
     public void setAirspeed(float ms) {
-        this.airspeedMs = Math.max(8f, Math.min(15f, ms));
+        this.airspeedMs = Math.max(5f, Math.min(40f, ms)); // CM-6: расширен [5,40] для дельтапланов/планеров
     }
 
     /**

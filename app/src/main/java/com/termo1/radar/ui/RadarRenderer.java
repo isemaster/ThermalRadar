@@ -73,6 +73,8 @@ public class RadarRenderer {
     private final Paint trailCirclingGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     // Map trail — синяя линия на карте (3×3 км)
     private final Paint mapTrailPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    /** Кешированный Path для map trail (RR-5: drawLine → Path, 0 аллокаций) */
+    private final Path mapTrailPath = new Path();
     // IGC track polyline (MA-4 — для отображения всего трека в trackMode)
     private final Paint trackPolylinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private double[] trackLats;
@@ -616,9 +618,12 @@ public class RadarRenderer {
 
     private void drawMapTrail(Canvas c, float[] px, float[] py, int count) {
         if (count < 2) return;
+        mapTrailPath.reset();
+        mapTrailPath.moveTo(px[0], py[0]);
         for (int i = 1; i < count; i++) {
-            c.drawLine(px[i-1], py[i-1], px[i], py[i], mapTrailPaint);
+            mapTrailPath.lineTo(px[i], py[i]);
         }
+        c.drawPath(mapTrailPath, mapTrailPaint);
     }
 
     // ===== IGC TRACK POLYLINE (MA-4) — белый пунктир, весь IGC-трек =====

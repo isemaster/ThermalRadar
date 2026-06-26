@@ -78,8 +78,11 @@ public class IgcLogger {
     private FileOutputStream currentFos; // для fsync
     private String currentFileName;
 
-    // Для подсчёта CRC-16-CCITT всего содержимого файла
+    /** Для подсчёта CRC-16-CCITT всего содержимого файла */
     private int crc16 = 0xFFFF;
+
+    /** StringBuilder для formatIGCTime (IL-2: без new Date() на 5Гц) */
+    private final StringBuilder igcTimeSb = new StringBuilder(6);
 
     // Pilot/glider configuration
     private String pilotName = "UNKNOWN";
@@ -358,10 +361,18 @@ public class IgcLogger {
 
     /**
      * Форматировать время IGC: HHMMSS из elapsed ms (H-08: wallStartMs фикс).
-     * Исправлено IL-2: кеш форматтера ThreadLocal вместо new Date() + format на 5Hz. */
+     * IL-2: без new Date() — ручной расчёт + StringBuilder, 0 аллокаций на 5Гц. */
     private String formatIGCTime(long elapsedMs) {
         long wallMs = wallStartMs + elapsedMs;
-        return IGC_TIME_FMT_TL.get().format(new Date(wallMs));
+        long totalSec = wallMs / 1000;
+        long hh = (totalSec / 3600) % 24;
+        long mm = (totalSec / 60) % 60;
+        long ss = totalSec % 60;
+        igcTimeSb.setLength(0);
+        if (hh < 10) igcTimeSb.append('0'); igcTimeSb.append(hh);
+        if (mm < 10) igcTimeSb.append('0'); igcTimeSb.append(mm);
+        if (ss < 10) igcTimeSb.append('0'); igcTimeSb.append(ss);
+        return igcTimeSb.toString();
     }
 
     /**
