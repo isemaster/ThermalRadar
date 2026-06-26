@@ -215,6 +215,9 @@ public class TrackReplayer {
         if (windDir < 0) windDir += 360;
         if (windDir >= 360) windDir -= 360;
         if (windSpeed < 0.3f) return;
+        // FIX: only update EMA when wind is significant (>3 m/s)
+        // Weak along-wind means crosswind leg — don't dilute the estimate
+        if (windSpeed < 3.0f) return;
         // EMA smooth: α=0.15 (медленнее, чем было 0.2 — меньше прыжков)
         if (smoothWindSpd < 0 || smoothWindDir < 0) {
             smoothWindDir = windDir;
