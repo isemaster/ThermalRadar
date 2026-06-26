@@ -126,6 +126,28 @@ public class SettingsActivity extends Activity {
         });
         root.addView(airspeedSeek);
 
+        // Поляра: качество на разных скоростях
+        TextView polarLabel = new TextView(this);
+        polarLabel.setText("Качество L/D по поляре:");
+        polarLabel.setTextSize(14);
+        polarLabel.setTypeface(android.graphics.Typeface.MONOSPACE);
+        polarLabel.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
+        polarLabel.setPadding(0, 16, 0, 8);
+        root.addView(polarLabel);
+
+        float polarTrim = 8.7f;
+        float polarHalf = 7.25f;
+        float polarFull = 6.0f;
+        TextView polarInfo = new TextView(this);
+        polarInfo.setText(String.format(java.util.Locale.US,
+                "Триммер 35км/ч → L/D %.1f\n50%% аксель 45км/ч → L/D %.1f\nПолный 52.5км/ч → L/D %.1f",
+                polarTrim, polarHalf, polarFull));
+        polarInfo.setTextSize(12);
+        polarInfo.setTypeface(android.graphics.Typeface.MONOSPACE);
+        polarInfo.setTextColor(android.graphics.Color.argb(140, 100, 200, 255));
+        polarInfo.setPadding(8, 4, 8, 12);
+        root.addView(polarInfo);
+
         // 2f. VarioThermal threshold slider
         TextView varioThreshLabel = new TextView(this);
         varioThreshLabel.setText("Порог Vario-термика");

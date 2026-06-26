@@ -2922,7 +2922,7 @@ public class MainActivity extends Activity {
             float btnAreaTop = bottomPanelY - (50 + 24);
             float glideBarY2 = btnAreaTop + 30;
 
-            // L/D (quality планирования) — из буфера GPS
+            // L/D — из буфера GPS + поляра как fallback
             float glideRatio = 0f;
             boolean glideValid = false;
             if (glideBufCount >= 2) {
@@ -2986,6 +2986,30 @@ public class MainActivity extends Activity {
                     glideRatio = 99.0f;
                     glideValid = true;
                 }
+            }
+
+            // Поляра как fallback: если GPS-расчёт не дал результата
+            if (!glideValid && gpsManager.isReady()) {
+                float speedMs = gpsManager.getSpeed();
+                // Три точки поляры: (скорость км/ч → L/D)
+                // Триммер 35км/ч→8.7, пол-акселя 45км/ч→7.25, полный 52.5км/ч→6.0
+                float speedKmh = speedMs * 3.6f;
+                float polarLD;
+                if (speedKmh <= 35f) {
+                    polarLD = 8.7f; // триммер
+                } else if (speedKmh <= 45f) {
+                    // Интерполяция: 35→8.7, 45→7.25
+                    float t = (speedKmh - 35f) / 10f;
+                    polarLD = 8.7f - (8.7f - 7.25f) * t;
+                } else if (speedKmh <= 52.5f) {
+                    // Интерполяция: 45→7.25, 52.5→6.0
+                    float t = (speedKmh - 45f) / 7.5f;
+                    polarLD = 7.25f - (7.25f - 6.0f) * t;
+                } else {
+                    polarLD = 6.0f; // полный аксель
+                }
+                glideRatio = Math.min(99.0f, polarLD);
+                glideValid = true;
             }
 
             // Range = AGL × L/D (кап 99.9 км, может быть отрицательным)
