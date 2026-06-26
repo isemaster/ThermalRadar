@@ -166,7 +166,7 @@ public class RadarRenderer {
 
         // Wind
         windLinePaint.setStyle(Paint.Style.STROKE);
-        windLinePaint.setStrokeWidth(15);
+        windLinePaint.setStrokeWidth(30); // 2x thicker (was 15)
         windLinePaint.setColor(Color.argb(200, 100, 200, 255));
         windLinePaint.setStrokeCap(Paint.Cap.ROUND);
         windLinePaint.setStrokeJoin(Paint.Join.ROUND);
@@ -531,16 +531,19 @@ public class RadarRenderer {
         if (windFromDeg < 0 || windSpeedMs <= 0) return;
 
         double aRad = Math.toRadians(windFromDeg);
+        // Стрелка короче в 1.5x: раньше от r до r*0.767 (23%), теперь от r до r*0.845 (15.5%)
+        float innerFrac = 0.845f;
         float ex = cx + (float)(r * Math.sin(aRad));
         float ey = cy - (float)(r * Math.cos(aRad));
-        float innerDist = r * 0.767f;
+        float innerDist = r * innerFrac;
         float ix = cx + (float)(innerDist * Math.sin(aRad));
         float iy = cy - (float)(innerDist * Math.cos(aRad));
 
         c.drawLine(ex, ey, ix, iy, windLinePaint);
 
-        float tipAngle = 0.6f;
-        float tipLen = 20f;
+        // Кончик стрелки — крупнее и заметнее
+        float tipAngle = 0.5f;    // шире раскрыв (было 0.6)
+        float tipLen = 30f;       // длиннее (было 20)
         float dx = cx - ex;
         float dy = cy - ey;
         float len = (float) Math.sqrt(dx*dx + dy*dy);
@@ -549,17 +552,23 @@ public class RadarRenderer {
             float uy = dy / len;
             float px = ix;
             float py = iy;
-            float ax = px + tipLen * (float)(Math.cos(Math.PI - tipAngle) * ux - Math.sin(Math.PI - tipAngle) * uy);
-            float ay = py + tipLen * (float)(Math.sin(Math.PI - tipAngle) * ux + Math.cos(Math.PI - tipAngle) * uy);
-            float bx = px + tipLen * (float)(Math.cos(Math.PI + tipAngle) * ux - Math.sin(Math.PI + tipAngle) * uy);
-            float by = py + tipLen * (float)(Math.sin(Math.PI + tipAngle) * ux + Math.cos(Math.PI + tipAngle) * uy);
-
             Path arrowPath = new Path();
             arrowPath.moveTo(px, py);
+            float ax = px + tipLen * (float)(Math.cos(Math.PI - tipAngle) * ux - Math.sin(Math.PI - tipAngle) * uy);
+            float ay = py + tipLen * (float)(Math.sin(Math.PI - tipAngle) * ux + Math.cos(Math.PI - tipAngle) * uy);
             arrowPath.lineTo(ax, ay);
+            float bx = px + tipLen * (float)(Math.cos(Math.PI + tipAngle) * ux - Math.sin(Math.PI + tipAngle) * uy);
+            float by = py + tipLen * (float)(Math.sin(Math.PI + tipAngle) * ux + Math.cos(Math.PI + tipAngle) * uy);
             arrowPath.lineTo(bx, by);
             arrowPath.close();
+            // Кончик жирнее за счёт Stroke + Fill
             c.drawPath(arrowPath, windFillPaint);
+            // Обводка кончика для чёткости
+            windLinePaint.setStrokeWidth(4);
+            windLinePaint.setStyle(Paint.Style.STROKE);
+            c.drawPath(arrowPath, windLinePaint);
+            windLinePaint.setStrokeWidth(30);
+            windLinePaint.setStyle(Paint.Style.STROKE);
         }
 
         float lx = cx + (float)((r + 50) * Math.sin(aRad));

@@ -74,6 +74,11 @@ public class TrackReplayer {
     private float lastFrameAlt;
     private boolean hasLastFramePosition;
 
+    // Сглаженная скорость (EMA) — убирает провалы на GPS-повторах 5Hz
+    private float smoothSpeed = 0f;
+    private float smoothWindDir = -1f;
+    private float smoothWindSpd = -1f;
+
     // Thermal state
     private boolean thermalActive;
     private boolean showRedCore;
@@ -154,6 +159,7 @@ public class TrackReplayer {
      * wind = ground_velocity - air_velocity
      * Работает когда пилот на триммерах (снижение ≤1.3 м/с) — 99% случаев.
      * GPS track + compass heading + trim airspeed.
+     * Результат: направление ОТКУДА дует ветер (meteo convention, +180°).
      */
     public void estimateWindFromFlight() {
         float hdgDeg = getCompassHeading();
@@ -163,21 +169,25 @@ public class TrackReplayer {
         double wy = speed * Math.cos(gpsRad) - airspeedMs * Math.cos(hdgRad);
         float newSpeed = (float) Math.sqrt(wx*wx + wy*wy);
         if (newSpeed < 0.3f) return;
-        float newDir = (float) Math.toDegrees(Math.atan2(wx, wy));
+        // atan2(wx,wy) = КУДА дует ветер → +180° = ОТКУДА (meteo convention)
+        float newDir = (float) Math.toDegrees(Math.atan2(wx, wy)) + 180f;
         if (newDir < 0) newDir += 360;
-        // EMA smooth into existing wind
-        if (windSpeedMs < 0 || windFromDeg < 0) {
-            windFromDeg = newDir;
-            windSpeedMs = newSpeed;
+        if (newDir >= 360) newDir -= 360;
+        // EMA smooth: α=0.15 (медленнее, чем было 0.2 — меньше прыжков)
+        if (smoothWindSpd < 0 || smoothWindDir < 0) {
+            smoothWindDir = newDir;
+            smoothWindSpd = newSpeed;
         } else {
-            float diff = newDir - windFromDeg;
+            float diff = newDir - smoothWindDir;
             while (diff > 180) diff -= 360;
             while (diff < -180) diff += 360;
-            windFromDeg += 0.2f * diff;
-            if (windFromDeg < 0) windFromDeg += 360;
-            if (windFromDeg >= 360) windFromDeg -= 360;
-            windSpeedMs += 0.2f * (newSpeed - windSpeedMs);
+            smoothWindDir += 0.15f * diff;
+            if (smoothWindDir < 0) smoothWindDir += 360;
+            if (smoothWindDir >= 360) smoothWindDir -= 360;
+            smoothWindSpd += 0.15f * (newSpeed - smoothWindSpd);
         }
+        windFromDeg = smoothWindDir;
+        windSpeedMs = smoothWindSpd;
     }
 
     /**
@@ -366,11 +376,14 @@ public class TrackReplayer {
         circlePointCount = 0;
         guidanceText = "";
         sensorIdx = 0;
-        // Wind: cold start. initWindFromTrack() will be called on first straight segment
+        // Wind: cold start
         windFromDeg = -1f;
         windSpeedMs = -1f;
         sensorHeading = 0f;
         hasSensorHeading = false;
+        smoothSpeed = 0f;
+        smoothWindDir = -1f;
+        smoothWindSpd = -1f;
     }
 
     public void stop() {
@@ -500,21 +513,29 @@ public class TrackReplayer {
             prevHeading = heading;
         }
 
-        // Speed from per-frame position delta (FIX: was segment-start based)
+        // Speed from per-frame position delta, EMA-smoothed (FIX: GPS repeats at 5Hz)
         double frameDist;
         if (hasLastFramePosition) {
             frameDist = haversineMeters(lastFrameLat, lastFrameLon, pilotLat, pilotLon);
         } else {
             frameDist = 0;
         }
-        speed = (float) (frameDist / Math.max(simDt, 0.01f));
+        if (frameDist < 0.5) {
+            // GPS repeat (same position within 5Hz second) — hold previous speed
+            speed = smoothSpeed;
+        } else {
+            float rawSpeed = (float) (frameDist / Math.max(simDt, 0.01f));
+            // EMA: 70% new + 30% old = fast enough to follow, smooth enough to not jitter
+            smoothSpeed = smoothSpeed * 0.3f + rawSpeed * 0.7f;
+            speed = smoothSpeed;
+        }
         lastFrameLat = pilotLat;
         lastFrameLon = pilotLon;
         hasLastFramePosition = true;
 
         // === Wind estimation from straight flight ===
-        // Условия: ровный полёт (не крутка), снижение ≤1.3 м/с, есть минимальная скорость
-        if (Math.abs(vario) <= 1.3f && speed > 0.5f) {
+        // Условия: ровный полёт, снижение ≤1.3 м/с, есть реальное движение (не GPS repeat)
+        if (Math.abs(vario) <= 1.3f && frameDist > 0.5f) {
             estimateWindFromFlight();
         }
 
