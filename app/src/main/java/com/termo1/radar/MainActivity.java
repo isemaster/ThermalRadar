@@ -48,6 +48,8 @@ import com.termo1.radar.model.ThermalBlip;
 import com.termo1.radar.sensors.SensorController;
 import com.termo1.radar.sensors.VarioManager;
 import com.termo1.radar.ui.RadarRenderer;
+import com.termo1.radar.ui.HudController;
+import com.termo1.radar.ui.StatusManager;
 import com.termo1.radar.ui.SettingsActivity;
 import com.termo1.radar.ui.UiManager;
 import com.termo1.radar.ui.VarioSoundManager;
@@ -126,6 +128,7 @@ public class MainActivity extends Activity {
     com.termo1.radar.ui.VoiceController voiceController;
     SensorCoordinator sensorCoordinator;
     HudController hudController;
+    StatusManager statusManager = new StatusManager();
     RadarViewController radarViewController;
     FlightController flightController;
 
@@ -942,87 +945,14 @@ public class MainActivity extends Activity {
     // ========================================================================
 
     void updateStatus() {
-        if (trackMode) {
-            // При реплее — статус из TrackReplayer
-            if (trackReplayer != null && trackReplayer.isRunning()) {
-                float varioVal = trackReplayer.getVario();
-                if (trackReplayer.isThermalActive() || varioVal > 1.0f) {
-                    currentStatus = UiManager.STATUS_CLIMB;
-                } else if (varioVal < -1.0f) {
-                    currentStatus = UiManager.STATUS_SINK;
-                } else {
-                    currentStatus = UiManager.STATUS_SEARCH;
-                }
-            }
-            return;
-        }
-        if (simMode) {
-            currentStatus = thermalDetector != null
-                    ? thermalDetector.getStatusText() : UiManager.STATUS_SEARCH;
-            return;
-        }
-
-        if (thermalDetector == null) {
-            currentStatus = UiManager.STATUS_SEARCH;
-            return;
-        }
-
-        // Проверяем: есть ли ПОДТВЕРЖДЁННЫЙ блип с расстоянием
-        ThermalBlip activeBlip = thermalDetector.getCurrentBlip();
-        boolean hasConfirmedBlip = (activeBlip != null)
-                && thermalDetector.isBlipConfirmed()
-                && (SystemClock.elapsedRealtime() - activeBlip.bornMs < activeBlip.lifeMs);
-
-        // Только если реально есть блип — показываем "термик рядом"
-        if (hasConfirmedBlip && (thermalDetector.getStatus() == ThermalDetector.STATUS_THERMAL
-                || thermalDetector.getStatus() == ThermalDetector.STATUS_INSIDE)) {
-            float distM = activeBlip.distance;
-            currentStatus = String.format(java.util.Locale.US, "ТЕРМИК РЯДОМ — %.0fм", distM);
-            // Вибрация сработает при смене статуса в onDraw
-        } else {
-            float vario;
-            if (scenarioMode && flightSim != null && flightSim.isRunning()) {
-                vario = flightSim.getVario();
-            } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
-                vario = trackReplayer.getVario();
-            } else {
-                vario = sensorController.getVario();
-            }
-            float level = 0f;
-            if (thermalDetector != null) {
-                SignalProcessor sp = thermalDetector.getSignalProcessor();
-                if (sp != null) level = sp.getTurbulenceMs2();
-            }
-
-            boolean varioThermal = false;
-            if (varioThermalDetector != null && !simMode && !scenarioMode && !trackMode) {
-                long now = SystemClock.elapsedRealtime();
-                varioThermalDetector.update(vario, now);
-                varioThreshold = prefs.getFloat("vario_threshold", 0.5f);
-                varioThermalDetector.setThreshold(varioThreshold);
-                if (varioSoundManager != null) {
-                    varioSoundManager.setDeadBandHigh(varioThreshold);
-                }
-                varioThermal = varioThermalDetector.isThermalDetected();
-            }
-
-            if (varioThermal) {
-                currentStatus = "ВАРИО ТЕРМИК";
-            } else if (vario > 1.0f && level > 0.3f) {
-                currentStatus = UiManager.STATUS_CLIMB;
-            } else if (thermalDetector.getStatus() == ThermalDetector.STATUS_INSIDE) {
-                currentStatus = UiManager.STATUS_CLIMB;
-            } else if (thermalDetector.getStatus() == ThermalDetector.STATUS_THERMAL) {
-                // thermal status без блипа — показываем как подозрение
-                currentStatus = UiManager.STATUS_SPIRAL;
-            } else if (vario < -1.0f) {
-                currentStatus = UiManager.STATUS_SINK;
-            } else if (thermalDetector.getStatus() == ThermalDetector.STATUS_SUSPECT) {
-                currentStatus = UiManager.STATUS_SPIRAL;
-            } else {
-                currentStatus = UiManager.STATUS_SEARCH;
-            }
-        }
+        statusManager.update(trackMode, trackReplayer,
+                simMode, thermalDetector,
+                scenarioMode, flightSim,
+                sensorController,
+                varioThermalDetector,
+                varioThreshold, prefs,
+                varioSoundManager);
+        currentStatus = statusManager.getStatus();
     }
 
     // ========================================================================
@@ -2570,14 +2500,15 @@ public class MainActivity extends Activity {
             // Below values — labels for speed/wind (ABOVE their values on next row)
             float instrLabelY = valueRowY + 20;
 
-            // Speed label (км/ч — крупно, м/с — мелко рядом)
-            instrLabelPaint.setColor(Color.argb(160, 0, 255, 0));
-            canvas.drawText("скорость, км/ч", colX_left, valueRowY - 70, instrLabelPaint);
-            // Определяем: летим хвостом вперёд? (компас vs GPS трек)
+            // ========================================================================
+            // INSTRUMENTS: собрать данные, отрисовать через HudController
+            // ========================================================================
+
+            // Speed + backward detection
             float compHdg, gpsTrk;
             if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                 compHdg = trackReplayer.getCompassHeading();
-                gpsTrk = trackReplayer.getHeading(); // direction of travel
+                gpsTrk = trackReplayer.getHeading();
             } else {
                 compHdg = getCompassHeading();
                 gpsTrk = gpsManager.getHeading();
@@ -2587,117 +2518,43 @@ public class MainActivity extends Activity {
             boolean goingBack = hdgDiff > 120f;
             float displaySpeedKmh = gpsSpeed * 3.6f;
             if (goingBack) displaySpeedKmh = -displaySpeedKmh;
-            // Speed value: красное мигание при сносе назад
-            if (goingBack) {
-                boolean blink = (SystemClock.elapsedRealtime() / 500) % 2 == 0;
-                instrValuePaint.setColor(blink ? Color.argb(220, 255, 80, 80) : Color.argb(50, 255, 80, 80));
-            } else {
-                instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
-            }
-            // Speed cached
-            hudSb.setLength(0);
-            if (displaySpeedKmh != lastHudSpeedKmh) {
-                hudSb.setLength(0);
-                hudSb.append(String.format(java.util.Locale.US, "%.0f", displaySpeedKmh));
-                lastHudSpeedStr = hudSb.toString();
-                lastHudSpeedKmh = displaySpeedKmh;
-            }
-            canvas.drawText(lastHudSpeedStr, colX_left, valueRowY + 20, instrValuePaint);
-            // m/s мелко под км/ч
-            instrLabelPaint.setTextSize(20);
-            instrLabelPaint.setColor(Color.argb(120, 0, 255, 0));
-            hudSb.setLength(0);
-            hudSb.append(String.format(java.util.Locale.US, "%.1f м/с", gpsSpeed));
-            canvas.drawText(hudSb.toString(), colX_left, valueRowY + 20 + 28, instrLabelPaint);
-            instrLabelPaint.setTextSize(32);
 
-            // MSL value and label (below speed) — исправлено MA-2: в trackMode из реплея, не из живого GPS
-            float gpsAltVal, startAltVal, aglVal;
+            // MSL + AGL
+            float gpsAltVal, aglVal;
             if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                 gpsAltVal = trackReplayer.getAltitude();
-                startAltVal = 0f;
                 aglVal = 0f;
             } else {
                 gpsAltVal = gpsManager.getAltitude();
-                startAltVal = gpsManager.getStartAltitude();
+                float startAltVal = gpsManager.getStartAltitude();
                 aglVal = gpsManager.isAltitudeInitialized() ? (gpsAltVal - startAltVal) : 0f;
             }
-            instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
-            // MSL cached
-            hudSb.setLength(0);
-            if (gpsAltVal != lastHudAltMsl) {
-                hudSb.setLength(0);
-                hudSb.append(String.format(java.util.Locale.US, "%.0f", gpsAltVal));
-                lastHudAltMslStr = hudSb.toString();
-                lastHudAltMsl = gpsAltVal;
-            }
-            canvas.drawText(lastHudAltMslStr, colX_left, instrLabelY + 130, instrValuePaint);
-            // MSL label ONE LINE BELOW value
-            instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
-            canvas.drawText("высота MSL", colX_left, instrLabelY + 162, instrLabelPaint);
 
-            // Center: Vario (×1.5 larger)
+            // Vario
             float varioVal = sensorController.getVario();
             if (scenarioMode && flightSim != null && flightSim.isRunning()) {
                 varioVal = flightSim.getVario();
             } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                 varioVal = trackReplayer.getVario();
             }
-            varioPaint.setColor(varioVal > 0.5f ? Color.argb(255, 255, 80, 80)
-                    : varioVal < -0.5f ? Color.argb(255, 100, 200, 100)
-                    : Color.argb(200, 255, 180, 50));
-            // Vario cached
-            hudSb.setLength(0);
-            if (varioVal != lastHudVarioVal) {
-                hudSb.setLength(0);
-                String varioSign = varioVal >= 0 ? "+" : "";
-                hudSb.append(String.format(java.util.Locale.US, "%s%.1f", varioSign, varioVal));
-                lastHudVarioStr = hudSb.toString();
-                lastHudVarioVal = varioVal;
-            }
-            canvas.drawText(lastHudVarioStr, colX_center, valueRowY, varioPaint);
-
-            // Avg vario за 30с (мелко под варио)
             pushVarioSample(varioVal);
             float avgVario30 = getAvgVario30();
-            instrLabelPaint.setColor(Color.argb(140, 255, 180, 50));
-            instrLabelPaint.setTextSize(28);
-            instrLabelPaint.setTextAlign(Paint.Align.CENTER);
-            hudSb.setLength(0);
-            if (avgVario30 != lastHudAvgVario) {
-                hudSb.setLength(0);
-                hudSb.append(String.format(java.util.Locale.US, "avg %s%.1f", avgVario30 >= 0 ? "+" : "", avgVario30));
-                lastHudAvgVarioStr = hudSb.toString();
-                lastHudAvgVario = avgVario30;
-            }
-            canvas.drawText(lastHudAvgVarioStr, colX_center, valueRowY + 40, instrLabelPaint);
 
-            // Flight time below vario, one full line down (чч:мм, до 12 часов)
+            // Flight time
             long flightTimeMs;
             if (simMode) {
                 flightTimeMs = SystemClock.elapsedRealtime() - simStartMs;
             } else if (scenarioMode) {
                 flightTimeMs = SystemClock.elapsedRealtime() - scenarioStartMs;
             } else if (trackMode && trackReplayer != null) {
-                // BUG-3 FIX: use track time, not wall clock
                 flightTimeMs = (long)(trackReplayer.getCurrentTime() * 1000);
             } else if (logManager.isLogging()) {
                 flightTimeMs = System.currentTimeMillis() - logManager.getFlightStartMs();
             } else {
                 flightTimeMs = 0;
             }
-            long ftSec = flightTimeMs / 1000;
-            hudSb.setLength(0);
-            if (ftSec != lastFtSec) {
-                hudSb.setLength(0);
-                hudSb.append(String.format("%02d:%02d", ftSec / 3600, (ftSec % 3600) / 60));
-                lastFtStr = hudSb.toString();
-                lastFtSec = (int) ftSec;
-            }
-            flightTimePaint.setColor(Color.argb(200, 0, 255, 255));
-            canvas.drawText(lastFtStr, colX_center, valueRowY + 150, flightTimePaint);
 
-            // Right column: Wind label ABOVE value (поднято на 1 строку), AGL below
+            // Wind
             float windDeg, windSpdMs;
             if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                 windDeg = trackReplayer.getWindFromDeg();
@@ -2706,41 +2563,25 @@ public class MainActivity extends Activity {
                 windDeg = circlingManager.getWindFromDeg();
                 windSpdMs = circlingManager.getDisplayWindSpeed();
             }
-            if (windDeg >= 0 && windSpdMs > 0) {
-                instrLabelPaint.setColor(Color.argb(160, 100, 200, 255));
-                canvas.drawText("ветер, м/с", colX_right, valueRowY - 70, instrLabelPaint);
-                instrValuePaint.setColor(windSpdMs > 12f ? Color.argb(220, 255, 80, 80) : Color.argb(220, 100, 200, 255));
-                // Wind cached
-                hudSb.setLength(0);
-                if (windSpdMs != lastHudWindSpd) {
-                    hudSb.setLength(0);
-                    hudSb.append(String.format(java.util.Locale.US, "%.1f", windSpdMs));
-                    lastHudWindStr = hudSb.toString();
-                    lastHudWindSpd = windSpdMs;
-                }
-                canvas.drawText(lastHudWindStr, colX_right, valueRowY + 20, instrValuePaint);
-            } else {
-                instrLabelPaint.setColor(Color.argb(120, 100, 200, 255));
-                canvas.drawText("ветер, м/с", colX_right, valueRowY - 70, instrLabelPaint);
-                instrValuePaint.setColor(Color.argb(120, 100, 200, 255));
-                canvas.drawText("--", colX_right, valueRowY + 20, instrValuePaint);
-            }
 
-            // AGL value and label (below wind)
-            instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
-            // AGL cached
-            hudSb.setLength(0);
-            float aglClamped = Math.max(0, aglVal);
-            if (aglClamped != lastHudAgl) {
-                hudSb.setLength(0);
-                hudSb.append(String.format(java.util.Locale.US, "+%.0f", aglClamped));
-                lastHudAglStr = hudSb.toString();
-                lastHudAgl = aglClamped;
-            }
-            canvas.drawText(lastHudAglStr, colX_right, instrLabelY + 130, instrValuePaint);
-            // AGL label ONE LINE BELOW value
-            instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
-            canvas.drawText("AGL", colX_right, instrLabelY + 162, instrLabelPaint);
+            // Build HudData and render
+            HudController.HudData hudData = new HudController.HudData();
+            hudData.displaySpeedKmh = displaySpeedKmh;
+            hudData.gpsSpeed = gpsSpeed;
+            hudData.goingBack = goingBack;
+            hudData.gpsAltVal = gpsAltVal;
+            hudData.aglVal = aglVal;
+            hudData.varioVal = varioVal;
+            hudData.avgVario30 = avgVario30;
+            hudData.windDeg = windDeg;
+            hudData.windSpdMs = windSpdMs;
+            hudData.flightTimeMs = flightTimeMs;
+            hudData.colX_left = colX_left;
+            hudData.colX_center = colX_center;
+            hudData.colX_right = colX_right;
+            hudData.valueRowY = valueRowY;
+            hudData.instrLabelY = instrLabelY;
+            hudController.drawInstruments(canvas, hudData);
 
             // ========================================================================
             // RADAR SECTION (middle 65%), drawn in translated canvas
