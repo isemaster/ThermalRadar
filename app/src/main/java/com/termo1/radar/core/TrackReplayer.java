@@ -215,9 +215,14 @@ public class TrackReplayer {
         if (windDir < 0) windDir += 360;
         if (windDir >= 360) windDir -= 360;
         if (windSpeed < 0.3f) return;
-        // FIX: only update EMA when wind is significant (>3 m/s)
-        // Weak along-wind means crosswind leg — don't dilute the estimate
-        if (windSpeed < 3.0f) return;
+        // FIX: reject crosswind legs — if new direction differs from current
+        // estimate by >90°, this is a crosswind measurement, not real wind.
+        // Light winds (1-2 m/s) in the correct direction ARE accepted.
+        if (smoothWindSpd > 0) {
+            float dirDiff = Math.abs(windDir - smoothWindDir);
+            if (dirDiff > 180) dirDiff = 360 - dirDiff;
+            if (dirDiff > 90) return; // crosswind leg — discard
+        }
         // EMA smooth: α=0.15 (медленнее, чем было 0.2 — меньше прыжков)
         if (smoothWindSpd < 0 || smoothWindDir < 0) {
             smoothWindDir = windDir;
@@ -598,19 +603,16 @@ public class TrackReplayer {
 
         // Speed from IGC segment when GPS position changes, hold on repeats
         // FIX: GPS updates at 1Hz in 5Hz IGC. Per-frame speed over 0.167s is 6x too high.
-        double frameDist;
-        if (hasLastFramePosition) {
-            frameDist = haversineMeters(lastFrameLat, lastFrameLon, pilotLat, pilotLon);
-        } else {
-            frameDist = 0;
-        }
 
         // Detect if this segment has a real GPS position change (not a 5Hz repeat)
         boolean gpsChanged = (Math.abs(p0.lat - p1.lat) > 0.0000001
                           || Math.abs(p0.lon - p1.lon) > 0.0000001);
-        if (gpsChanged && p0 != null && p1 != null) {
-            // Real GPS update: speed = segmentLength / real GPS interval
-            // GPS interval = time since LAST GPS update (via IGC timestamps with sub-seconds)
+        if (gpsChanged && p0 != null && p1 != null
+                && lastGpsTimeSec != p1.timeSec) {
+            // FIX: защита от повторной обработки одного сегмента.
+            // update() вызывается ~30-60fps, но сегмент (p0,p1) не меняется
+            // между кадрами. Без этого guard'а gpsInterval = 0.001s на 2+ кадре
+            // → segSpeed ×1000.
             float gpsInterval = 1.0f; // default: 1 Hz GPS
             if (lastGpsTimeSec > 0) {
                 gpsInterval = Math.max(p1.timeSec - lastGpsTimeSec, 0.001f);
