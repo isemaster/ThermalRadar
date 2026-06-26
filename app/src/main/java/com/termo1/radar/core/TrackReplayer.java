@@ -572,36 +572,40 @@ public class TrackReplayer {
             prevHeading = heading;
         }
 
-        // Speed from per-frame position delta, 5-sec smoothed (FIX: GPS repeats at 5Hz)
+        // Speed from IGC segment when GPS position changes, hold on repeats
+        // FIX: GPS updates at 1Hz in 5Hz IGC. Per-frame speed over 0.167s is 6x too high.
         double frameDist;
         if (hasLastFramePosition) {
             frameDist = haversineMeters(lastFrameLat, lastFrameLon, pilotLat, pilotLon);
         } else {
             frameDist = 0;
         }
-        float rawSpeed;
-        if (frameDist < 0.5) {
-            rawSpeed = smoothSpeed; // hold on GPS repeat
-        } else {
-            rawSpeed = (float) (frameDist / Math.max(simDt, 0.01f));
-        }
-        smoothSpeed = smoothSpeed * 0.3f + rawSpeed * 0.7f;
-        // Push to 5-sec rolling average (at ~1Hz GPS rate via frameDist>0.5 guard)
-        if (frameDist > 0.5) {
+
+        // Detect if this segment has a real GPS position change (not a 5Hz repeat)
+        boolean gpsChanged = (Math.abs(p0.lat - p1.lat) > 0.0000001
+                          || Math.abs(p0.lon - p1.lon) > 0.0000001);
+        if (gpsChanged && p0 != null && p1 != null) {
+            // Real GPS update: use segment-level speed = segmentLength / segmentTime
+            double segDist = haversineMeters(p0.lat, p0.lon, p1.lat, p1.lon);
+            float segTime = Math.max(p1.timeSec - p0.timeSec, 0.001f);
+            float segSpeed = (float)(segDist / segTime);
+            // EMA blend with smoothSpeed for continuity
+            smoothSpeed = smoothSpeed * 0.3f + segSpeed * 0.7f;
+            // Push to 5-sec rolling average
             speedAvgBuf[avgIdx] = smoothSpeed;
             windDirAvgBuf[avgIdx] = smoothWindDir;
             windSpdAvgBuf[avgIdx] = smoothWindSpd;
             avgIdx = (avgIdx + 1) % AVG_WINDOW;
             if (avgCount < AVG_WINDOW) avgCount++;
         }
-        speed = calcAvg5(speedAvgBuf);
+        speed = (avgCount > 0) ? calcAvg5(speedAvgBuf) : smoothSpeed;
         lastFrameLat = pilotLat;
         lastFrameLon = pilotLon;
         hasLastFramePosition = true;
 
         // === Wind estimation from straight flight ===
-        // Условия: ровный полёт, снижение ≤1.3 м/с, есть реальное движение (не GPS repeat)
-        if (Math.abs(vario) <= 1.3f && frameDist > 0.5f) {
+        // Условия: ровный полёт, снижение ≤1.3 м/с, есть GPS обновление
+        if (Math.abs(vario) <= 1.3f && gpsChanged && speed > 0.5f) {
             estimateWindFromFlight();
         }
 
