@@ -303,10 +303,17 @@ public class TrackReplayer {
     /**
      * Load embedded demo track (R.raw.track_replay).
      */
-    public void loadEmbeddedDemoTrack() {
-        track = new ArrayList<>();
-        // Use embedded resource — парсим без фильтра времени, т.к. встроенный файл уже короткий
-        android.util.Log.i("TERMO1_REPLAY", "Loading embedded demo track");
+    public void loadEmbeddedDemoTrack(android.content.Context context) {
+        try {
+            loadFromIGC(context.getResources().openRawResource(
+                    com.termo1.radar.R.raw.track_replay));
+            android.util.Log.i("TERMO1_REPLAY", "Loaded embedded demo track: " +
+                    (track != null ? track.size() : 0) + " points");
+        } catch (Exception e) {
+            e.printStackTrace();
+            if (track == null) track = new ArrayList<>();
+            android.util.Log.e("TERMO1_REPLAY", "Failed to load embedded demo track", e);
+        }
     }
 
     /**

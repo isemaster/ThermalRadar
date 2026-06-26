@@ -20,6 +20,7 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.PowerManager;
 import android.os.SystemClock;
+import android.util.Log;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
@@ -519,6 +520,30 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         running = true;
+
+        // Фикс 3: если в режиме реплея — не запускаем GPS и сенсоры
+        if (trackMode) {
+            Log.i("TERMO1_REPLAY", "onResume: trackMode=true, skipping GPS/sensor start");
+            uiManager.setNightMode(prefs.getBoolean("night_mode", false));
+            if (prefs.getBoolean("sunlight_mode", false)) {
+                uiManager.setColorScheme(UiManager.SCHEME_HIGH_CONTRAST);
+            } else {
+                uiManager.setColorScheme(prefs.getInt("color_scheme", 0));
+            }
+            sensorController.loadPreferences(prefs);
+            acquireWakeLock();
+            // Настройки звука
+            if (varioSoundManager != null) {
+                varioSoundManager.setSoundEnabled(prefs.getBoolean("sound_enabled", true));
+            }
+            // Обновить настройки из SharedPreferences
+            blindModeEnabled = prefs.getBoolean("blind_mode", false);
+            voicePromptsEnabled = prefs.getBoolean("voice_prompts", true);
+            prefs.edit().remove("tilt_calibration_requested").apply();
+            startRendering();
+            if (varioSoundManager != null) varioSoundManager.start();
+            return;
+        }
 
         uiManager.setNightMode(prefs.getBoolean("night_mode", false));
         if (prefs.getBoolean("sunlight_mode", false)) {
@@ -1602,6 +1627,7 @@ public class MainActivity extends Activity {
     long trackPrevFrameMs;
 
     void startTrackReplay(String filePath) {
+        Log.i("TERMO1_REPLAY", "startTrackReplay: filePath=" + filePath);
         // Останавливаем запись если активна
         if (logManager.isLogging() || igcLogger.isLogging()) {
             igcLogger.stopLogging();
@@ -1635,11 +1661,24 @@ public class MainActivity extends Activity {
             String zipPath = filePath.replace(".igc", ".zip");
             hasSensorZip = new java.io.File(zipPath).exists();
         } else {
-            trackReplayer.loadEmbeddedDemoTrack();
+            trackReplayer.loadEmbeddedDemoTrack(MainActivity.this);
+            if (trackReplayer.getTrack() == null || trackReplayer.getTrack().size() < 2) {
+                android.widget.Toast.makeText(MainActivity.this,
+                        "Не удалось загрузить встроенный трек",
+                        android.widget.Toast.LENGTH_LONG).show();
+                Log.e("TERMO1_REPLAY", "Embedded track load returned null or < 2 points");
+                trackMode = false;
+                trackReplayer = null;
+                return;
+            }
         }
+        Log.i("TERMO1_REPLAY", "startTrackReplay: track size=" +
+                (trackReplayer.getTrack() != null ? trackReplayer.getTrack().size() : "null"));
         trackReplayer.setHasSensorData(hasSensorZip);
         trackReplayer.setAirspeedMs(prefs.getFloat("airspeed_ms", 9.5f));
         trackReplayer.start();
+        Log.i("TERMO1_REPLAY", "after start: running=" + trackReplayer.isRunning() +
+                " finished=" + trackReplayer.isFinished());
         trackPrevFrameMs = 0;
 
         // Исправлено MA-3: останавливаем GPS и сенсоры — при реплее нужны только данные из IGC

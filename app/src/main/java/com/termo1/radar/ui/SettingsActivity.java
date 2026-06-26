@@ -246,8 +246,12 @@ public class SettingsActivity extends Activity {
         java.io.File igcDir = new java.io.File(
                 getExternalFilesDir(null), "igc");
         if (igcDir.exists() && igcDir.isDirectory()) {
-            java.io.File[] igcFiles = igcDir.listFiles((dir, name) ->
-                    name.toLowerCase(java.util.Locale.US).endsWith(".igc"));
+            java.io.File[] igcFiles = igcDir.listFiles((dir, name) -> {
+                if (!name.toLowerCase(java.util.Locale.US).endsWith(".igc")) return false;
+                java.io.File f = new java.io.File(dir, name);
+                // Пропускаем файлы < 500 байт — в них точно нет B-record
+                return f.length() > 500;
+            });
             if (igcFiles != null && igcFiles.length > 0) {
                 // Sort by last modified, newest first
                 java.util.Arrays.sort(igcFiles, (a, b) ->
@@ -285,21 +289,38 @@ public class SettingsActivity extends Activity {
                             0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
                     row.addView(fileNameView);
 
+                    // Счётчик B-record
+                    int bCount = 0;
+                    try (java.io.BufferedReader br =
+                             new java.io.BufferedReader(new java.io.FileReader(igcFile))) {
+                        String line;
+                        while ((line = br.readLine()) != null) {
+                            if (line.startsWith("B") && line.length() >= 35) bCount++;
+                        }
+                    } catch (Exception e) { /* ignore */ }
+
                     // ▶ Play button
                     Button playBtn = new Button(this);
-                    playBtn.setText("▶ Play");
                     playBtn.setTextSize(13);
                     playBtn.setTypeface(android.graphics.Typeface.MONOSPACE);
-                    playBtn.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
-                    playBtn.setBackgroundColor(android.graphics.Color.argb(40, 0, 255, 0));
+                    if (bCount < 10) {
+                        playBtn.setText("✗ Пустой");
+                        playBtn.setTextColor(android.graphics.Color.argb(180, 255, 80, 80));
+                        playBtn.setBackgroundColor(android.graphics.Color.argb(40, 255, 80, 80));
+                        playBtn.setEnabled(false);
+                    } else {
+                        playBtn.setText("▶ Play");
+                        playBtn.setTextColor(android.graphics.Color.argb(200, 0, 255, 0));
+                        playBtn.setBackgroundColor(android.graphics.Color.argb(40, 0, 255, 0));
+                        playBtn.setOnClickListener(v -> {
+                            Intent intent = new Intent(this, MainActivity.class);
+                            intent.putExtra("track_replay", true);
+                            intent.putExtra("track_file", igcFile.getAbsolutePath());
+                            intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
+                            startActivity(intent);
+                        });
+                    }
                     playBtn.setPadding(16, 8, 16, 8);
-                    playBtn.setOnClickListener(v -> {
-                        Intent intent = new Intent(this, MainActivity.class);
-                        intent.putExtra("track_replay", true);
-                        intent.putExtra("track_file", igcFile.getAbsolutePath());
-                        intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT);
-                        startActivity(intent);
-                    });
                     row.addView(playBtn);
 
                     root.addView(row);
