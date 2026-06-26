@@ -3099,8 +3099,13 @@ public class MainActivity extends Activity {
             }
             float rangeKm = 0f;
             if (glideValid && aglForRange > 0) {
-                rangeKm = aglForRange * glideRatio / 1000f;
-                rangeKm = Math.max(-99.9f, Math.min(99.9f, rangeKm));
+                // FIX: при L/D=99 (бесконечное качество/набор) показываем кап 99.9 км
+                if (glideRatio >= 99.0f) {
+                    rangeKm = 99.9f;
+                } else {
+                    rangeKm = aglForRange * glideRatio / 1000f;
+                    rangeKm = Math.max(-99.9f, Math.min(99.9f, rangeKm));
+                }
             } else if (aglForRange > 0) {
                 rangeKm = Math.min(99.9f, aglForRange * 8f / 1000f);
             }

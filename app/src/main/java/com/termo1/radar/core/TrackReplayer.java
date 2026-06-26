@@ -54,6 +54,7 @@ public class TrackReplayer {
     private boolean running;
     private boolean finished;
     private float prevTimeSec; // для детекции midnight crossing
+    private int sameSecCount;  // FIX: 5Hz IGC — счётчик записей с одинаковым HHMMSS
 
     // Simulation clock
     private float totalSimSec;        // total simulated seconds elapsed
@@ -196,6 +197,11 @@ public class TrackReplayer {
         sensorData = null;
         String zipPath = filePath.replace(".igc", ".zip");
         java.io.File zipFile = new java.io.File(zipPath);
+        if (!zipFile.exists() && filePath.contains("_FIXED")) {
+            // FIX: если IGC _FIXED, пробуем оригинальное имя ZIP
+            zipPath = filePath.replace("_FIXED.igc", ".igc").replace(".igc", ".zip");
+            zipFile = new java.io.File(zipPath);
+        }
         if (zipFile.exists()) {
             loadSensorZip(zipPath);
         }
@@ -228,8 +234,15 @@ public class TrackReplayer {
                     int mm = Integer.parseInt(t.substring(2, 4));
                     int ss = Integer.parseInt(t.substring(4, 6));
                     float timeSec = hh * 3600f + mm * 60f + ss;
-                    if (prevTimeSec > 0 && timeSec < prevTimeSec) timeSec += 86400f;
-                    prevTimeSec = timeSec;
+                    // FIX: 5Hz IGC — односекундные записи получают суб-секунды
+                    if (timeSec == prevTimeSec) {
+                        sameSecCount++;
+                        timeSec += sameSecCount * 0.2f;
+                    } else {
+                        if (prevTimeSec > 0 && timeSec < prevTimeSec) timeSec += 86400f;
+                        prevTimeSec = timeSec;
+                        sameSecCount = 0;
+                    }
                     if (applyTimeFilter) {
                         if (timeSec < 13 * 3600f + 17 * 60f) continue;
                         if (timeSec > 13 * 3600f + 40 * 60f) continue;
@@ -335,6 +348,7 @@ public class TrackReplayer {
         lastFrameLon = first.lon;
         lastFrameAlt = first.altMeters;
         hasLastFramePosition = false;
+        sameSecCount = 0;
         heading = 0;
         vario = 0;
         speed = 0;
