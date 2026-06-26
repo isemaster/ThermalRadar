@@ -2912,45 +2912,61 @@ public class MainActivity extends Activity {
                     oldestIdx = prev;
                     checked++;
                 }
-                // Суммируем расстояние между oldestIdx → newestIdx
-                double totalDist = 0;
-                int cur = oldestIdx;
-                int steps = 0;
-                while (cur != newestIdx && steps < GLIDE_BUF_MAX) {
-                    int next = (cur + 1) % GLIDE_BUF_MAX;
-                    if (glideTimeBuf[next] == 0) break;
-                    float[] res = new float[2];
-                    android.location.Location.distanceBetween(
-                            glideLatBuf[cur], glideLonBuf[cur],
-                            glideLatBuf[next], glideLonBuf[next], res);
-                    totalDist += res[0];
-                    cur = next;
-                    steps++;
-                }
+                // NET displacement: прямое расстояние от oldest до newest
+                float[] netRes = new float[2];
+                android.location.Location.distanceBetween(
+                        glideLatBuf[oldestIdx], glideLonBuf[oldestIdx],
+                        glideLatBuf[newestIdx], glideLonBuf[newestIdx], netRes);
+                float netDist = netRes[0];  // метры, всегда ≥0
+                float netBearing = netRes[1]; // пеленг от oldest к newest
+
+                // Текущий курс пилота (GPS track)
+                float pilotTrack = gpsManager.getHeading();
+
+                // Определяем знак: если движемся вбок/назад относительно курса
+                float angleDiff = Math.abs(netBearing - pilotTrack);
+                if (angleDiff > 180f) angleDiff = 360f - angleDiff;
+                boolean goingBackward = angleDiff > 120f;
+
                 float altDiff = glideAltBuf[oldestIdx] - glideAltBuf[newestIdx]; // + = снижение
                 if (altDiff > 0.5f) {
-                    glideRatio = (float)(totalDist / altDiff);
+                    // Снижаемся — считаем L/D
+                    float rawRatio = netDist / altDiff;
+                    if (netDist < 5f) {
+                        // Стоим на месте (вертикальное снижение в сильный встречный)
+                        glideRatio = 0f;
+                    } else if (goingBackward) {
+                        // Летим хвостом вперёд — отрицательное L/D
+                        glideRatio = Math.max(-99.0f, -rawRatio);
+                    } else {
+                        // Нормальное планирование
+                        glideRatio = Math.min(99.0f, rawRatio);
+                    }
+                    glideValid = true;
+                } else {
+                    // Набираем или ровно — бесконечное качество, кап 99.0
+                    glideRatio = 99.0f;
                     glideValid = true;
                 }
             }
 
-            // Range = AGL × L/D (сколько км пролетим с текущей высоты)
+            // Range = AGL × L/D (кап 99.9 км, может быть отрицательным)
             float aglForRange = gpsManager.isAltitudeInitialized()
                     ? (gpsManager.getAltitude() - gpsManager.getStartAltitude()) : 0f;
             float rangeKm = 0f;
             if (glideValid && aglForRange > 0) {
                 rangeKm = aglForRange * glideRatio / 1000f;
-            } else {
-                // fallback: если нет L/D, используем AGL * 8 (среднее качество параплана)
-                rangeKm = aglForRange * 8f / 1000f;
+                rangeKm = Math.max(-99.9f, Math.min(99.9f, rangeKm));
+            } else if (aglForRange > 0) {
+                rangeKm = Math.min(99.9f, aglForRange * 8f / 1000f);
             }
 
             // LEFT: дальность планирования — число крупно, "км" мелко
             glideBarPaint.setTextAlign(Paint.Align.LEFT);
-            glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
+            glideBarPaint.setColor(rangeKm >= 0 ? Color.argb(200, 0, 255, 255) : Color.argb(220, 255, 80, 80));
             canvas.drawText(String.format(java.util.Locale.US, "%.1f", rangeKm),
                     w * 0.04f, glideBarY2, glideBarPaint);
-            instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
+            instrLabelPaint.setColor(rangeKm >= 0 ? Color.argb(140, 0, 200, 255) : Color.argb(160, 255, 80, 80));
             instrLabelPaint.setTextSize(32);
             instrLabelPaint.setTextAlign(Paint.Align.LEFT);
             canvas.drawText("км", w * 0.04f + glideBarPaint.measureText(String.format(java.util.Locale.US, "%.1f", rangeKm)) + 4,
@@ -2981,16 +2997,16 @@ public class MainActivity extends Activity {
                         w / 2f, glideBarY2, glideBarPaint);
             }
 
-            // RIGHT: "L/D" мелко, число крупно
+            // RIGHT: "L/D" мелко, число крупно (1 десятичный знак)
             glideBarPaint.setTextAlign(Paint.Align.RIGHT);
             glideBarPaint.setTextSize(112);
-            String ldStr = glideValid ? String.format(java.util.Locale.US, "%.0f", glideRatio) : "--";
+            String ldStr = glideValid ? String.format(java.util.Locale.US, "%.1f", glideRatio) : "--";
             // Сначала рисуем "L/D" мелко, смещая влево от числа
             float ldNumWidth = glideBarPaint.measureText(ldStr);
             float ldRightX = w * 0.96f;
-            glideBarPaint.setColor(Color.argb(200, 0, 255, 255));
+            glideBarPaint.setColor(glideRatio >= 0 ? Color.argb(200, 0, 255, 255) : Color.argb(220, 255, 80, 80));
             canvas.drawText(ldStr, ldRightX, glideBarY2, glideBarPaint);
-            instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
+            instrLabelPaint.setColor(glideRatio >= 0 ? Color.argb(140, 0, 200, 255) : Color.argb(160, 255, 80, 80));
             instrLabelPaint.setTextSize(32);
             instrLabelPaint.setTextAlign(Paint.Align.RIGHT);
             canvas.drawText("L/D", ldRightX - ldNumWidth - 6, glideBarY2 - 4, instrLabelPaint);
