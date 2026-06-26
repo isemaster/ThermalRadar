@@ -10,6 +10,7 @@ local.properties
 *.txt
 *.html
 *.png
+*.sh
 todo1.md
 R3*.md
 R9.md

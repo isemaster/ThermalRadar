@@ -138,7 +138,15 @@ public class MainActivity extends Activity {
     final Object thermalLock = new Object();
 
     // GPS trail storage: [lat, lon, timeMs, vario]
-    final List<double[]> gpsTrail = new ArrayList<>();
+    // MA-5: ring buffer вместо ArrayList<double[]> для устранения аллокаций
+    private static final class TrailPoint {
+        double lat, lon;
+        long timeMs;
+        float vario;
+    }
+    final TrailPoint[] trailBuf = new TrailPoint[GPS_TRAIL_MAX];
+    int trailHead = 0;     // next write position
+    int trailCount = 0;    // number of valid entries
 
     // Phase 6: точки входа/выхода из термиков
     static final int MAX_MARKERS = 100;
@@ -155,6 +163,23 @@ public class MainActivity extends Activity {
     /** Буферы для map-трека (синий, масштаб карты 3×3 км, без клипа 150м) */
     final float[] mapTrailPxBuf = new float[GPS_TRAIL_MAX];
     final float[] mapTrailPyBuf = new float[GPS_TRAIL_MAX];
+
+    // MA-5: кешированные строки HUD (избегаем String.format в onDraw при неизменных значениях)
+    private float lastHudSpeedKmh = -1f;
+    private String lastHudSpeedStr = "";
+    private float lastHudVarioVal = -999f;
+    private String lastHudVarioStr = "";
+    private float lastHudWindSpd = -1f;
+    private String lastHudWindStr = "";
+    private float lastHudAltMsl = -1f;
+    private String lastHudAltMslStr = "";
+    private float lastHudAgl = -1f;
+    private String lastHudAglStr = "";
+    private float lastHudAvgVario = -999f;
+    private String lastHudAvgVarioStr = "";
+    private int lastFtSec = -1;
+    private String lastFtStr = "";
+    private final StringBuilder hudSb = new StringBuilder(32);
 
     // ========================================================================
     // UI
@@ -1775,7 +1800,8 @@ public class MainActivity extends Activity {
             thermals.clear();
             thermalsCopy.clear();
         }
-        gpsTrail.clear(); // BUG-5 FIX: clear live GPS trail before replay
+        trailHead = 0;
+        trailCount = 0;
 
         trackReplayer = new TrackReplayer();
         // Исправлено MA-1: стартуем с 1x скорости (было 5.0f), trackSpeedIdx=0
@@ -2685,12 +2711,21 @@ public class MainActivity extends Activity {
             } else {
                 instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
             }
-            canvas.drawText(String.format(java.util.Locale.US, "%.0f", displaySpeedKmh),
-                    colX_left, valueRowY + 20, instrValuePaint);
+            // Speed cached
+            hudSb.setLength(0);
+            if (displaySpeedKmh != lastHudSpeedKmh) {
+                hudSb.setLength(0);
+                hudSb.append(String.format(java.util.Locale.US, "%.0f", displaySpeedKmh));
+                lastHudSpeedStr = hudSb.toString();
+                lastHudSpeedKmh = displaySpeedKmh;
+            }
+            canvas.drawText(lastHudSpeedStr, colX_left, valueRowY + 20, instrValuePaint);
             // m/s мелко под км/ч
             instrLabelPaint.setTextSize(20);
             instrLabelPaint.setColor(Color.argb(120, 0, 255, 0));
-            canvas.drawText(String.format(java.util.Locale.US, "%.1f м/с", gpsSpeed), colX_left, valueRowY + 20 + 28, instrLabelPaint);
+            hudSb.setLength(0);
+            hudSb.append(String.format(java.util.Locale.US, "%.1f м/с", gpsSpeed));
+            canvas.drawText(hudSb.toString(), colX_left, valueRowY + 20 + 28, instrLabelPaint);
             instrLabelPaint.setTextSize(32);
 
             // MSL value and label (below speed) — исправлено MA-2: в trackMode из реплея, не из живого GPS
@@ -2705,7 +2740,15 @@ public class MainActivity extends Activity {
                 aglVal = gpsManager.isAltitudeInitialized() ? (gpsAltVal - startAltVal) : 0f;
             }
             instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
-            canvas.drawText(String.format(java.util.Locale.US, "%.0f", gpsAltVal), colX_left, instrLabelY + 130, instrValuePaint);
+            // MSL cached
+            hudSb.setLength(0);
+            if (gpsAltVal != lastHudAltMsl) {
+                hudSb.setLength(0);
+                hudSb.append(String.format(java.util.Locale.US, "%.0f", gpsAltVal));
+                lastHudAltMslStr = hudSb.toString();
+                lastHudAltMsl = gpsAltVal;
+            }
+            canvas.drawText(lastHudAltMslStr, colX_left, instrLabelY + 130, instrValuePaint);
             // MSL label ONE LINE BELOW value
             instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
             canvas.drawText("высота MSL", colX_left, instrLabelY + 162, instrLabelPaint);
@@ -2717,11 +2760,19 @@ public class MainActivity extends Activity {
             } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                 varioVal = trackReplayer.getVario();
             }
-            String varioSign = varioVal >= 0 ? "+" : "";
             varioPaint.setColor(varioVal > 0.5f ? Color.argb(255, 255, 80, 80)
                     : varioVal < -0.5f ? Color.argb(255, 100, 200, 100)
                     : Color.argb(200, 255, 180, 50));
-            canvas.drawText(String.format(java.util.Locale.US, "%s%.1f", varioSign, varioVal), colX_center, valueRowY, varioPaint);
+            // Vario cached
+            hudSb.setLength(0);
+            if (varioVal != lastHudVarioVal) {
+                hudSb.setLength(0);
+                String varioSign = varioVal >= 0 ? "+" : "";
+                hudSb.append(String.format(java.util.Locale.US, "%s%.1f", varioSign, varioVal));
+                lastHudVarioStr = hudSb.toString();
+                lastHudVarioVal = varioVal;
+            }
+            canvas.drawText(lastHudVarioStr, colX_center, valueRowY, varioPaint);
 
             // Avg vario за 30с (мелко под варио)
             pushVarioSample(varioVal);
@@ -2729,8 +2780,14 @@ public class MainActivity extends Activity {
             instrLabelPaint.setColor(Color.argb(140, 255, 180, 50));
             instrLabelPaint.setTextSize(28);
             instrLabelPaint.setTextAlign(Paint.Align.CENTER);
-            String avgStr = String.format(java.util.Locale.US, "avg %s%.1f", avgVario30 >= 0 ? "+" : "", avgVario30);
-            canvas.drawText(avgStr, colX_center, valueRowY + 40, instrLabelPaint);
+            hudSb.setLength(0);
+            if (avgVario30 != lastHudAvgVario) {
+                hudSb.setLength(0);
+                hudSb.append(String.format(java.util.Locale.US, "avg %s%.1f", avgVario30 >= 0 ? "+" : "", avgVario30));
+                lastHudAvgVarioStr = hudSb.toString();
+                lastHudAvgVario = avgVario30;
+            }
+            canvas.drawText(lastHudAvgVarioStr, colX_center, valueRowY + 40, instrLabelPaint);
 
             // Flight time below vario, one full line down (чч:мм, до 12 часов)
             long flightTimeMs;
@@ -2747,9 +2804,15 @@ public class MainActivity extends Activity {
                 flightTimeMs = 0;
             }
             long ftSec = flightTimeMs / 1000;
-            String ftStr = String.format("%02d:%02d", ftSec / 3600, (ftSec % 3600) / 60);
+            hudSb.setLength(0);
+            if (ftSec != lastFtSec) {
+                hudSb.setLength(0);
+                hudSb.append(String.format("%02d:%02d", ftSec / 3600, (ftSec % 3600) / 60));
+                lastFtStr = hudSb.toString();
+                lastFtSec = (int) ftSec;
+            }
             flightTimePaint.setColor(Color.argb(200, 0, 255, 255));
-            canvas.drawText(ftStr, colX_center, valueRowY + 150, flightTimePaint);
+            canvas.drawText(lastFtStr, colX_center, valueRowY + 150, flightTimePaint);
 
             // Right column: Wind label ABOVE value (поднято на 1 строку), AGL below
             float windDeg, windSpdMs;
@@ -2764,7 +2827,15 @@ public class MainActivity extends Activity {
                 instrLabelPaint.setColor(Color.argb(160, 100, 200, 255));
                 canvas.drawText("ветер, м/с", colX_right, valueRowY - 70, instrLabelPaint);
                 instrValuePaint.setColor(windSpdMs > 12f ? Color.argb(220, 255, 80, 80) : Color.argb(220, 100, 200, 255));
-                canvas.drawText(String.format(java.util.Locale.US, "%.1f", windSpdMs), colX_right, valueRowY + 20, instrValuePaint);
+                // Wind cached
+                hudSb.setLength(0);
+                if (windSpdMs != lastHudWindSpd) {
+                    hudSb.setLength(0);
+                    hudSb.append(String.format(java.util.Locale.US, "%.1f", windSpdMs));
+                    lastHudWindStr = hudSb.toString();
+                    lastHudWindSpd = windSpdMs;
+                }
+                canvas.drawText(lastHudWindStr, colX_right, valueRowY + 20, instrValuePaint);
             } else {
                 instrLabelPaint.setColor(Color.argb(120, 100, 200, 255));
                 canvas.drawText("ветер, м/с", colX_right, valueRowY - 70, instrLabelPaint);
@@ -2774,7 +2845,16 @@ public class MainActivity extends Activity {
 
             // AGL value and label (below wind)
             instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
-            canvas.drawText(String.format(java.util.Locale.US, "+%.0f", Math.max(0, aglVal)), colX_right, instrLabelY + 130, instrValuePaint);
+            // AGL cached
+            hudSb.setLength(0);
+            float aglClamped = Math.max(0, aglVal);
+            if (aglClamped != lastHudAgl) {
+                hudSb.setLength(0);
+                hudSb.append(String.format(java.util.Locale.US, "+%.0f", aglClamped));
+                lastHudAglStr = hudSb.toString();
+                lastHudAgl = aglClamped;
+            }
+            canvas.drawText(lastHudAglStr, colX_right, instrLabelY + 130, instrValuePaint);
             // AGL label ONE LINE BELOW value
             instrLabelPaint.setColor(Color.argb(140, 0, 200, 255));
             canvas.drawText("AGL", colX_right, instrLabelY + 162, instrLabelPaint);
@@ -2825,29 +2905,36 @@ public class MainActivity extends Activity {
                 } else {
                     currentVario = sensorController.getVario();
                 }
-                if (gpsTrail.isEmpty()) {
-                    gpsTrail.add(new double[]{pilotLat, pilotLon, now, currentVario});
-                } else {
-                    double[] last = gpsTrail.get(gpsTrail.size() - 1);
-                    long lastAge = now - (long) last[2];
-                    if (lastAge >= GPS_TRAIL_ADD_INTERVAL_MS) {
-                        // Фильтр GPS-спиков — исправлено MA-4/MA-8: в trackMode отключаем
-                        // (IGC уже валидирован, playbackSpeed искажает speedMs)
+                // MA-5: ring buffer TrailPoint[] вместо ArrayList<double[]> — без аллокаций
+                {
+                    TrailPoint lastPt = null;
+                    if (trailCount > 0) {
+                        int lastIdx = (trailHead - 1 + GPS_TRAIL_MAX) % GPS_TRAIL_MAX;
+                        lastPt = trailBuf[lastIdx];
+                    }
+                    if (lastPt == null || (now - lastPt.timeMs) >= GPS_TRAIL_ADD_INTERVAL_MS) {
+                        // Фильтр GPS-спиков — в trackMode отключаем
                         boolean isSpike = false;
-                        if (!(trackMode && trackReplayer != null && trackReplayer.isRunning())) {
+                        if (lastPt != null
+                                && !(trackMode && trackReplayer != null && trackReplayer.isRunning())) {
                             android.location.Location.distanceBetween(
-                                    last[0], last[1], pilotLat, pilotLon, distanceResult);
-                            float speedMs = distanceResult[0] / (lastAge / 1000f);
+                                    lastPt.lat, lastPt.lon, pilotLat, pilotLon, distanceResult);
+                            float speedMs = distanceResult[0] / ((now - lastPt.timeMs) / 1000f);
                             if (speedMs > 30f) {
                                 isSpike = true;
                             }
                         }
-                        if (isSpike) {
-                            // Спик — используем предыдущую точку вместо прыжка
-                            pilotLat = last[0];
-                            pilotLon = last[1];
+                        if (isSpike && lastPt != null) {
+                            pilotLat = lastPt.lat;
+                            pilotLon = lastPt.lon;
                         }
-                        gpsTrail.add(new double[]{pilotLat, pilotLon, now, currentVario});
+                        if (trailBuf[trailHead] == null) trailBuf[trailHead] = new TrailPoint();
+                        trailBuf[trailHead].lat = pilotLat;
+                        trailBuf[trailHead].lon = pilotLon;
+                        trailBuf[trailHead].timeMs = now;
+                        trailBuf[trailHead].vario = currentVario;
+                        trailHead = (trailHead + 1) % GPS_TRAIL_MAX;
+                        if (trailCount < GPS_TRAIL_MAX) trailCount++;
                     }
                 }
 
@@ -2881,46 +2968,46 @@ public class MainActivity extends Activity {
                     if (glideBufCount < GLIDE_BUF_MAX) glideBufCount++;
                 }
 
-                // Исправлено MA-6: indexed for loop вместо Iterator.remove() + remove(0)
-                // ArrayList.remove(0) = O(n), Iterator.remove() = O(n-i) — сумма O(n²)
-                // Проходим с конца и удаляем старые элементы за O(n)
-                for (int i = gpsTrail.size() - 1; i >= 0; i--) {
-                    long age = now - (long) gpsTrail.get(i)[2];
-                    if (age > GPS_TRAIL_MAX_AGE_MS) {
-                        gpsTrail.remove(i);
-                    }
-                }
-                while (gpsTrail.size() > GPS_TRAIL_MAX) {
-                    gpsTrail.remove(gpsTrail.size() - 1); // удаляем с конца (O(1))
-                }
+                // MA-5: ring buffer iteration — age filter inline, без ArrayList.remove()
+                {
+                    int start = (trailCount < GPS_TRAIL_MAX) ? 0
+                            : (trailHead) % GPS_TRAIL_MAX;
+                    int n = Math.min(trailCount, GPS_TRAIL_MAX);
+                    int idx = start;
+                    for (int i = 0; i < n; i++) {
+                        TrailPoint pt = trailBuf[idx];
+                        if (pt == null) { idx = (idx + 1) % GPS_TRAIL_MAX; continue; }
+                        long age = now - pt.timeMs;
+                        if (age > GPS_TRAIL_MAX_AGE_MS || age < 0) {
+                            idx = (idx + 1) % GPS_TRAIL_MAX;
+                            continue;
+                        }
+                        float brightness = 1.0f - (float) age / (float) GPS_TRAIL_MAX_AGE_MS;
+                        if (brightness < 0.01f) { idx = (idx + 1) % GPS_TRAIL_MAX; continue; }
 
-                for (double[] pt : gpsTrail) {
-                    long age = now - (long) pt[2];
-                    float brightness = 1.0f - (float) age / (float) GPS_TRAIL_MAX_AGE_MS;
-                    if (brightness < 0.01f) continue;
+                        Location.distanceBetween(pilotLat, pilotLon, pt.lat, pt.lon, distanceResult);
+                        float dist = distanceResult[0];
+                        float bearingRad = (float) Math.toRadians(distanceResult[1]);
 
-                    Location.distanceBetween(pilotLat, pilotLon, pt[0], pt[1], distanceResult);
-                    float dist = distanceResult[0];
-                    float bearingRad = (float) Math.toRadians(distanceResult[1]);
+                        float trailRadiusM = (trackMode && trackReplayer != null && trackReplayer.isRunning())
+                                ? 1500f : 150f;
+                        float distPx = (dist / trailRadiusM) * trailR;
+                        if (distPx <= trailR) {
+                            trailPxBuf[trailCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
+                            trailPyBuf[trailCount] = trailCy - (float) Math.cos(bearingRad) * distPx;
+                            trailColorBuf[trailCount] = varioToColor(pt.vario, brightness);
+                            trailCount++;
+                        }
 
-                    // Исправлено MA-4: радиус трейла в trackMode увеличен до 1500м
-                    float trailRadiusM = (trackMode && trackReplayer != null && trackReplayer.isRunning())
-                            ? 1500f : 150f;
-                    float distPx = (dist / trailRadiusM) * trailR;
-                    if (distPx <= trailR) {
-                        trailPxBuf[trailCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
-                        trailPyBuf[trailCount] = trailCy - (float) Math.cos(bearingRad) * distPx;
-                        float varioVal2 = (pt.length >= 4) ? (float) pt[3] : 0f;
-                        trailColorBuf[trailCount] = varioToColor(varioVal2, brightness);
-                        trailCount++;
-                    }
+                        float mapDistPx = (dist / 1500f) * trailR;
+                        float mapHalf = (3671f / 1500f) * trailR / 2f;
+                        if (mapDistPx <= mapHalf) {
+                            mapTrailPxBuf[mapTrailCount] = (w / 2f) + (float) Math.sin(bearingRad) * mapDistPx;
+                            mapTrailPyBuf[mapTrailCount] = trailCy - (float) Math.cos(bearingRad) * mapDistPx;
+                            mapTrailCount++;
+                        }
 
-                    float mapDistPx = (dist / 1500f) * trailR;
-                    float mapHalf = (3671f / 1500f) * trailR / 2f;
-                    if (mapDistPx <= mapHalf) {
-                        mapTrailPxBuf[mapTrailCount] = (w / 2f) + (float) Math.sin(bearingRad) * mapDistPx;
-                        mapTrailPyBuf[mapTrailCount] = trailCy - (float) Math.cos(bearingRad) * mapDistPx;
-                        mapTrailCount++;
+                        idx = (idx + 1) % GPS_TRAIL_MAX;
                     }
                 }
 
@@ -2954,15 +3041,25 @@ public class MainActivity extends Activity {
                 float[] liftValues = liftDatabase.getLiftValues();
                 radarRenderer.setSectorLiftData(liftValues);
             } else {
-                gpsTrail.clear();
+                trailHead = 0;
+                trailCount = 0;
             }
 
             // Draw radar
             long nowMs = System.currentTimeMillis();
             synchronized (thermalLock) {
-                thermalsCopy.clear();
-                for (ThermalBlip t : thermals) {
-                    thermalsCopy.add(new ThermalBlip(t));
+                // MA-5: reuse ThermalBlip objects вместо new ThermalBlip(t) каждую копию
+                int srcSize = thermals.size();
+                // Убедимся что thermalsCopy имеет достаточно объектов для переиспользования
+                while (thermalsCopy.size() < srcSize) {
+                    thermalsCopy.add(new ThermalBlip());
+                }
+                // Удаляем лишние (если thermals уменьшился)
+                while (thermalsCopy.size() > srcSize) {
+                    thermalsCopy.remove(thermalsCopy.size() - 1);
+                }
+                for (int ti = 0; ti < srcSize; ti++) {
+                    thermalsCopy.get(ti).set(thermals.get(ti));
                 }
             }
             if (scenarioMode && flightSim != null && flightSim.isRunning()) {
@@ -3053,6 +3150,23 @@ public class MainActivity extends Activity {
                 radarRenderer.setPilotPosition(trackReplayer.getLat(), trackReplayer.getLon());
             } else {
                 radarRenderer.setPilotPosition(gpsManager.getLat(), gpsManager.getLon());
+            }
+
+            // MA-4: IGC track polyline for trackMode — весь трек из файла, не только накопленный gpsTrail
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                java.util.List<TrackReplayer.TrackPoint> track = trackReplayer.getTrack();
+                if (track != null && track.size() > 1) {
+                    int n = track.size();
+                    double[] trLats = new double[n];
+                    double[] trLons = new double[n];
+                    for (int i = 0; i < n; i++) {
+                        trLats[i] = track.get(i).lat;
+                        trLons[i] = track.get(i).lon;
+                    }
+                    radarRenderer.setTrackPolyline(trLats, trLons, n);
+                }
+            } else {
+                radarRenderer.setTrackPolyline(null, null, 0);
             }
 
             radarRenderer.draw(canvas, nowMs, thermalsCopy,

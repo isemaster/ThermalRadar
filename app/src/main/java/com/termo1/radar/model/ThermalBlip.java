@@ -41,6 +41,19 @@ public class ThermalBlip {
 
     public boolean isAlive(long nowMs) { return (nowMs - bornMs) < lifeMs; }
 
+    /** Set all fields from another blip — для переиспользования объектов без new (MA-5) */
+    public void set(ThermalBlip other) {
+        this.bornMs = other.bornMs;
+        this.angle = other.angle;
+        this.strength = other.strength;
+        this.distance = other.distance;
+        this.px = other.px;
+        this.py = other.py;
+        this.source = other.source;
+        this.sizeFactor = other.sizeFactor;
+        this.lifeMs = other.lifeMs;
+    }
+
     /**
      * Яркость blip на радаре в зависимости от возраста.
      * Времена масштабируются пропорционально lifeMs.

@@ -600,7 +600,7 @@ public class TrackReplayer {
             }
         }
 
-        // Interpolate position
+        // Interpolate position (TR-5: great-circle interpolation вместо линейной)
         TrackPoint prevPoint = p0;
         TrackPoint nextPoint = p1;
 
@@ -609,8 +609,9 @@ public class TrackReplayer {
         double nextLat = nextPoint.lat;
         double nextLon = nextPoint.lon;
 
-        pilotLat = prevLat + (nextLat - prevLat) * frac;
-        pilotLon = prevLon + (nextLon - prevLon) * frac;
+        double[] interpRes = interpolateGreatCircle(prevLat, prevLon, nextLat, nextLon, frac);
+        pilotLat = interpRes[0];
+        pilotLon = interpRes[1];
 
         float prevAlt = prevPoint.altMeters;
         float nextAlt = nextPoint.altMeters;
@@ -925,9 +926,58 @@ public class TrackReplayer {
         return new float[]{(float) dist, bearing};
     }
 
+    /**
+     * Great-circle interpolation (TR-5 fix).
+     * For short segments (<6km) falls back to linear.
+     * For long segments/high latitudes uses spherical SLERP.
+     * @return [latDeg, lonDeg]
+     */
+    private static double[] interpolateGreatCircle(double lat1Deg, double lon1Deg,
+                                                    double lat2Deg, double lon2Deg,
+                                                    double fraction) {
+        double lat1 = Math.toRadians(lat1Deg);
+        double lon1 = Math.toRadians(lon1Deg);
+        double lat2 = Math.toRadians(lat2Deg);
+        double lon2 = Math.toRadians(lon2Deg);
+
+        double dLon = lon2 - lon1;
+        double dLat = lat2 - lat1;
+
+        // Haversine angular distance
+        double sinHalfDLat = Math.sin(dLat / 2);
+        double sinHalfDLon = Math.sin(dLon / 2);
+        double a = sinHalfDLat * sinHalfDLat
+                + Math.cos(lat1) * Math.cos(lat2) * sinHalfDLon * sinHalfDLon;
+        double delta = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+
+        // < ~6km: linear is fine (error < 1m at mid-latitudes)
+        if (delta < 0.001) {
+            return new double[]{lat1Deg + dLat * fraction, lon1Deg + dLon * fraction};
+        }
+
+        // Spherical interpolation (SLERP in 3D)
+        double sinDelta = Math.sin(delta);
+        double aFactor = Math.sin((1 - fraction) * delta) / sinDelta;
+        double bFactor = Math.sin(fraction * delta) / sinDelta;
+
+        double x = aFactor * Math.cos(lat1) * Math.cos(lon1)
+                 + bFactor * Math.cos(lat2) * Math.cos(lon2);
+        double y = aFactor * Math.cos(lat1) * Math.sin(lon1)
+                 + bFactor * Math.cos(lat2) * Math.sin(lon2);
+        double z = aFactor * Math.sin(lat1) + bFactor * Math.sin(lat2);
+
+        double lat = Math.atan2(z, Math.sqrt(x * x + y * y));
+        double lon = Math.atan2(y, x);
+
+        return new double[]{Math.toDegrees(lat), Math.toDegrees(lon)};
+    }
+
     // ========================================================================
     // Getters
     // ========================================================================
+
+    /** TR-5 / MA-4: получить весь IGC-трек для прорисовки полилинии в trackMode */
+    public List<TrackPoint> getTrack() { return track; }
 
     public double getLat() { return pilotLat; }
     public double getLon() { return pilotLon; }

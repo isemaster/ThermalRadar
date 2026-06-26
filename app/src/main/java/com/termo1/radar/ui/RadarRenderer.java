@@ -73,6 +73,15 @@ public class RadarRenderer {
     private final Paint trailCirclingGlowPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     // Map trail — синяя линия на карте (3×3 км)
     private final Paint mapTrailPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    // IGC track polyline (MA-4 — для отображения всего трека в trackMode)
+    private final Paint trackPolylinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private double[] trackLats;
+    private double[] trackLons;
+    private int trackCount;
+    /** Кешированный Path для полилинии трека */
+    private final Path trackPolyPath = new Path();
+    /** Pre-allocated буфер для distanceBetween при рисовании полилинии */
+    private final float[] trackPolyDistRes = new float[2];
     // Entry/exit markers
     private final Paint entryMarkerFill = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint entryMarkerGlow = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -213,6 +222,14 @@ public class RadarRenderer {
         mapTrailPaint.setStrokeCap(Paint.Cap.ROUND);
         mapTrailPaint.setStrokeJoin(Paint.Join.ROUND);
 
+        // IGC track polyline (MA-4) — белый 3px, полупрозрачный
+        trackPolylinePaint.setStyle(Paint.Style.STROKE);
+        trackPolylinePaint.setStrokeWidth(3f);
+        trackPolylinePaint.setColor(Color.argb(140, 200, 200, 255));
+        trackPolylinePaint.setStrokeCap(Paint.Cap.ROUND);
+        trackPolylinePaint.setStrokeJoin(Paint.Join.ROUND);
+        trackPolylinePaint.setPathEffect(new DashPathEffect(new float[]{6, 4}, 0));
+
         // Entry/exit markers
         entryMarkerFill.setStyle(Paint.Style.FILL);
         entryMarkerFill.setColor(COLOR_ENTRY);
@@ -319,6 +336,13 @@ public class RadarRenderer {
         return Math.abs(mapOffsetBuf[0]) > limit || Math.abs(mapOffsetBuf[1]) > limit;
     }
 
+    /** Set IGC track polyline data (MA-4). lats/lons arrays передаются снаружи. */
+    public void setTrackPolyline(double[] lats, double[] lons, int count) {
+        this.trackLats = lats;
+        this.trackLons = lons;
+        this.trackCount = count;
+    }
+
     /** Set entry/exit markers on the trail. */
     public void setTrailMarkers(float[] markerPx, float[] markerPy,
                                 boolean[] isEntry, int count) {
@@ -365,6 +389,7 @@ public class RadarRenderer {
         drawBestLiftSector(canvas);
         drawThermalCore(canvas);
         drawMapTrail(canvas, mapTrailPx, mapTrailPy, mapTrailCount);
+        drawTrackPolyline(canvas);
         drawTrail(canvas, trailPx, trailPy, trailColors, trailCount);
         drawTrailMarkers(canvas);
         drawThermals(canvas, nowMs, thermals);
@@ -589,6 +614,50 @@ public class RadarRenderer {
         if (count < 2) return;
         for (int i = 1; i < count; i++) {
             c.drawLine(px[i-1], py[i-1], px[i], py[i], mapTrailPaint);
+        }
+    }
+
+    // ===== IGC TRACK POLYLINE (MA-4) — белый пунктир, весь IGC-трек =====
+
+    private void drawTrackPolyline(Canvas c) {
+        if (trackCount < 2 || trackLats == null || trackLons == null) return;
+        if (!pilotPositionValid) return;
+
+        double pilotLat = this.pilotLat;
+        double pilotLon = this.pilotLon;
+
+        // Используем радиус 1500м для IGC-трека (как trackMode-трейл)
+        float trailRadiusM = 1500f;
+        float trailR = Math.min(cx, cy) - 4;
+        float halfW = baseW / 2f;
+
+        trackPolyPath.reset();
+        boolean hasFirst = false;
+
+        for (int i = 0; i < trackCount; i++) {
+            android.location.Location.distanceBetween(
+                    pilotLat, pilotLon,
+                    trackLats[i], trackLons[i],
+                    trackPolyDistRes);
+            float dist = trackPolyDistRes[0];
+            float bearingRad = (float) Math.toRadians(trackPolyDistRes[1]);
+            float distPx = (dist / trailRadiusM) * trailR;
+
+            if (distPx > trailR) continue; // за пределами радара — не рисуем
+
+            float px = halfW + (float) Math.sin(bearingRad) * distPx;
+            float py = cy - (float) Math.cos(bearingRad) * distPx;
+
+            if (!hasFirst) {
+                trackPolyPath.moveTo(px, py);
+                hasFirst = true;
+            } else {
+                trackPolyPath.lineTo(px, py);
+            }
+        }
+
+        if (hasFirst) {
+            c.drawPath(trackPolyPath, trackPolylinePaint);
         }
     }
 
