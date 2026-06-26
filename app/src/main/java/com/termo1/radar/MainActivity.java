@@ -804,6 +804,7 @@ public class MainActivity extends Activity {
             new FlightStateMachine.FlightStateListener() {
         @Override
         public void onFlightStarted() {
+            if (trackMode) return; // не пишем лог при реплее
             // Единое имя файла для IGC и sensor companion
             java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US);
             String baseName = "Flight_" + sdf.format(new java.util.Date());
@@ -965,7 +966,7 @@ public class MainActivity extends Activity {
     // ========================================================================
 
     public void startManualLogging() {
-        if (logManager.isLogging()) return;
+        if (logManager.isLogging() || trackMode) return;
         // Единое имя файла для IGC и sensor companion
         java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US);
         sdf.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
@@ -1698,6 +1699,11 @@ public class MainActivity extends Activity {
     private long trackPrevFrameMs;
 
     private void startTrackReplay(String filePath) {
+        // Останавливаем запись если активна
+        if (logManager.isLogging() || igcLogger.isLogging()) {
+            igcLogger.stopLogging();
+            logManager.stopLogging();
+        }
         trackMode = true;
         trackStartMs = SystemClock.elapsedRealtime();
 

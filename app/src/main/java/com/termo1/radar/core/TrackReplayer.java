@@ -5,6 +5,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 /**
  * TrackReplayer — проигрывает реальный IGC трек полёта.
@@ -90,6 +92,21 @@ public class TrackReplayer {
     private float windFromDeg = 315f;
     private float windSpeedMs = 5f;
 
+    // Real sensor data from companion ZIP
+    private static class SensorSample {
+        final long dtMs;
+        final float axMg, ayMg;   // accel in milli-g
+        final float varioMs;       // m/s
+        final float headingDeg;
+        final long timestampMs;    // elapsedRealtime-like
+        SensorSample(long dtMs, float axMg, float ayMg, float varioMs, float headingDeg, long timestampMs) {
+            this.dtMs = dtMs; this.axMg = axMg; this.ayMg = ayMg;
+            this.varioMs = varioMs; this.headingDeg = headingDeg; this.timestampMs = timestampMs;
+        }
+    }
+    private List<SensorSample> sensorData;
+    private int sensorIdx; // current read position in sensorData
+
     // Interpolation index
     private int currentIdx;
 
@@ -117,10 +134,16 @@ public class TrackReplayer {
             loadFromIGC(new java.io.FileInputStream(filePath), false);
         } catch (Exception e) {
             e.printStackTrace();
-            // Fallback to synthetic track if file load fails
             if (track == null || track.isEmpty()) {
                 generateFallbackTrack();
             }
+        }
+        // Загружаем companion ZIP если есть
+        sensorData = null;
+        String zipPath = filePath.replace(".igc", ".zip");
+        java.io.File zipFile = new java.io.File(zipPath);
+        if (zipFile.exists()) {
+            loadSensorZip(zipPath);
         }
     }
 
@@ -196,6 +219,51 @@ public class TrackReplayer {
         }
     }
 
+    /** Загрузить сенсорные данные из companion ZIP */
+    public boolean loadSensorZip(String zipPath) {
+        sensorData = new ArrayList<>();
+        try (ZipInputStream zis = new ZipInputStream(new java.io.FileInputStream(zipPath))) {
+            ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (!entry.getName().endsWith(".csv")) {
+                    zis.closeEntry();
+                    continue;
+                }
+                // Парсим CSV: dtMs,gpsSpeed,gpsHeading,gpsLat,gpsLon,gpsAlt,gpsFixAge,gpsAccuracy,vario,ax,ay,az,...
+                BufferedReader br = new BufferedReader(new InputStreamReader(zis));
+                String header = br.readLine(); // skip header
+                long baseTimeMs = System.currentTimeMillis();
+                String line;
+                while ((line = br.readLine()) != null) {
+                    line = line.trim();
+                    if (line.isEmpty()) continue;
+                    String[] parts = line.split(",");
+                    if (parts.length < 10) continue;
+                    try {
+                        long dtMs = Long.parseLong(parts[0]);
+                        float varioMs = Float.parseFloat(parts[8]);
+                        float axMg = Float.parseFloat(parts[9]); // already in milli-g
+                        float ayMg = Float.parseFloat(parts[10]);
+                        float headingDeg = (parts.length > 21) ? Float.parseFloat(parts[21]) : 0f;
+                        sensorData.add(new SensorSample(dtMs, axMg, ayMg, varioMs, headingDeg, baseTimeMs + dtMs));
+                    } catch (Exception ignored) {}
+                }
+                zis.closeEntry();
+                break; // Only first CSV
+            }
+        } catch (Exception e) {
+            android.util.Log.e("TERMO1_REPLAY", "Failed to load sensor ZIP: " + zipPath, e);
+            sensorData = null;
+            return false;
+        }
+        if (sensorData != null && !sensorData.isEmpty()) {
+            android.util.Log.i("TERMO1_REPLAY", "Loaded " + sensorData.size() + " sensor samples from " + zipPath);
+            return true;
+        }
+        sensorData = null;
+        return false;
+    }
+
     public void start() {
         if (track == null || track.size() < 2) return;
         running = true;
@@ -225,6 +293,7 @@ public class TrackReplayer {
         circleLatSum = 0; circleLonSum = 0;
         circlePointCount = 0;
         guidanceText = "";
+        sensorIdx = 0;
     }
 
     public void stop() {
@@ -357,8 +426,8 @@ public class TrackReplayer {
         // === Thermal detection ===
         updateThermalState(simDt);
 
-        // === Accel generation ===
-        generateAccel(simDt);
+        // === Accel ===
+        updateAccel(simDt);
     }
 
     private void updateThermalState(float dt) {
@@ -434,6 +503,27 @@ public class TrackReplayer {
         }
     }
 
+    /** Обновить accel: из реальных сенсоров или синтезированный */
+    private void updateAccel(float dt) {
+        // Если есть реальные сенсорные данные — используем их
+        if (sensorData != null && !sensorData.isEmpty() && sensorIdx < sensorData.size()) {
+            // Берём ближайший сэмпл по текущему sim-времени
+            float trackElapsedSec = totalSimSec;
+            long targetDtMs = (long)(trackElapsedSec * 1000f);
+            while (sensorIdx < sensorData.size() - 1
+                    && sensorData.get(sensorIdx + 1).dtMs <= targetDtMs) {
+                sensorIdx++;
+            }
+            SensorSample s = sensorData.get(sensorIdx);
+            accelX = s.axMg / 1000f; // milli-g → g
+            accelY = s.ayMg / 1000f;
+            hasSensorData = true;
+            return;
+        }
+        hasSensorData = false;
+        generateAccel(dt);
+    }
+
     private void generateAccel(float dt) {
         float ax = NOISE_FLOOR_G * (float) Math.sin(noisePhase * 0.7);
         float ay = NOISE_FLOOR_G * (float) Math.sin(noisePhase * 1.1 + 0.3);
@@ -498,8 +588,8 @@ public class TrackReplayer {
     public float getVario() { return vario; }
     public float getSpeed() { return speed; }
     public float getGyroZ() { return gyroZ; }
-    public float getAccelX() { return hasSensorData ? accelX : 0f; }
-    public float getAccelY() { return hasSensorData ? accelY : 0f; }
+    public float getAccelX() { return accelX; }
+    public float getAccelY() { return accelY; }
 
     public boolean isThermalActive() { return thermalActive; }
     public boolean isShowRedCore() { return showRedCore; }
