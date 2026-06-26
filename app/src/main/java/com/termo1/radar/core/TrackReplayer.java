@@ -513,8 +513,8 @@ public class TrackReplayer {
         hasLastFramePosition = true;
 
         // === Wind estimation from straight flight ===
-        // Условия: ровный полёт (не крутка), снижение ≤1.3 м/с, есть скорость
-        if (Math.abs(vario) <= 1.3f && !wasCircling && speed > 3f) {
+        // Условия: ровный полёт (не крутка), снижение ≤1.3 м/с, есть минимальная скорость
+        if (Math.abs(vario) <= 1.3f && speed > 0.5f) {
             estimateWindFromFlight();
         }
 

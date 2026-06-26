@@ -1165,7 +1165,7 @@ public class MainActivity extends Activity {
                 // GPS speed ± trim airspeed когда летим прямо, снижение ≤1.3 м/с
                 if (!trackMode && !circlingManager.isCircling()
                         && Math.abs(sensorController.getVario()) <= 1.3f
-                        && gpsManager.isReady() && gpsManager.getSpeed() > 3f
+                        && gpsManager.isReady() && gpsManager.getSpeed() > 0.5f
                         && gpsManager.getFixAgeMs() < 5000) {
                     float heading = getCompassHeading();
                     float track = gpsManager.getHeading();
