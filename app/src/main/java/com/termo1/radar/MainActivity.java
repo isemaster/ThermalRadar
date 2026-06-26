@@ -69,108 +69,115 @@ import java.util.List;
  */
 public class MainActivity extends Activity {
 
-    private static final int SAMPLE_RATE_HZ = 50;
-    private static final int RENDER_FPS = 30;
-    private static final long RENDER_INTERVAL_MS = 33L;
-    private static final int THERMAL_LIMIT = 12;
-    private static final float MAX_DISTANCE_M = 150.0f;
+    static final int SAMPLE_RATE_HZ = 50;
+    static final int RENDER_FPS = 30;
+    static final long RENDER_INTERVAL_MS = 33L;
+    static final int THERMAL_LIMIT = 12;
+    static final float MAX_DISTANCE_M = 150.0f;
 
     // GPS trail
-    private static final int GPS_TRAIL_MAX = 2000;
-    private static final long GPS_TRAIL_MAX_AGE_MS = 300_000L; // 5 минут
-    private static final long GPS_TRAIL_ADD_INTERVAL_MS = 1000L; // добавлять не чаще 1 раз/сек
+    static final int GPS_TRAIL_MAX = 2000;
+    static final long GPS_TRAIL_MAX_AGE_MS = 300_000L; // 5 минут
+    static final long GPS_TRAIL_ADD_INTERVAL_MS = 1000L; // добавлять не чаще 1 раз/сек
 
     // ========================================================================
     // Modules
     // ========================================================================
 
-    private SensorController sensorController;
-    private GpsManager gpsManager;
-    private LogManager logManager;
-    private IgcLogger igcLogger;
-    private StaticMapLoader staticMapLoader;
-    private FlightStateMachine flightStateMachine;
-    private BlindFlightMode blindFlightMode;
-    private boolean blindModeEnabled;
-    private boolean voicePromptsEnabled;
-    private CirclingManager circlingManager;
-    private VarioThermalDetector varioThermalDetector;
-    private float varioThreshold = 0.5f;
+    SensorController sensorController;
+    GpsManager gpsManager;
+    LogManager logManager;
+    IgcLogger igcLogger;
+    StaticMapLoader staticMapLoader;
+    FlightStateMachine flightStateMachine;
+    BlindFlightMode blindFlightMode;
+    boolean blindModeEnabled;
+    boolean voicePromptsEnabled;
+    CirclingManager circlingManager;
+    VarioThermalDetector varioThermalDetector;
+    float varioThreshold = 0.5f;
 
     // Phase 2: ThermalLocator + LiftDatabase
-    private ThermalLocator thermalLocator;
-    private LiftDatabase liftDatabase;
-    private float prevThermalLiftBaseline;
-    private long lastThermalBaseCalcMs;
-    private static final long THERMAL_BASE_INTERVAL_MS = 5000; // раз в 5с
-    private ThermalBaseResult lastThermalBaseResult;
+    ThermalLocator thermalLocator;
+    LiftDatabase liftDatabase;
+    float prevThermalLiftBaseline;
+    long lastThermalBaseCalcMs;
+    static final long THERMAL_BASE_INTERVAL_MS = 5000; // раз в 5с
+    ThermalBaseResult lastThermalBaseResult;
 
     // ThermalRadarService (singleton, без binding)
-    private ThermalRadarService radarService;
+    ThermalRadarService radarService;
 
     // ========================================================================
     // Core
     // ========================================================================
 
-    private ThermalDetector thermalDetector;
-    private SharedPreferences prefs;
+    ThermalDetector thermalDetector;
+    SharedPreferences prefs;
 
     // Tracking for event logging state transitions
-    private boolean prevCirclingState;
-    private boolean prevLabelState;
-    private float prevWindFrom = -2f;
-    private float prevWindSpd = -2f;
-    private WindCorrected lastDrift;  // Phase 5: последний расчёт сноса
+    boolean prevCirclingState;
+    boolean prevLabelState;
+    float prevWindFrom = -2f;
+    float prevWindSpd = -2f;
+    WindCorrected lastDrift;  // Phase 5: последний расчёт сноса
+
+    // ===== Модули (рефакторинг) =====
+    com.termo1.radar.ui.VoiceController voiceController;
+    SensorCoordinator sensorCoordinator;
+    HudController hudController;
+    RadarViewController radarViewController;
+    FlightController flightController;
 
     // ========================================================================
     // Thermals
     // ========================================================================
 
-    private final List<ThermalBlip> thermals = new ArrayList<>();
-    private final List<ThermalBlip> thermalsCopy = new ArrayList<>();
-    private final Object thermalLock = new Object();
+    final List<ThermalBlip> thermals = new ArrayList<>();
+    final List<ThermalBlip> thermalsCopy = new ArrayList<>();
+    final Object thermalLock = new Object();
 
     // GPS trail storage: [lat, lon, timeMs, vario]
-    private final List<double[]> gpsTrail = new ArrayList<>();
+    final List<double[]> gpsTrail = new ArrayList<>();
 
     // Phase 6: точки входа/выхода из термиков
-    private static final int MAX_MARKERS = 100;
-    private final List<double[]> entryMarkers = new ArrayList<>();  // [lat, lon]
-    private final List<double[]> exitMarkers = new ArrayList<>();   // [lat, lon]
+    static final int MAX_MARKERS = 100;
+    final List<double[]> entryMarkers = new ArrayList<>();  // [lat, lon]
+    final List<double[]> exitMarkers = new ArrayList<>();   // [lat, lon]
 
     // ===== Reusable buffers для onDraw (устранение аллокаций, T13) =====
-    private final float[] distanceResult = new float[2];
-    private final float[] markerPxBuf = new float[MAX_MARKERS * 2];
-    private final float[] markerPyBuf = new float[MAX_MARKERS * 2];
-    private final boolean[] markerIsEntry = new boolean[MAX_MARKERS * 2];
+    final float[] distanceResult = new float[2];
+    final float[] markerPxBuf = new float[MAX_MARKERS * 2];
+    final float[] markerPyBuf = new float[MAX_MARKERS * 2];
+    final boolean[] markerIsEntry = new boolean[MAX_MARKERS * 2];
     /** Буфер цветов трека (vario → цвет, возраст → alpha) */
-    private final int[] trailColorBuf = new int[GPS_TRAIL_MAX];
+    final int[] trailColorBuf = new int[GPS_TRAIL_MAX];
     /** Буферы для map-трека (синий, масштаб карты 3×3 км, без клипа 150м) */
-    private final float[] mapTrailPxBuf = new float[GPS_TRAIL_MAX];
-    private final float[] mapTrailPyBuf = new float[GPS_TRAIL_MAX];
+    final float[] mapTrailPxBuf = new float[GPS_TRAIL_MAX];
+    final float[] mapTrailPyBuf = new float[GPS_TRAIL_MAX];
 
     // ========================================================================
     // UI
     // ========================================================================
 
-    private RadarView radarView;
-    private RadarRenderer radarRenderer;
-    private UiManager uiManager;
-    private VarioSoundManager varioSoundManager;
-    private AlertDialog exitDialog;
-    private volatile String currentStatus = "ПОИСК";
-    private String previousStatus = "";
+    RadarView radarView;
+    RadarRenderer radarRenderer;
+    UiManager uiManager;
+    VarioSoundManager varioSoundManager;
+    AlertDialog exitDialog;
+    volatile String currentStatus = "ПОИСК";
+    String previousStatus = "";
 
     // ===== TTS голосовые подсказки =====
-    private android.speech.tts.TextToSpeech tts;
-    private boolean ttsReady;
-    private String lastTtsPhrase;
-    private long lastTtsSpeakMs;
+    android.speech.tts.TextToSpeech tts;
+    boolean ttsReady;
+    String lastTtsPhrase;
+    long lastTtsSpeakMs;
 
     // ===== UI-сглаживание heading (Fix C — time-based SLERP) =====
-    private float headingDisplaySmoothed = 0f;
-    private boolean headingDisplayInitialized = false;
-    private long lastHeadingFrameMs = 0;
+    float headingDisplaySmoothed = 0f;
+    boolean headingDisplayInitialized = false;
+    long lastHeadingFrameMs = 0;
 
     /**
      * Цвет трека по скорости набора/снижения.
@@ -189,7 +196,7 @@ public class MainActivity extends Activity {
      *    +5 м/с    бордовый
      *    ≥ +8 м/с  тёмно-бордовый
      */
-    private static int varioToColor(float vario, float alpha) {
+    static int varioToColor(float vario, float alpha) {
         // Опорные точки: варио → (R,G,B)
         final float[] keys = {-5f, -2f, -0.3f, 0f, 0.5f, 1.5f, 3f, 5f, 8f};
         final int[] colors = {
@@ -221,76 +228,76 @@ public class MainActivity extends Activity {
     // Simulation
     // ========================================================================
 
-    private boolean simMode;
-    private boolean scenarioMode;
-    private boolean trackMode;
-    private SimulationManager simulation;
-    private FlightSimulator flightSim;
-    private TrackReplayer trackReplayer;
-    private long simStartMs;
-    private long lastThermalBeepMs;
-    private long lastMaxSnrResetMs;
-    private Handler simHandler = new Handler(Looper.getMainLooper());
-    private Runnable simTask;
+    boolean simMode;
+    boolean scenarioMode;
+    boolean trackMode;
+    SimulationManager simulation;
+    FlightSimulator flightSim;
+    TrackReplayer trackReplayer;
+    long simStartMs;
+    long lastThermalBeepMs;
+    long lastMaxSnrResetMs;
+    Handler simHandler = new Handler(Looper.getMainLooper());
+    Runnable simTask;
 
     // ========================================================================
     // Processing / rendering
     // ========================================================================
 
-    private volatile boolean running;
-    private Handler renderHandler = new Handler(Looper.getMainLooper());
-    private Runnable renderTask;
+    volatile boolean running;
+    Handler renderHandler = new Handler(Looper.getMainLooper());
+    Runnable renderTask;
     // Фоновый таймер 10 Гц для обработки (работает при выкл экране)
-    private HandlerThread bgThread;
-    private Handler bgHandler;
-    private Runnable bgTask;
-    private static final long BG_INTERVAL_MS = 100L;
+    HandlerThread bgThread;
+    Handler bgHandler;
+    Runnable bgTask;
+    static final long BG_INTERVAL_MS = 100L;
 
     // Track replay
-    private static final float[] PLAYBACK_SPEEDS = {1f, 2f, 5f, 10f};
-    private int trackSpeedIdx;
-    private String trackFileName;
+    static final float[] PLAYBACK_SPEEDS = {1f, 2f, 5f, 10f};
+    int trackSpeedIdx;
+    String trackFileName;
 
     // ========================================================================
     // Power
     // ========================================================================
 
-    private PowerManager powerManager;
-    private PowerManager.WakeLock wakeLock;
+    PowerManager powerManager;
+    PowerManager.WakeLock wakeLock;
 
     // ========================================================================
     // Test mode
     // ========================================================================
 
-    private boolean testMode;
-    private int testStep;
-    private String testInstruction = "";
-    private String testFeedback = "";
-    private int testFeedbackColor;
-    private boolean testStepCorrect;
-    private long testLastBeepMs;
-    private long testCorrectStartMs;
-    private long testStepStartMs;
-    private boolean testBeepPlaying;
+    boolean testMode;
+    int testStep;
+    String testInstruction = "";
+    String testFeedback = "";
+    int testFeedbackColor;
+    boolean testStepCorrect;
+    long testLastBeepMs;
+    long testCorrectStartMs;
+    long testStepStartMs;
+    boolean testBeepPlaying;
     // Термик-бип: не чаще раза в 6 секунд (было ~2с, уменьшили в 3 раза)
-    private static final long THERMAL_BEEP_INTERVAL_MS = 6000L;
-    private long lastThermalBeepRealMs;
-    private Handler testHandler = new Handler(Looper.getMainLooper());
-    private Runnable testTask;
+    static final long THERMAL_BEEP_INTERVAL_MS = 6000L;
+    long lastThermalBeepRealMs;
+    Handler testHandler = new Handler(Looper.getMainLooper());
+    Runnable testTask;
 
     // Test window
-    private static final int TEST_WINDOW_FRAMES = 45;
-    private static final int TEST_CORRECT_RATIO = 4; // 40% как int для window
-    private final boolean[] testWindowBuffer = new boolean[TEST_WINDOW_FRAMES];
-    private int testWindowIdx;
-    private int testWindowFill;
-    private long testFeedbackLastUpdate;
+    static final int TEST_WINDOW_FRAMES = 45;
+    static final int TEST_CORRECT_RATIO = 4; // 40% как int для window
+    final boolean[] testWindowBuffer = new boolean[TEST_WINDOW_FRAMES];
+    int testWindowIdx;
+    int testWindowFill;
+    long testFeedbackLastUpdate;
 
     // Heading window
-    private static final int HEADING_WINDOW_FRAMES = 150;
-    private final float[] headingWindow = new float[HEADING_WINDOW_FRAMES];
-    private int headingWindowIdx;
-    private int headingWindowFill;
+    static final int HEADING_WINDOW_FRAMES = 150;
+    final float[] headingWindow = new float[HEADING_WINDOW_FRAMES];
+    int headingWindowIdx;
+    int headingWindowFill;
 
     // ========================================================================
     // Activity lifecycle
@@ -453,6 +460,23 @@ public class MainActivity extends Activity {
         // Wire VarioManager to thermal detector for adaptive alpha
         varioManager.setThermalDetector(thermalDetector);
 
+        // ===== Модульная архитектура (рефакторинг) =====
+        voiceController = new com.termo1.radar.ui.VoiceController(this);
+        voiceController.init();
+
+        sensorCoordinator = new SensorCoordinator(this, sensorController, gpsManager, varioManager);
+
+        hudController = new HudController();
+
+        radarViewController = new RadarViewController(radarRenderer, thermalLock);
+
+        flightController = new FlightController(
+                thermalDetector, circlingManager, liftDatabase, thermalLocator,
+                varioThermalDetector, flightStateMachine, logManager, igcLogger,
+                sensorController, gpsManager, prefs,
+                thermals, flightCallback);
+        // =====
+
         // Start foreground service (WakeLock + notification)
         startForegroundService(new Intent(this, ThermalRadarService.class));
 
@@ -592,7 +616,7 @@ public class MainActivity extends Activity {
     // Intent handling (вызывается из onCreate и onNewIntent)
     // ========================================================================
 
-    private void handleIntent(Intent intent) {
+    void handleIntent(Intent intent) {
         if (intent == null) return;
         if (intent.getBooleanExtra("simulate", false)) {
             simMode = true;
@@ -619,7 +643,7 @@ public class MainActivity extends Activity {
     // Sensor data callback — вызывается из сенсорного потока
     // ========================================================================
 
-    private final SensorController.SensorDataListener sensorDataListener =
+    final SensorController.SensorDataListener sensorDataListener =
             new SensorController.SensorDataListener() {
 
         private final float[] worldAccelOut = new float[3];
@@ -734,7 +758,7 @@ public class MainActivity extends Activity {
     // Log data provider — для LogManager
     // ========================================================================
 
-    private final LogManager.LogDataProvider logDataProvider = new LogManager.LogDataProvider() {
+    final LogManager.LogDataProvider logDataProvider = new LogManager.LogDataProvider() {
         @Override
         public float getAccelX() { return sensorController.getAccelX(); }
         @Override
@@ -800,7 +824,7 @@ public class MainActivity extends Activity {
     // Flight state listener
     // ========================================================================
 
-    private final FlightStateMachine.FlightStateListener flightListener =
+    final FlightStateMachine.FlightStateListener flightListener =
             new FlightStateMachine.FlightStateListener() {
         @Override
         public void onFlightStarted() {
@@ -829,11 +853,36 @@ public class MainActivity extends Activity {
         }
     };
 
+    // ===== FlightController callback =====
+    final FlightController.Callback flightCallback = new FlightController.Callback() {
+        @Override
+        public void onFlightStarted() {
+            flightListener.onFlightStarted();
+        }
+        @Override
+        public void onFlightFinished() {
+            flightListener.onFlightFinished();
+        }
+        @Override
+        public void onThermalBlip(ThermalBlip blip) {
+            long nowMs = System.currentTimeMillis();
+            synchronized (thermalLock) {
+                thermals.removeIf(tb -> !tb.isAlive(nowMs));
+                thermals.add(blip);
+                while (thermals.size() > THERMAL_LIMIT) thermals.remove(0);
+            }
+        }
+        @Override
+        public float getCompassHeading() {
+            return MainActivity.this.getCompassHeading();
+        }
+    };
+
     // ========================================================================
     // Process sample (vario sound, flight state)
     // ========================================================================
 
-    private void processSample() {
+    void processSample() {
         if (varioSoundManager != null) {
             varioSoundManager.update(sensorController.getVario());
         }
@@ -849,7 +898,7 @@ public class MainActivity extends Activity {
     // Thermal management
     // ========================================================================
 
-    private void addThermal(float angle, float strength, float distance, String source) {
+    void addThermal(float angle, float strength, float distance, String source) {
         long now = System.currentTimeMillis();
         synchronized (thermalLock) {
             Iterator<ThermalBlip> it = thermals.iterator();
@@ -865,7 +914,7 @@ public class MainActivity extends Activity {
     // Status
     // ========================================================================
 
-    private void updateStatus() {
+    void updateStatus() {
         if (trackMode) {
             // При реплее — статус из TrackReplayer
             if (trackReplayer != null && trackReplayer.isRunning()) {
@@ -1003,10 +1052,10 @@ public class MainActivity extends Activity {
     // WakeLock
     // ========================================================================
 
-    private static final long WAKE_LOCK_TIMEOUT_MS = 3600000L;
-    private long lastWakeLockRefreshMs;
+    static final long WAKE_LOCK_TIMEOUT_MS = 3600000L;
+    long lastWakeLockRefreshMs;
 
-    private void acquireWakeLock() {
+    void acquireWakeLock() {
         if (powerManager != null && wakeLock == null) {
             wakeLock = powerManager.newWakeLock(
                     PowerManager.PARTIAL_WAKE_LOCK, "TERMO1:RadarLock");
@@ -1021,7 +1070,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void refreshWakeLock() {
+    void refreshWakeLock() {
         long now = System.currentTimeMillis();
         if (wakeLock != null && (now - lastWakeLockRefreshMs > WAKE_LOCK_TIMEOUT_MS / 2)) {
             releaseWakeLock();
@@ -1029,7 +1078,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void releaseWakeLock() {
+    void releaseWakeLock() {
         if (wakeLock != null && wakeLock.isHeld()) {
             wakeLock.release();
             wakeLock = null;
@@ -1040,7 +1089,7 @@ public class MainActivity extends Activity {
     // Render loop
     // ========================================================================
 
-    private void startRendering() {
+    void startRendering() {
         renderTask = new Runnable() {
             @Override
             public void run() {
@@ -1052,14 +1101,14 @@ public class MainActivity extends Activity {
         renderHandler.postDelayed(renderTask, RENDER_INTERVAL_MS);
     }
 
-    private void stopRendering() {
+    void stopRendering() {
         if (renderTask != null) {
             renderHandler.removeCallbacks(renderTask);
             renderTask = null;
         }
     }
 
-    private void startBgProcessing() {
+    void startBgProcessing() {
         bgThread = new HandlerThread("termo1-bg");
         bgThread.start();
         bgHandler = new Handler(bgThread.getLooper());
@@ -1180,7 +1229,7 @@ public class MainActivity extends Activity {
         bgHandler.postDelayed(bgTask, BG_INTERVAL_MS);
     }
 
-    private void stopBgProcessing() {
+    void stopBgProcessing() {
         if (bgTask != null) {
             bgHandler.removeCallbacks(bgTask);
             bgTask = null;
@@ -1191,7 +1240,7 @@ public class MainActivity extends Activity {
     // Simulation loop
     // ========================================================================
 
-    private void startSimLoop() {
+    void startSimLoop() {
         simTask = new Runnable() {
             @Override
             public void run() {
@@ -1241,16 +1290,16 @@ public class MainActivity extends Activity {
     // Test mode
     // ========================================================================
 
-    private static final float TEST_AMP_THRESHOLD = 0.05f;
-    private static final float TEST_STRONG_THRESHOLD = 0.15f;
-    private static final float TEST_AXIS_RATIO = 2.5f;
-    private static final float TEST_HEADING_RANGE = 50f;
-    private static final float TEST_FAST_RMS = 0.3f;
-    private static final float TEST_CORRECT_RATIO_FLOAT = 0.4f;
-    private static final int TEST_MAX_STEP_MS = 60000;
-    private static final int TEST_CORRECT_WINDOW_MS = 1500;
+    static final float TEST_AMP_THRESHOLD = 0.05f;
+    static final float TEST_STRONG_THRESHOLD = 0.15f;
+    static final float TEST_AXIS_RATIO = 2.5f;
+    static final float TEST_HEADING_RANGE = 50f;
+    static final float TEST_FAST_RMS = 0.3f;
+    static final float TEST_CORRECT_RATIO_FLOAT = 0.4f;
+    static final int TEST_MAX_STEP_MS = 60000;
+    static final int TEST_CORRECT_WINDOW_MS = 1500;
 
-    private void startTestMode() {
+    void startTestMode() {
         testMode = true;
         testStep = 0;
         testStepStartMs = System.currentTimeMillis();
@@ -1264,7 +1313,7 @@ public class MainActivity extends Activity {
         nextTestStep();
     }
 
-    private void nextTestStep() {
+    void nextTestStep() {
         testStep++;
         testStepStartMs = System.currentTimeMillis();
         testCorrectCount = 0;
@@ -1321,13 +1370,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    private int testCorrectCount;
+    int testCorrectCount;
 
-    private void setTestInstruction(String title, String line1, String line2) {
+    void setTestInstruction(String title, String line1, String line2) {
         testInstruction = title + "\n" + line1 + "\n" + line2;
     }
 
-    private void updateTestFeedback() {
+    void updateTestFeedback() {
         if (!testMode || testStepCorrect || thermalDetector == null) return;
 
         SignalProcessor sp = thermalDetector.getSignalProcessor();
@@ -1541,13 +1590,13 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void addToWindow(boolean correct) {
+    void addToWindow(boolean correct) {
         testWindowBuffer[testWindowIdx] = correct;
         testWindowIdx = (testWindowIdx + 1) % TEST_WINDOW_FRAMES;
         if (testWindowFill < TEST_WINDOW_FRAMES) testWindowFill++;
     }
 
-    private float getWindowCorrectRatio() {
+    float getWindowCorrectRatio() {
         if (testWindowFill == 0) return 0f;
         int count = 0;
         for (int i = 0; i < testWindowFill; i++) {
@@ -1556,13 +1605,13 @@ public class MainActivity extends Activity {
         return (float) count / testWindowFill;
     }
 
-    private void updateHeadingWindow(float heading) {
+    void updateHeadingWindow(float heading) {
         headingWindow[headingWindowIdx] = heading;
         headingWindowIdx = (headingWindowIdx + 1) % HEADING_WINDOW_FRAMES;
         if (headingWindowFill < HEADING_WINDOW_FRAMES) headingWindowFill++;
     }
 
-    private float getHeadingRange() {
+    float getHeadingRange() {
         if (headingWindowFill < 10) return 0f;
         float[] hdgs = new float[headingWindowFill];
         System.arraycopy(headingWindow, 0, hdgs, 0, headingWindowFill);
@@ -1575,7 +1624,7 @@ public class MainActivity extends Activity {
         return 360f - maxGap;
     }
 
-    private void stopTestMode() {
+    void stopTestMode() {
         testMode = false;
         if (testTask != null) {
             testHandler.removeCallbacks(testTask);
@@ -1586,11 +1635,11 @@ public class MainActivity extends Activity {
     // Flight Scenario Test
     // ========================================================================
 
-    private Handler scenarioHandler = new Handler(Looper.getMainLooper());
-    private Runnable scenarioTask;
-    private long scenarioStartMs;
+    Handler scenarioHandler = new Handler(Looper.getMainLooper());
+    Runnable scenarioTask;
+    long scenarioStartMs;
 
-    private void startFlightScenario() {
+    void startFlightScenario() {
         scenarioMode = true;
         scenarioStartMs = SystemClock.elapsedRealtime();
 
@@ -1685,7 +1734,7 @@ public class MainActivity extends Activity {
                 "🧪 Сценарий полёта запущен (100с)", android.widget.Toast.LENGTH_SHORT).show();
     }
 
-    private void stopFlightScenario() {
+    void stopFlightScenario() {
         scenarioMode = false;
         if (scenarioTask != null) {
             scenarioHandler.removeCallbacks(scenarioTask);
@@ -1708,12 +1757,12 @@ public class MainActivity extends Activity {
     // Track replay (сим2)
     // ========================================================================
 
-    private Handler trackHandler = new Handler(Looper.getMainLooper());
-    private Runnable trackTask;
-    private long trackStartMs;
-    private long trackPrevFrameMs;
+    Handler trackHandler = new Handler(Looper.getMainLooper());
+    Runnable trackTask;
+    long trackStartMs;
+    long trackPrevFrameMs;
 
-    private void startTrackReplay(String filePath) {
+    void startTrackReplay(String filePath) {
         // Останавливаем запись если активна
         if (logManager.isLogging() || igcLogger.isLogging()) {
             igcLogger.stopLogging();
@@ -1729,26 +1778,42 @@ public class MainActivity extends Activity {
         gpsTrail.clear(); // BUG-5 FIX: clear live GPS trail before replay
 
         trackReplayer = new TrackReplayer();
-        trackReplayer.setSpeed(5.0f);
+        // Исправлено MA-1: стартуем с 1x скорости (было 5.0f), trackSpeedIdx=0
+        trackReplayer.setSpeed(1.0f);
         // Определяем, есть ли ZIP с сенсорами
         boolean hasSensorZip = false;
         if (filePath != null) {
-            trackReplayer.loadFile(filePath);
+            boolean loaded = trackReplayer.loadFile(filePath);
+            if (!loaded) {
+                android.widget.Toast.makeText(MainActivity.this,
+                        "Не удалось загрузить трек: " + filePath,
+                        android.widget.Toast.LENGTH_LONG).show();
+                trackMode = false;
+                trackReplayer = null;
+                return;
+            }
             String zipPath = filePath.replace(".igc", ".zip");
             hasSensorZip = new java.io.File(zipPath).exists();
         } else {
-            trackReplayer.loadFromIGC(getResources().openRawResource(R.raw.track_replay));
+            trackReplayer.loadEmbeddedDemoTrack();
         }
         trackReplayer.setHasSensorData(hasSensorZip);
         trackReplayer.setAirspeedMs(prefs.getFloat("airspeed_ms", 9.5f));
         trackReplayer.start();
         trackPrevFrameMs = 0;
 
+        // Исправлено MA-3: останавливаем GPS и сенсоры — при реплее нужны только данные из IGC
+        gpsManager.stopGps();
+        sensorController.unregisterSensors();
+
         trackTask = new Runnable() {
             @Override
             public void run() {
-                if (!trackMode || trackReplayer == null) return;
-                if (trackReplayer.isFinished()) {
+                // Исправлено MA-13: local snapshot trackReplayer для защиты от NPE
+                // Если stopTrackReplay вызывается между проверками trackMode и trackReplayer
+                TrackReplayer tr = trackReplayer;
+                if (!trackMode || tr == null) return;
+                if (tr.isFinished()) {
                     stopTrackReplay();
                     return;
                 }
@@ -1761,11 +1826,11 @@ public class MainActivity extends Activity {
                     if (realDeltaMs > 100) realDeltaMs = 50; // cap for pauses
                 }
                 trackPrevFrameMs = now;
-                trackReplayer.update(realDeltaMs);
+                tr.update(realDeltaMs);
 
-                // Feed accel through thermal detector
-                if (thermalDetector != null) {
-                    thermalDetector.processSample(trackReplayer.getAccelX(), trackReplayer.getAccelY());
+                // Feed accel through thermal detector — исправлено TR-12: только если есть реальные данные ZIP
+                if (thermalDetector != null && tr.hasRealAccel()) {
+                    thermalDetector.processSample(tr.getAccelX(), tr.getAccelY());
                     ThermalBlip detBlip = thermalDetector.getCurrentBlip();
                     if (detBlip != null) {
                         long nowMs = System.currentTimeMillis();
@@ -1791,7 +1856,7 @@ public class MainActivity extends Activity {
                 }
 
                 // Add persistent thermal blip from replayer
-                if (trackReplayer.isThermalActive()) {
+                if (tr.isThermalActive()) {
                     long nowMs = System.currentTimeMillis();
                     synchronized (thermalLock) {
                         Iterator<ThermalBlip> it = thermals.iterator();
@@ -1800,25 +1865,25 @@ public class MainActivity extends Activity {
                         }
                         boolean hasBlip = false;
                         for (ThermalBlip tb : thermals) {
-                            if (Math.abs(tb.angle - trackReplayer.getThermalBearing()) < 20f
-                                    && Math.abs(tb.distance - trackReplayer.getThermalDistance()) < 30f) {
-                                tb.distance = trackReplayer.getThermalDistance();
-                                tb.angle = trackReplayer.getThermalBearing();
+                            if (Math.abs(tb.angle - tr.getThermalBearing()) < 20f
+                                    && Math.abs(tb.distance - tr.getThermalDistance()) < 30f) {
+                                tb.distance = tr.getThermalDistance();
+                                tb.angle = tr.getThermalBearing();
                                 hasBlip = true;
                                 break;
                             }
                         }
                         if (!hasBlip) {
-                            float strength = trackReplayer.isShowRedCore() ? 8f : 4f;
+                            float strength = tr.isShowRedCore() ? 8f : 4f;
                             ThermalBlip tb = new ThermalBlip(
-                                    trackReplayer.getThermalBearing(),
+                                    tr.getThermalBearing(),
                                     strength,
-                                    trackReplayer.getThermalDistance(),
+                                    tr.getThermalDistance(),
                                     "track",
                                     nowMs
                             );
                             // BUG-6 FIX: set adaptive lifeMs like ThermalDetector does
-                            if (trackReplayer.isShowRedCore()) {
+                            if (tr.isShowRedCore()) {
                                 tb.lifeMs = 12000L;
                             } else if (strength > 3f) {
                                 tb.lifeMs = 8000L;
@@ -1832,7 +1897,7 @@ public class MainActivity extends Activity {
                 }
 
                 // NEW-03: не постить если на паузе
-                if (!trackReplayer.isPaused()) {
+                if (!tr.isPaused()) {
                     trackHandler.postDelayed(this, 20);
                 }
             }
@@ -1844,8 +1909,9 @@ public class MainActivity extends Activity {
         trackSpeedIdx = 0; // 1x по умолчанию (NEW-01)
         String trackName = trackFileName;
         currentStatus = "▶ Проигрываем: " + trackName;
+        // Исправлено MA-1: Toast показывает реальную скорость (1x по умолчанию)
         android.widget.Toast.makeText(MainActivity.this,
-                "▶ " + trackName + " (5x)", android.widget.Toast.LENGTH_SHORT).show();
+                "▶ " + trackName + " (1x)", android.widget.Toast.LENGTH_SHORT).show();
 
         // Форсированная загрузка карты в координатах трека
         if (filePath != null && trackReplayer.getLat() != 0.0 && trackReplayer.getLon() != 0.0) {
@@ -1853,8 +1919,15 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void stopTrackReplay() {
+    void stopTrackReplay() {
         trackMode = false;
+        // Исправлено MA-3: возвращаем GPS и сенсоры к жизни
+        gpsManager.startGps();
+        gpsManager.setSensorController(sensorController);
+        try {
+            gpsManager.requestUpdates(Looper.getMainLooper());
+        } catch (SecurityException e) { }
+        sensorController.registerSensors();
         if (trackTask != null) {
             trackHandler.removeCallbacks(trackTask);
             trackTask = null;
@@ -1868,10 +1941,10 @@ public class MainActivity extends Activity {
             thermalsCopy.clear();
         }
         android.widget.Toast.makeText(MainActivity.this,
-                "Сим2 завершён", android.widget.Toast.LENGTH_SHORT).show();
+                "Воспроизведение трека завершено", android.widget.Toast.LENGTH_SHORT).show();
     }
 
-    private void showTestCompleteDialog() {
+    void showTestCompleteDialog() {
         new AlertDialog.Builder(this)
                 .setTitle("Тест завершён!")
                 .setMessage("Все 6 шагов выполнены.\n"
@@ -1892,7 +1965,7 @@ public class MainActivity extends Activity {
     // Compass heading (для UI и test mode)
     // ========================================================================
 
-    private float getCompassHeading() {
+    float getCompassHeading() {
         boolean magReliable = sensorController.isCompassReady()
                 && sensorController.isMagAccurate();
         if (magReliable) {
@@ -1912,7 +1985,7 @@ public class MainActivity extends Activity {
     // ========================================================================
 
     /** Произнести направление на термик (только передние сектора 45°) */
-    private void speakThermalDirection(float thermalAngle, float distanceMeters) {
+    void speakThermalDirection(float thermalAngle, float distanceMeters) {
         float heading = getCompassHeading();
         float rel = (thermalAngle - heading + 540f) % 360f - 180f; // [-180, 180]
 
@@ -1969,7 +2042,7 @@ public class MainActivity extends Activity {
         return super.onKeyDown(keyCode, event);
     }
 
-    private void showExitDialog() {
+    void showExitDialog() {
         new AlertDialog.Builder(this)
                 .setTitle(getString(R.string.exit_dialog_title))
                 .setPositiveButton(getString(R.string.exit_dialog_yes),
@@ -1978,7 +2051,7 @@ public class MainActivity extends Activity {
                 .show();
     }
 
-    private void showExitOnScreenDialog() {
+    void showExitOnScreenDialog() {
         if (exitDialog != null && exitDialog.isShowing()) return;
         exitDialog = new AlertDialog.Builder(this)
                 .setTitle("Завершить TERMO1?")
@@ -2620,10 +2693,17 @@ public class MainActivity extends Activity {
             canvas.drawText(String.format(java.util.Locale.US, "%.1f м/с", gpsSpeed), colX_left, valueRowY + 20 + 28, instrLabelPaint);
             instrLabelPaint.setTextSize(32);
 
-            // MSL value and label (below speed)
-            float gpsAltVal = gpsManager.getAltitude();
-            float startAltVal = gpsManager.getStartAltitude();
-            float aglVal = gpsManager.isAltitudeInitialized() ? (gpsAltVal - startAltVal) : 0f;
+            // MSL value and label (below speed) — исправлено MA-2: в trackMode из реплея, не из живого GPS
+            float gpsAltVal, startAltVal, aglVal;
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                gpsAltVal = trackReplayer.getAltitude();
+                startAltVal = 0f;
+                aglVal = 0f;
+            } else {
+                gpsAltVal = gpsManager.getAltitude();
+                startAltVal = gpsManager.getStartAltitude();
+                aglVal = gpsManager.isAltitudeInitialized() ? (gpsAltVal - startAltVal) : 0f;
+            }
             instrValuePaint.setColor(Color.argb(200, 0, 200, 255));
             canvas.drawText(String.format(java.util.Locale.US, "%.0f", gpsAltVal), colX_left, instrLabelY + 130, instrValuePaint);
             // MSL label ONE LINE BELOW value
@@ -2731,7 +2811,13 @@ public class MainActivity extends Activity {
             }
 
             if (gpsOk) {
-                long now = System.currentTimeMillis();
+                // Исправлено MA-4: в trackMode используем sim-время, не wall-clock
+                long now;
+                if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                    now = (long)(trackReplayer.getCurrentTime() * 1000);
+                } else {
+                    now = System.currentTimeMillis();
+                }
 
                 float currentVario;
                 if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
@@ -2745,12 +2831,18 @@ public class MainActivity extends Activity {
                     double[] last = gpsTrail.get(gpsTrail.size() - 1);
                     long lastAge = now - (long) last[2];
                     if (lastAge >= GPS_TRAIL_ADD_INTERVAL_MS) {
-                        // Фильтр GPS-спиков: параплан не может двигаться >30 м/с (15 возд + 15 ветер)
-                        float[] spikeCheck = new float[2];
-                        android.location.Location.distanceBetween(
-                                last[0], last[1], pilotLat, pilotLon, spikeCheck);
-                        float speedMs = spikeCheck[0] / (lastAge / 1000f);
-                        if (speedMs > 30f) {
+                        // Фильтр GPS-спиков — исправлено MA-4/MA-8: в trackMode отключаем
+                        // (IGC уже валидирован, playbackSpeed искажает speedMs)
+                        boolean isSpike = false;
+                        if (!(trackMode && trackReplayer != null && trackReplayer.isRunning())) {
+                            android.location.Location.distanceBetween(
+                                    last[0], last[1], pilotLat, pilotLon, distanceResult);
+                            float speedMs = distanceResult[0] / (lastAge / 1000f);
+                            if (speedMs > 30f) {
+                                isSpike = true;
+                            }
+                        }
+                        if (isSpike) {
                             // Спик — используем предыдущую точку вместо прыжка
                             pilotLat = last[0];
                             pilotLon = last[1];
@@ -2769,12 +2861,12 @@ public class MainActivity extends Activity {
                     // Для буфера L/D тоже фильтруем спики
                     if (glideBufCount > 0) {
                         int lastGi = (glideBufHead - 1 + GLIDE_BUF_MAX) % GLIDE_BUF_MAX;
-                        float[] spikeCheck = new float[2];
+                        // Исправлено MA-5: используем pre-allocated distanceResult вместо new float[2]
                         android.location.Location.distanceBetween(
                                 glideLatBuf[lastGi], glideLonBuf[lastGi],
-                                pilotLat, pilotLon, spikeCheck);
+                                pilotLat, pilotLon, distanceResult);
                         float dtSec = (now - glideTimeBuf[lastGi]) / 1000f;
-                        float speedMs = (dtSec > 0) ? spikeCheck[0] / dtSec : 0;
+                        float speedMs = (dtSec > 0) ? distanceResult[0] / dtSec : 0;
                         if (speedMs > 30f) {
                             // Спик — повторяем предыдущую позицию
                             pilotLat = glideLatBuf[lastGi];
@@ -2789,13 +2881,18 @@ public class MainActivity extends Activity {
                     if (glideBufCount < GLIDE_BUF_MAX) glideBufCount++;
                 }
 
-                Iterator<double[]> it = gpsTrail.iterator();
-                while (it.hasNext()) {
-                    double[] pt = it.next();
-                    long age = now - (long) pt[2];
-                    if (age > GPS_TRAIL_MAX_AGE_MS) { it.remove(); }
+                // Исправлено MA-6: indexed for loop вместо Iterator.remove() + remove(0)
+                // ArrayList.remove(0) = O(n), Iterator.remove() = O(n-i) — сумма O(n²)
+                // Проходим с конца и удаляем старые элементы за O(n)
+                for (int i = gpsTrail.size() - 1; i >= 0; i--) {
+                    long age = now - (long) gpsTrail.get(i)[2];
+                    if (age > GPS_TRAIL_MAX_AGE_MS) {
+                        gpsTrail.remove(i);
+                    }
                 }
-                while (gpsTrail.size() > GPS_TRAIL_MAX) gpsTrail.remove(0);
+                while (gpsTrail.size() > GPS_TRAIL_MAX) {
+                    gpsTrail.remove(gpsTrail.size() - 1); // удаляем с конца (O(1))
+                }
 
                 for (double[] pt : gpsTrail) {
                     long age = now - (long) pt[2];
@@ -2806,7 +2903,10 @@ public class MainActivity extends Activity {
                     float dist = distanceResult[0];
                     float bearingRad = (float) Math.toRadians(distanceResult[1]);
 
-                    float distPx = (dist / 150f) * trailR;
+                    // Исправлено MA-4: радиус трейла в trackMode увеличен до 1500м
+                    float trailRadiusM = (trackMode && trackReplayer != null && trackReplayer.isRunning())
+                            ? 1500f : 150f;
+                    float distPx = (dist / trailRadiusM) * trailR;
                     if (distPx <= trailR) {
                         trailPxBuf[trailCount] = (w / 2f) + (float) Math.sin(bearingRad) * distPx;
                         trailPyBuf[trailCount] = trailCy - (float) Math.cos(bearingRad) * distPx;
@@ -2946,7 +3046,7 @@ public class MainActivity extends Activity {
             } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                 headingDisplay = trackReplayer.getHeading();
                 varioDisplay = trackReplayer.getVario();
-                headingDisplayFinal = 0f;
+                // Исправлено MA-7: не зануляем heading в trackMode — радар track-up
             }
 
             if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {

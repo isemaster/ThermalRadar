@@ -38,9 +38,9 @@ public class FlightStateMachine {
     // ========================================================================
     // Speed-based detection (из XCSoar FlyingComputer)
     // ========================================================================
-    /** Скорость для детекции взлёта (м/с) */
-    private static final float TAKEOFF_SPEED_MS = 1.0f;
-    /** Порог посадки (м/с) — гистерезис: взлёт при >1, посадка при <1.0 */
+    /** Скорость для детекции взлёта (м/с) — исправлено FSM-1: гистерезис 2.0/1.0 */
+    private static final float TAKEOFF_SPEED_MS = 2.0f;
+    /** Порог посадки (м/с) — гистерезис: взлёт при >2.0, посадка при <1.0 */
     private static final float LANDING_SPEED_MS = 1.0f;
     /** Время непрерывного движения для подтверждения взлёта (с) */
     private static final long TAKEOFF_CONFIRM_MS = 3_000;  // 3 секунды

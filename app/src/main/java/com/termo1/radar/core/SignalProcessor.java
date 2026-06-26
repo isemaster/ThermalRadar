@@ -239,10 +239,16 @@ public class SignalProcessor {
 
             turbulenceLevel = (float) Math.sqrt(rmsX * rmsX + rmsY * rmsY);
 
-            // Направление турбулентности (стабильный метод)
-            // Используем atan2 средних значений BP, а не знаковый RMS
+            // Исправлено SP-1: quadrant sign energy вместо mean(bandpass) ≈ 0
+            // mean bandpass ≈ 0 (DC removed), atan2(0,0) = 0 → всегда север
+            // Sign energy: считаем сколько сэмплов >0 в каждом канале
             if (turbulenceLevel > TURBULENCE_DIR_THRESHOLD) {
-                turbulenceDir = (float) Math.atan2(meanX, meanY);
+                float sx = 0, sy = 0;
+                for (int i = 0; i < WINDOW; i++) {
+                    sx += Math.signum(bufX[i]);
+                    sy += Math.signum(bufY[i]);
+                }
+                turbulenceDir = (float) Math.atan2(sx, sy);
             }
         }
 

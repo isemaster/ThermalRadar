@@ -82,12 +82,13 @@ public class WindDriftCalculator {
         double driftRad = Math.asin(sinArg);
         float driftDeg = (float) Math.toDegrees(driftRad);
 
-        // Курс для компенсации
-        float heading = (desiredTrack - driftDeg + 360f) % 360f;
+        // Курс для компенсации + WCA (исправлено WC-1..3)
+        float heading = (desiredTrack + driftDeg + 360f) % 360f;
 
-        // Путевая скорость
+        // Путевая скорость: headwind вычитается
+        // Исправлено WC-2: было +windSpeed (headwind увеличивал gs)
         double gs = airspeed * Math.cos(driftRad)
-                  + windSpeed * Math.cos(windAngleRad);
+                  - windSpeed * Math.cos(windAngleRad);
         float groundSpeed = Math.max(0.1f, (float) gs);
 
         // BUG-24: drift per km — tan (боковое смещение на км ПУТЕВОГО пути)
@@ -112,7 +113,8 @@ public class WindDriftCalculator {
         if (Math.abs(driftDeg) < 2f) return "";
         if (Math.abs(driftDeg) < 5f) return "Лёгкий снос";
 
-        String dir = driftDeg > 0 ? "вправо" : "влево";
+        // Исправлено WC-3: после WC-1 driftDeg > 0 = нос вправо = снос ВЛЕВО
+        String dir = driftDeg > 0 ? "влево" : "вправо";
         return String.format(Locale.US, "Снос %.0f° %s (%.0fм/км)",
                 Math.abs(driftDeg), dir, (float) driftPerKm);
     }

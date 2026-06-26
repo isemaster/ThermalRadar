@@ -269,10 +269,12 @@ public class ThermalDetector {
             }
             currentBlip = updated;
         } else {
-            currentBlip = new ThermalBlip(angleDeg, strength, dist, "accel", now);
-            currentBlip.sizeFactor = sizeFactor;
-            // Пробный (тусклый) блип — живёт 3с, не отвлекает
-            currentBlip.lifeMs = blipConfirmed ? 12000L : 3000L;
+            // Исправлено TD-1: создать локально, заполнить поля, потом volatile publish
+            // Иначе UI-тред мог увидеть lifeMs=0 (default long) → blip истёк мгновенно
+            ThermalBlip nb = new ThermalBlip(angleDeg, strength, dist, "accel", now);
+            nb.sizeFactor = sizeFactor;
+            nb.lifeMs = blipConfirmed ? 12000L : 3000L;
+            currentBlip = nb;
             if (blipConfirmed) {
                 // Запомнили угол первого подтверждения
                 lastConfirmedAngle = angleDeg;

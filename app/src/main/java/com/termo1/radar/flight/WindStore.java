@@ -114,24 +114,27 @@ public class WindStore {
 
             if (candidates.isEmpty()) return null;
 
-            // Взвешенное среднее: quality × (1 - age/maxAge)
+            // Исправлено WS-1: векторное усреднение подшипов через sin/cos
+            // Линейное усреднение ломается при переходе через 0/360 (350°+10°=180°)
+            double sumSin = 0, sumCos = 0;
             double totalWeight = 0;
-            double weightedBearing = 0;
             double weightedSpeed = 0;
 
             for (WindMeasurement m : candidates) {
                 long age = nowMs - m.timestampMs;
-                double ageFactor = 1.0 - (double) age / MAX_AGE_MS;
-                if (ageFactor < 0.1) ageFactor = 0.1;
-                double weight = m.quality * ageFactor;
-                totalWeight += weight;
-                weightedBearing += m.bearing * weight;
-                weightedSpeed += m.speed * weight;
+                double ageFactor = Math.max(0.1, 1.0 - (double) age / MAX_AGE_MS);
+                double w = m.quality * ageFactor;
+                totalWeight += w;
+                double rad = Math.toRadians(m.bearing);
+                sumSin += Math.sin(rad) * w;
+                sumCos += Math.cos(rad) * w;
+                weightedSpeed += m.speed * w;
             }
 
             if (totalWeight <= 0) return null;
 
-            double avgBearing = weightedBearing / totalWeight;
+            double avgBearing = Math.toDegrees(Math.atan2(sumSin, sumCos));
+            if (avgBearing < 0) avgBearing += 360;
             double avgSpeed = weightedSpeed / totalWeight;
             int avgQuality = 0;
             for (WindMeasurement m : candidates) {

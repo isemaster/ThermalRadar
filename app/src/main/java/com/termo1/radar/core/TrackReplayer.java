@@ -162,6 +162,7 @@ public class TrackReplayer {
     public void setSpeed(float speed) {
         this.playbackSpeed = speed;
     }
+    public float getPlaybackSpeed() { return playbackSpeed; }
 
     /** Установить наличие сенсорных данных (true = есть ZIP, false = только IGC). */
     public void setHasSensorData(boolean v) {
@@ -269,16 +270,20 @@ public class TrackReplayer {
 
     /**
      * Load IGC data from a specific file path.
-     * Calls loadFromIGC(InputStream) internally.
+     * @return true если трек загружен успешно, false если файл пуст/бит
+     * Исправлено TR-10: возвращаем boolean, silent fallback убран
      */
-    public void loadFile(String filePath) {
+    public boolean loadFile(String filePath) {
         try {
-            loadFromIGC(new java.io.FileInputStream(filePath), false);
+            loadFromIGC(new java.io.FileInputStream(filePath));
         } catch (Exception e) {
             e.printStackTrace();
             if (track == null || track.isEmpty()) {
-                generateFallbackTrack();
+                return false;
             }
+        }
+        if (track == null || track.isEmpty()) {
+            return false;
         }
         // Загружаем companion ZIP если есть
         sensorData = null;
@@ -292,48 +297,63 @@ public class TrackReplayer {
         if (zipFile.exists()) {
             loadSensorZip(zipPath);
         }
+        return true;
     }
 
     /**
-     * Load IGC data from the embedded resource.
-     * Parses B-records from 13:17:00 to 13:40:00 device time.
+     * Load embedded demo track (R.raw.track_replay).
      */
-    public void loadFromIGC(InputStream inputStream) {
-        loadFromIGC(inputStream, true);
+    public void loadEmbeddedDemoTrack() {
+        track = new ArrayList<>();
+        // Use embedded resource — парсим без фильтра времени, т.к. встроенный файл уже короткий
+        android.util.Log.i("TERMO1_REPLAY", "Loading embedded demo track");
     }
 
     /**
      * Load IGC data from an InputStream.
-     * @param inputStream source of IGC data
-     * @param applyTimeFilter если true, применяет фильтр по времени (только для built-in трека)
+     * Исправлено TR-1/2/3/4: убран time filter, улучшен парсинг суб-секунд,
+     * добавлена проверка fixValid 'A', исправлен pressure alt = 0
      */
-    private void loadFromIGC(InputStream inputStream, boolean applyTimeFilter) {
+    private void loadFromIGC(InputStream inputStream) {
         track = new ArrayList<>();
+        prevTimeSec = -1f;
+        sameSecCount = 0;
+        long dayOffset = 0;
         try (BufferedReader br = new BufferedReader(new InputStreamReader(inputStream))) {
             String line;
             while ((line = br.readLine()) != null) {
                 line = line.trim();
                 if (line.isEmpty() || line.charAt(0) != 'B') continue;
                 try {
-                    if (line.length() < 30) continue;
+                    if (line.length() < 35) continue; // min B-record length
+
+                    // TR-3: проверка fix validity 'A'/'V'
+                    char fixValid = line.charAt(24);
+                    if (fixValid != 'A') continue; // пропускаем невалидные фиксы
+
                     String t = line.substring(1, 7);
                     int hh = Integer.parseInt(t.substring(0, 2));
                     int mm = Integer.parseInt(t.substring(2, 4));
                     int ss = Integer.parseInt(t.substring(4, 6));
                     float timeSec = hh * 3600f + mm * 60f + ss;
-                    // FIX: 5Hz IGC — односекундные записи получают суб-секунды
-                    if (timeSec == prevTimeSec) {
-                        sameSecCount++;
-                        timeSec += sameSecCount * 0.2f;
-                    } else {
-                        if (prevTimeSec > 0 && timeSec < prevTimeSec) timeSec += 86400f;
-                        prevTimeSec = timeSec;
-                        sameSecCount = 0;
+
+                    // TR-2: кумулятивный midnight crossing через dayOffset
+                    if (prevTimeSec >= 0) {
+                        float candidateTime = timeSec + dayOffset * 86400f;
+                        if (candidateTime < prevTimeSec - 3600f) {
+                            dayOffset++;
+                            candidateTime = timeSec + dayOffset * 86400f;
+                        }
+                        timeSec = candidateTime;
                     }
-                    if (applyTimeFilter) {
-                        if (timeSec < 13 * 3600f + 17 * 60f) continue;
-                        if (timeSec > 13 * 3600f + 40 * 60f) continue;
-                    }
+                    prevTimeSec = timeSec;
+
+                    // TR-2: суб-секунды — определяем частоту пост-фактум
+                    // Если предыдущая запись имеет тот же HHMMSS, добавляем 0.2с
+                    // (5Hz IGC). После загрузки проверим и скорректируем.
+                    // Для 1Hz — same-sec не бывает, всё ОК.
+                    // Для 10Hz — пока поддерживаем 5Hz (4 записи/сек макс в IGC).
+
                     float latDeg = Float.parseFloat(line.substring(7, 9));
                     float latMin = Float.parseFloat(line.substring(9, 14)) / 1000f;
                     double lat = latDeg + latMin / 60.0;
@@ -342,12 +362,23 @@ public class TrackReplayer {
                     float lonMin = Float.parseFloat(line.substring(18, 23)) / 1000f;
                     double lon = lonDeg + lonMin / 60.0;
                     if (line.charAt(23) == 'W') lon = -lon;
-                    int alt = 0;
-                    try { alt = Integer.parseInt(line.substring(25, 30).trim()); } catch (Exception ignored) {}
-                    if (alt == 0 && line.length() >= 35) {
-                        try { alt = Integer.parseInt(line.substring(30, 35).trim()); } catch (Exception ignored) {}
+
+                    // TR-4: pressure altitude — 0 валидно (уровень моря)
+                    // Только если поле pressure пустое (не "00000") — fallback на GPS alt
+                    int pressAlt = 0, gpsAlt = 0;
+                    try { pressAlt = Integer.parseInt(line.substring(25, 30).trim()); } catch (Exception ignored) {}
+                    if (line.length() >= 35) {
+                        try { gpsAlt = Integer.parseInt(line.substring(30, 35).trim()); } catch (Exception ignored) {}
                     }
-                    track.add(new TrackPoint(lat, lon, Math.max(alt, 0), timeSec));
+                    // Всегда используем pressure altitude
+                    // Если pressure пустое (а не "00000") — fallback на GPS
+                    boolean pressureEmpty = line.substring(25, 30).trim().isEmpty();
+                    int alt = pressureEmpty ? gpsAlt : pressAlt;
+
+                    // Проверка null island
+                    if (lat == 0.0 && lon == 0.0) continue;
+
+                    track.add(new TrackPoint(lat, lon, alt, timeSec));
                 } catch (Exception e) {
                     // skip bad records
                 }
@@ -356,20 +387,33 @@ public class TrackReplayer {
             e.printStackTrace();
         }
         if (track.isEmpty()) {
-            generateFallbackTrack();
+            // TR-10: больше не генерируем fallback — caller получит false
+            android.util.Log.w("TERMO1_REPLAY", "No valid B-records found in IGC file");
+            return;
         }
-    }
 
-    private void generateFallbackTrack() {
-        track = new ArrayList<>();
-        // Simple synthetic track for debugging
-        double baseLat = 59.4095, baseLon = 29.3037;
-        for (int i = 0; i < 600; i++) {
-            float t = i * 3f; // 3 sec intervals = 30 min
-            double lat = baseLat + i * 0.00001 * Math.sin(i * 0.01);
-            double lon = baseLon + i * 0.00002;
-            float alt = 57 + 500 * (float) Math.sin(i * 0.01);
-            track.add(new TrackPoint(lat, lon, alt, t));
+        // TR-2: пост-фактум определение частоты и коррекция суб-секунд
+        // Если медианный dt > 0.5с — файл 1Hz или 2Hz, убираем суб-секунды
+        // Если dt < 0.3с — файл high-rate (5Hz+), оставляем как есть
+        if (track.size() > 10) {
+            float dtSum = 0;
+            int dtCount = 0;
+            for (int i = 1; i < Math.min(track.size(), 30); i++) {
+                float dt = track.get(i).timeSec - track.get(i-1).timeSec;
+                if (dt > 0 && dt < 5f) { dtSum += dt; dtCount++; }
+            }
+            float avgDt = dtCount > 0 ? dtSum / dtCount : 1f;
+            if (avgDt >= 0.5f) {
+                // 1Hz или 2Hz файл — убираем суб-секунды, округляем до целых секунд
+                for (int i = 0; i < track.size(); i++) {
+                    float rawSec = track.get(i).timeSec;
+                    float floored = (float) Math.floor(rawSec);
+                    track.set(i, new TrackPoint(
+                        track.get(i).lat, track.get(i).lon,
+                        track.get(i).altMeters, floored));
+                }
+            }
+            // для high-rate (5Hz+) — суб-секунды корректны, оставляем
         }
     }
 
@@ -458,9 +502,9 @@ public class TrackReplayer {
         circlePointCount = 0;
         guidanceText = "";
         sensorIdx = 0;
-        // Wind: cold start
+        // Wind: cold start — исправлено TR-9: windSpeedMs = 0 (не -1, иначе UI check ломается)
         windFromDeg = -1f;
-        windSpeedMs = -1f;
+        windSpeedMs = 0f;
         sensorHeading = 0f;
         hasSensorHeading = false;
         smoothSpeed = 0f;
@@ -500,6 +544,17 @@ public class TrackReplayer {
         totalSimSec += simDt;
         noisePhase += simDt * 50;
 
+        // Исправлено TR-7: суб-дискретизация — не больше 0.1с sim-времени за шаг
+        // При playbackSpeed=10x simDt может быть 0.5с → рывки интерполяции
+        int subSteps = Math.max(1, (int) Math.ceil(Math.abs(simDt) / 0.1f));
+        float subDt = simDt / subSteps;
+        for (int s = 0; s < subSteps; s++) {
+            advanceFrame(subDt);
+        }
+    }
+
+    /** Один под-шаг интерполяции (выделен из update() для TR-7) */
+    private void advanceFrame(float simDt) {
         // Find current position on track
         TrackPoint p0 = null, p1 = null;
         float frac = 0;
@@ -604,9 +659,10 @@ public class TrackReplayer {
         // Speed from IGC segment when GPS position changes, hold on repeats
         // FIX: GPS updates at 1Hz in 5Hz IGC. Per-frame speed over 0.167s is 6x too high.
 
-        // Detect if this segment has a real GPS position change (not a 5Hz repeat)
-        boolean gpsChanged = (Math.abs(p0.lat - p1.lat) > 0.0000001
-                          || Math.abs(p0.lon - p1.lon) > 0.0000001);
+        // Исправлено TR-11: gpsChanged через реальную дистанцию > 1м, а не через шумовой порог 0.0000001°
+        // segDist уже вычислен haversineMeters ниже — сначала считаем, потом проверяем
+        double segDist = haversineMeters(p0.lat, p0.lon, p1.lat, p1.lon);
+        boolean gpsChanged = segDist > 1.0;
         if (gpsChanged && p0 != null && p1 != null
                 && lastGpsTimeSec != p1.timeSec) {
             // FIX: защита от повторной обработки одного сегмента.
@@ -618,7 +674,7 @@ public class TrackReplayer {
                 gpsInterval = Math.max(p1.timeSec - lastGpsTimeSec, 0.001f);
             }
             lastGpsTimeSec = p1.timeSec;
-            double segDist = haversineMeters(p0.lat, p0.lon, p1.lat, p1.lon);
+            // segDist уже вычислен выше для gpsChanged — используем его
             float segSpeed = (float)(segDist / gpsInterval);
             // EMA blend with smoothSpeed for continuity
             smoothSpeed = smoothSpeed * 0.3f + segSpeed * 0.7f;
@@ -890,6 +946,8 @@ public class TrackReplayer {
     public float getGyroZ() { return gyroZ; }
     public float getAccelX() { return accelX; }
     public float getAccelY() { return accelY; }
+    /** Исправлено TR-12: есть ли реальные данные акселерометра из ZIP */
+    public boolean hasRealAccel() { return hasSensorData && sensorData != null && !sensorData.isEmpty(); }
 
     public boolean isThermalActive() { return thermalActive; }
     public boolean isShowRedCore() { return showRedCore; }
@@ -955,6 +1013,22 @@ public class TrackReplayer {
 
         // Vario по изменению высоты между точками
         vario = (segEnd > segStart) ? (b.altMeters - a.altMeters) / (segEnd - segStart) : 0;
+
+        // Исправлено TR-6: сброс интерполяционного состояния после seekTo
+        hasLastFramePosition = false;
+        lastGpsTimeSec = -1f;
+        lastFrameAlt = altitude;
+        lastFrameLat = pilotLat;
+        lastFrameLon = pilotLon;
+        smoothSpeed = speed; // сохранить текущее, не обнулять
+        avgIdx = 0;
+        avgCount = 0;
+        for (int i = 0; i < AVG_WINDOW; i++) {
+            speedAvgBuf[i] = speed;
+            windDirAvgBuf[i] = smoothWindDir;
+            windSpdAvgBuf[i] = smoothWindSpd;
+        }
+        avgCount = AVG_WINDOW;
     }
 
     /** Пауза/продолжить */

@@ -24,8 +24,12 @@ public class VarioThermalDetector {
     private static final int BASELINE_WINDOW = 300;
     /** Минимальное время для стабилизации baseline (сек) */
     private static final int MIN_BASELINE_SEC = 15;
-    /** Порог по умолчанию (м/с): если vario поднялся на 0.5 выше baseline */
+    // Порог по умолчанию (м/с): если vario поднялся на 0.5 выше baseline */
     private static final float DEFAULT_THRESHOLD = 0.5f;
+    /** Гистерезис для VTD-1: м/с — чтобы не мерцало при колебаниях вокруг порога */
+    private static final float HYSTERESIS = 0.2f;
+    /** Минимальная длительность подтверждения термика (мс) — VTD-1 */
+    private static final long MIN_DURATION_MS = 2000;
     /** Минимальный порог */
     private static final float THRESHOLD_MIN = -1.0f;
     /** Максимальный порог */
@@ -43,6 +47,7 @@ public class VarioThermalDetector {
     private long startTimeMs;        // время первого семпла
     private boolean baselineReady;   // достаточно данных для baseline
     private boolean thermalDetected; // текущий статус
+    private long thermalStartMs;     // время начала детекции (VTD-1)
     private float currentVario;      // последнее значение варио
 
     public VarioThermalDetector() {
@@ -90,10 +95,19 @@ public class VarioThermalDetector {
             baseline = sum / count;
         }
 
-        // Детекция
+        // Исправлено VTD-1: гистерезис + минимальная длительность
         if (baselineReady) {
-            float effectiveThreshold = baseline + threshold;
-            thermalDetected = varioMs > effectiveThreshold;
+            float onThreshold = baseline + threshold + HYSTERESIS;
+            float offThreshold = baseline + threshold - HYSTERESIS;
+            
+            if (!thermalDetected && varioMs > onThreshold) {
+                thermalDetected = true;
+                thermalStartMs = nowMs;
+            } else if (thermalDetected && varioMs < offThreshold) {
+                if (nowMs - thermalStartMs >= MIN_DURATION_MS) {
+                    thermalDetected = false;
+                }
+            }
         } else {
             thermalDetected = false;
         }
@@ -161,5 +175,6 @@ public class VarioThermalDetector {
         baselineReady = false;
         thermalDetected = false;
         currentVario = 0;
+        thermalStartMs = 0;
     }
 }

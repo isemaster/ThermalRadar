@@ -89,6 +89,8 @@ public class SensorController implements SensorEventListener {
     private final float[] rotationMatrixInternal = new float[9];
     // SNAPSHOT — атомарная замена при каждом обновлении (читают UI, sensor thd)
     private volatile float[] rotationMatrixSnapshot = new float[9];
+    // Исправлено SC-4: второй буфер для double-buffering (без new float[9] в hot path)
+    private float[] internalWriteBuf = new float[9];
     private final float[] orientationVals = new float[3];
     private final float[] gravBuf = new float[3];
     private final float[] geomBuf = new float[3];
@@ -108,6 +110,8 @@ public class SensorController implements SensorEventListener {
     private int compassFailureStreak = 0;
     private float magneticDeclination = 0f;
     private long lastDeclinationUpdateMs = 0;
+    // Исправлено SC-3: последний timestamp ROTATION_VECTOR для glitch clamp
+    private long lastRotVecTimestampNs = 0;
 
     // ========================================================================
     // Barometer — делегирован VarioManager, поля только для fallback
@@ -122,6 +126,11 @@ public class SensorController implements SensorEventListener {
 
     private int varioProfile = 1;
     private int varioSmoothSamples = 30;
+
+    // Ориентация крепления для remapCoordinateSystem (исправлено SC-1)
+    // По умолчанию — AXIS_X, AXIS_Y (стандартная ориентация, экраном вверх)
+    private int mountAxisX = SensorManager.AXIS_X;
+    private int mountAxisY = SensorManager.AXIS_Y;
 
     // ========================================================================
     // Наклон телефона (tilt calibration)
@@ -204,6 +213,9 @@ public class SensorController implements SensorEventListener {
     public void loadPreferences(SharedPreferences prefs) {
         varioProfile = prefs.getInt("vario_profile", 1);
         varioSmoothSamples = prefs.getInt("vario_smooth", 30);
+        // Исправлено SC-1: загружаем ориентацию крепления
+        mountAxisX = prefs.getInt("mount_axis_x", SensorManager.AXIS_X);
+        mountAxisY = prefs.getInt("mount_axis_y", SensorManager.AXIS_Y);
         loadMountTilt(prefs);
     }
 
@@ -354,6 +366,10 @@ public class SensorController implements SensorEventListener {
             case Sensor.TYPE_ROTATION_VECTOR: {
                 // PRIMARY compass path — встроенный fusion ядра Android (Fix A)
                 SensorManager.getRotationMatrixFromVector(rotationMatrixInternal, event.values);
+                // Исправлено SC-1: remapCoordinateSystem для нестандартной ориентации крепления
+                float[] remapped = new float[9];
+                SensorManager.remapCoordinateSystem(rotationMatrixInternal, mountAxisX, mountAxisY, remapped);
+                System.arraycopy(remapped, 0, rotationMatrixInternal, 0, 9);
                 // Снимаем snapshot для UI-треда
                 publishRotationMatrixSnapshot();
                 SensorManager.getOrientation(rotationMatrixInternal, orientationVals);
@@ -362,6 +378,18 @@ public class SensorController implements SensorEventListener {
                 rawHeading = newHeading;
                 pitch = orientationVals[1];
                 roll = orientationVals[2];
+                // Исправлено SC-3: clamp перед updateFilteredHeading (event.timestamp доступен здесь)
+                long dtNs = event.timestamp - lastRotVecTimestampNs;
+                lastRotVecTimestampNs = event.timestamp;
+                float diff = newHeading - heading;
+                while (diff > 180) diff -= 360;
+                while (diff < -180) diff += 360;
+                float maxDelta = 40f * (dtNs / 1_000_000_000f);
+                if (Math.abs(diff) > maxDelta) {
+                    newHeading = heading + Math.signum(diff) * maxDelta;
+                    if (newHeading < 0) newHeading += 360;
+                    if (newHeading >= 360) newHeading -= 360;
+                }
                 updateFilteredHeading(newHeading);
                 break;
             }
@@ -390,10 +418,12 @@ public class SensorController implements SensorEventListener {
     // ========================================================================
 
     private void publishRotationMatrixSnapshot() {
+        // Исправлено SC-4: double-buffering вместо new float[9] каждый сэмпл
         synchronized (rotMatrixLock) {
-            float[] snapshot = new float[9];
-            System.arraycopy(rotationMatrixInternal, 0, snapshot, 0, 9);
-            rotationMatrixSnapshot = snapshot;
+            System.arraycopy(rotationMatrixInternal, 0, internalWriteBuf, 0, 9);
+            float[] tmp = internalWriteBuf;
+            internalWriteBuf = rotationMatrixSnapshot;
+            rotationMatrixSnapshot = tmp;
         }
     }
 
@@ -412,7 +442,7 @@ public class SensorController implements SensorEventListener {
                 headingFilter.reset();
                 compassReady = true;
             } else if (rotationVector != null) {
-                // TYPE_ROTATION_VECTOR — уже отфильтрован, идёт напрямую
+                // TYPE_ROTATION_VECTOR — SC-3 glitch clamp уже применён в onSensorChanged
                 heading = newHeading;
             } else {
                 // Fallback (accel+mag) — применяем HeadingFilter
@@ -514,12 +544,10 @@ public class SensorController implements SensorEventListener {
     public float getRoll() { return roll; }
     public boolean isCompassReady() { return compassReady; }
     /** Возвращает snapshot rotationMatrix — атомарная ссылка.
-     *  Возвращается копия массива для защиты от partial reads (T12 §3.1). */
-    public float[] getRotationMatrix() {
+     *  Исправлено SC-2: caller передаёт pre-allocated буфер, не new float[9]. */
+    public void getRotationMatrix(float[] out) {
         float[] snapshot = rotationMatrixSnapshot;
-        float[] copy = new float[9];
-        System.arraycopy(snapshot, 0, copy, 0, 9);
-        return copy;
+        System.arraycopy(snapshot, 0, out, 0, 9);
     }
 
     /** Для лога: heading с fallback, если нет магнитометра.
@@ -535,6 +563,12 @@ public class SensorController implements SensorEventListener {
     public float getVario() { return varioManager != null ? varioManager.getVario() : 0f; }
     public float getAltitudeRaw() { return varioManager != null ? varioManager.getAltRaw() : 0f; }
     public float getAltitudeFiltered() { return varioManager != null ? varioManager.getAltFiltered() : 0f; }
+    /** Исправлено VM-5: getAltCalibrated() — высота с GPS-калибровкой baroOffset */
+    public float getAltitudeCalibrated() { return varioManager != null ? varioManager.getAltCalibrated() : 0f; }
+    /** Исправлено VM-5: отфильтрованная высота с GPS-калибровкой */
+    public float getAltitudeCalibratedFiltered() {
+        return varioManager != null ? varioManager.getAltFiltered() + varioManager.getBaroOffset() : 0f;
+    }
     public float getRecentSnr() { return varioManager != null ? varioManager.getRecentSnr() : 0f; }
     public float getMaxSnr() { return varioManager != null ? varioManager.getMaxSnr() : 0f; }
 

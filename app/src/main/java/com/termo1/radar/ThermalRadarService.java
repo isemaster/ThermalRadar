@@ -47,12 +47,12 @@ public class ThermalRadarService extends Service {
         createNotificationChannel();
         startForeground(NOTIF_ID, buildNotification("ThermalRadar работает"));
 
-        // WakeLock на всё время жизни сервиса
+        // Исправлено SVC-2: WakeLock с таймаутом 6 часов
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         if (pm != null) {
             wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "TERMO1:RadarSvc");
-            wakeLock.acquire();
-            Log.i(TAG, "WakeLock acquired (foreground service)");
+            wakeLock.acquire(6 * 60 * 60 * 1000L);
+            Log.i(TAG, "WakeLock acquired (foreground service, 6h timeout)");
         }
     }
 
@@ -78,8 +78,11 @@ public class ThermalRadarService extends Service {
     }
 
     // ========================================================================
-    // Notification
+    // Notification — исправлено SVC-1: кешированный Builder, не аллоцировать каждый кадр
     // ========================================================================
+
+    private String lastNotifText = "";
+    private NotificationCompat.Builder notifBuilder;
 
     public void updateNotification(boolean isLogging, float vario) {
         String text;
@@ -88,9 +91,21 @@ public class ThermalRadarService extends Service {
         } else {
             text = "ThermalRadar работает";
         }
+        // Не обновляем если текст не изменился
+        if (text.equals(lastNotifText)) return;
+        lastNotifText = text;
+        
         NotificationManager nm = getSystemService(NotificationManager.class);
         if (nm != null) {
-            nm.notify(NOTIF_ID, buildNotification(text));
+            if (notifBuilder == null) {
+                notifBuilder = new NotificationCompat.Builder(this, CHANNEL_ID)
+                        .setContentTitle("ThermalRadar")
+                        .setSmallIcon(android.R.drawable.ic_menu_compass)
+                        .setOngoing(true)
+                        .setPriority(NotificationCompat.PRIORITY_LOW);
+            }
+            notifBuilder.setContentText(text);
+            nm.notify(NOTIF_ID, notifBuilder.build());
         }
     }
 
@@ -105,6 +120,7 @@ public class ThermalRadarService extends Service {
     }
 
     private Notification buildNotification(String content) {
+        // buildNotification остаётся для начального startForeground
         return new NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("ThermalRadar")
                 .setContentText(content)

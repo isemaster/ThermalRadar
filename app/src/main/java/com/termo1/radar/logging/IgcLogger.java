@@ -286,7 +286,10 @@ public class IgcLogger {
             gpsAlt = gps.altGps;
             fixAge = gps.fixAgeMs;
             acc = gps.accuracy;
-            hasFix = !(lat == 0.0 && lon == 0.0);
+            // Исправлено IL-1: hasFix проверяет fixAge < 5000 && accuracy < 50f, не только null island
+            hasFix = !(lat == 0.0 && lon == 0.0)
+                    && fixAge < 5000
+                    && acc < 50f;
         }
 
         seqNum++;

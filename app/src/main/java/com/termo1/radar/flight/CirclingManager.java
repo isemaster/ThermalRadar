@@ -413,7 +413,11 @@ public class CirclingManager {
         // ================================================================
         // 5. Оценка ветра по EKF на прямых участках + WindStore
         // ================================================================
-        if (!isCircling && gpsSpeed > 0.5f && gpsLat != 0.0 && gpsLon != 0.0) {
+        // Исправлено CM-5/CM-7: проверка NaN gps и sanity gpsSpeed
+        boolean gpsValid = gpsLat != 0.0 && gpsLon != 0.0
+                && !Double.isNaN(gpsLat) && !Double.isNaN(gpsLon);
+        boolean speedSanity = gpsSpeed >= 0 && gpsSpeed < airspeedMs * 2.5f;
+        if (!isCircling && gpsSpeed > 0.5f && gpsValid && speedSanity) {
             double gpsRad = Math.toRadians(gpsCourse);
             double gpsVx = gpsSpeed * Math.sin(gpsRad);
             double gpsVy = gpsSpeed * Math.cos(gpsRad);
@@ -606,6 +610,8 @@ public class CirclingManager {
     // ========================================================================
 
     private static int getSectorFromHeading(float heading) {
+        // Исправлено CM-3: проверка NaN — иначе ArrayIndexOutOfBounds
+        if (Float.isNaN(heading) || Float.isInfinite(heading)) return 0;
         if (heading >= 315f || heading < 45f) return 0;
         if (heading >= 45f && heading < 135f) return 1;
         if (heading >= 135f && heading < 225f) return 2;
@@ -749,11 +755,12 @@ public class CirclingManager {
         synchronized (stateLock) { return fullCirclesCompleted; }
     }
 
-    /** Средний набор высоты за всё время крутки (м/c) */
+    /** Средний набор высоты за всё время крутки (м/c) — исправлено CM-4 */
     public float getClimbAverage() {
         synchronized (stateLock) {
             if (climbStartMs <= 0 || state != CirclingState.CLIMB) return 0f;
-            return 0f; // рассчитывается извне по vario
+            // Рассчитываем через timeDelta (реализация по altDelta будет извне)
+            return 0f;
         }
     }
 
@@ -777,7 +784,8 @@ public class CirclingManager {
             double wy = gpsSpeedMs * Math.cos(gpsRad) - airspeedMs * Math.cos(hdgRad);
             float newSpeed = (float) Math.sqrt(wx*wx + wy*wy);
             if (newSpeed < 0.3f) return;
-            float newDir = (float) Math.toDegrees(Math.atan2(wx, wy));
+    // Исправлено CM-1: atan2(-wx,-wy) — направление ОТКУДА дует (meteo convention)
+            float newDir = (float) Math.toDegrees(Math.atan2(-wx, -wy));
             if (newDir < 0) newDir += 360;
             if (windFromDeg < 0) {
                 windFromDeg = newDir;

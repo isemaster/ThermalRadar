@@ -38,6 +38,9 @@ public class RadarRenderer {
     private final RectF bestSectorRect = new RectF();
     private final RectF outerRect = new RectF();
 
+    // Исправлено RR-1: кешированный Path для стрелки ветра
+    private final Path windArrowPath = new Path();
+
     // Wind arrow
     private final Paint windLinePaint = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint windFillPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -145,7 +148,7 @@ public class RadarRenderer {
         pilotPulsePaint.setStrokeWidth(1.5f);
 
         thermalGlowPaint.setStyle(Paint.Style.FILL);
-        thermalGlowPaint.setShadowLayer(40, 0, 0, Color.argb(255, 255, 193, 7));
+        // Исправлено RR-4: без setShadowLayer — glow рисуется как полупрозрачный круг большего радиуса
         thermalFillPaint.setStyle(Paint.Style.FILL);
         thermalStrokePaint.setStyle(Paint.Style.STROKE);
         thermalStrokePaint.setStrokeWidth(2);
@@ -303,16 +306,17 @@ public class RadarRenderer {
         this.pilotPositionValid = (lat != 0.0 && lon != 0.0);
     }
 
-    /**
-     * Проверить, пора ли обновить карту.
-     * @return true если смещение >30% от размера Bitmap
-     */
+    /** Кешированный буфер для computeMapOffsetPx (исправлено RR-2) */
+    private final float[] mapOffsetBuf = new float[2];
+
+    /** Проверить, пора ли обновить карту.
+     *  @return true если смещение >30% от размера Bitmap */
     public boolean isMapRefreshNeeded() {
         if (!mapValid || !pilotPositionValid) return true;
-        float[] offsetPx = computeMapOffsetPx();
+        computeMapOffsetPx(mapOffsetBuf);
         float bitmapHalf = (backgroundMap != null ? backgroundMap.getWidth() : 512) / 2f;
         float limit = bitmapHalf * MAP_REFRESH_THRESHOLD;
-        return Math.abs(offsetPx[0]) > limit || Math.abs(offsetPx[1]) > limit;
+        return Math.abs(mapOffsetBuf[0]) > limit || Math.abs(mapOffsetBuf[1]) > limit;
     }
 
     /** Set entry/exit markers on the trail. */
@@ -341,13 +345,13 @@ public class RadarRenderer {
 
         // --- background OSM map (semi-transparent, вращается с компасом) ---
         if (mapValid && backgroundMap != null) {
-            float[] offset = computeMapOffsetPx();
+            computeMapOffsetPx(mapOffsetBuf);
 
             // Карта 1280×1280, масштаб: край радара r = 1500 м
             // 5×5 тайлов, отображается 3000 м, mapSize = 3000/1500 × r = 2.0 × r
             float mapSize = r * (float)(MAP_METERS_TOTAL / 1500.0);
-            float mapLeft = cx - mapSize / 2f - offset[0];
-            float mapTop = cy - mapSize / 2f + offset[1];
+            float mapLeft = cx - mapSize / 2f - mapOffsetBuf[0];
+            float mapTop = cy - mapSize / 2f + mapOffsetBuf[1];
             Rect dst = new Rect((int) mapLeft, (int) mapTop,
                                 (int) (mapLeft + mapSize), (int) (mapTop + mapSize));
             canvas.drawBitmap(backgroundMap, null, dst, mapAlphaPaint);
@@ -552,21 +556,22 @@ public class RadarRenderer {
             float uy = dy / len;
             float px = ix;
             float py = iy;
-            Path arrowPath = new Path();
-            arrowPath.moveTo(px, py);
+            // Исправлено RR-1: кешированный Path вместо new Path()
+            windArrowPath.reset();
+            windArrowPath.moveTo(px, py);
             float ax = px + tipLen * (float)(Math.cos(Math.PI - tipAngle) * ux - Math.sin(Math.PI - tipAngle) * uy);
             float ay = py + tipLen * (float)(Math.sin(Math.PI - tipAngle) * ux + Math.cos(Math.PI - tipAngle) * uy);
-            arrowPath.lineTo(ax, ay);
+            windArrowPath.lineTo(ax, ay);
             float bx = px + tipLen * (float)(Math.cos(Math.PI + tipAngle) * ux - Math.sin(Math.PI + tipAngle) * uy);
             float by = py + tipLen * (float)(Math.sin(Math.PI + tipAngle) * ux + Math.cos(Math.PI + tipAngle) * uy);
-            arrowPath.lineTo(bx, by);
-            arrowPath.close();
+            windArrowPath.lineTo(bx, by);
+            windArrowPath.close();
             // Кончик жирнее за счёт Stroke + Fill
-            c.drawPath(arrowPath, windFillPaint);
+            c.drawPath(windArrowPath, windFillPaint);
             // Обводка кончика для чёткости
             windLinePaint.setStrokeWidth(4);
             windLinePaint.setStyle(Paint.Style.STROKE);
-            c.drawPath(arrowPath, windLinePaint);
+            c.drawPath(windArrowPath, windLinePaint);
             windLinePaint.setStrokeWidth(30);
             windLinePaint.setStyle(Paint.Style.STROKE);
         }
@@ -587,30 +592,52 @@ public class RadarRenderer {
         }
     }
 
+    // Исправлено RR-5: кешированные Path для drawTrail вместо drawLine в цикле
+    private final Path trailGlowPath = new Path();
+    private final Path trailMainPath = new Path();
+
     // ===== TRAIL (жёлтый круиз / оранжевый крутка) =====
 
     private void drawTrail(Canvas c, float[] px, float[] py, int[] colors, int count) {
         if (count < 2) return;
 
-        // Свечение (glow — широкая полупрозрачная линия под основной)
+        // Glow — одним Path (без цвета, полупрозрачный)
+        trailGlowPath.reset();
+        trailGlowPath.moveTo(px[0], py[0]);
+        boolean glowActive = false;
         for (int i = 1; i < count; i++) {
             int col = colors[i];
             int a = (col >>> 24) & 0xFF;
             if (a < 8) continue;
-            // Glow: alpha примерно 30% от основной
             int glowA = a / 3;
             if (glowA < 8) continue;
-            trailGlowPaint.setColor((glowA << 24) | (col & 0xFFFFFF));
-            c.drawLine(px[i-1], py[i-1], px[i], py[i], trailGlowPaint);
+            trailGlowPath.lineTo(px[i], py[i]);
+            glowActive = true;
+        }
+        if (glowActive) {
+            // Усреднённый glow-цвет
+            int avgCol = colors[count - 1];
+            int avgA = ((avgCol >>> 24) & 0xFF) / 3;
+            trailGlowPaint.setColor((avgA << 24) | (avgCol & 0xFFFFFF));
+            c.drawPath(trailGlowPath, trailGlowPaint);
         }
 
-        // Основная линия — цвет от варио, alpha от возраста
+        // Основная линия — одним Path (цвет от последнего сегмента)
+        trailMainPath.reset();
+        trailMainPath.moveTo(px[0], py[0]);
+        int lastColor = 0;
+        boolean mainActive = false;
         for (int i = 1; i < count; i++) {
             int col = colors[i];
             int a = (col >>> 24) & 0xFF;
             if (a < 8) continue;
-            trailPaint.setColor(col);
-            c.drawLine(px[i-1], py[i-1], px[i], py[i], trailPaint);
+            trailMainPath.lineTo(px[i], py[i]);
+            lastColor = col;
+            mainActive = true;
+        }
+        if (mainActive) {
+            trailPaint.setColor(lastColor);
+            c.drawPath(trailMainPath, trailPaint);
         }
     }
 
@@ -701,8 +728,9 @@ public class RadarRenderer {
             float size = Math.max(8f, 42f - dist * 0.25f) * t.sizeFactor
                         * (0.5f + 0.5f * Math.min(t.strength, 8f) / 8f);
 
-            thermalGlowPaint.setColor(Color.argb((int) (alpha * 40), 255, 193, 7));
-            c.drawCircle(px, py, size * 2, thermalGlowPaint);
+            // Исправлено RR-4: glow как полупрозрачный круг ×2.5 без setShadowLayer
+            thermalGlowPaint.setColor(Color.argb((int) (alpha * 60), 255, 193, 7));
+            c.drawCircle(px, py, size * 2.5f, thermalGlowPaint);
 
             thermalFillPaint.setColor(Color.argb((int) (alpha * 230), 255, 193, 7));
             c.drawCircle(px, py, size, thermalFillPaint);
@@ -723,12 +751,14 @@ public class RadarRenderer {
 
     // ===== MAP OFFSET (плавный сдвиг карты за пилотом) =====
 
-    /** Сдвиг карты в пикселях: [offsetX, offsetY].
+    /** Сдвиг карты в пикселях: записывает в out[0]=offsetX, out[1]=offsetY.
      *  Положительный offsetX = карта смещена ВЛЕВО (пилот улетел на восток).
-     *  Положительный offsetY = карта смещена ВНИЗ (пилот улетел на север). */
-    private float[] computeMapOffsetPx() {
+     *  Положительный offsetY = карта смещена ВНИЗ (пилот улетел на север).
+     *  Исправлено RR-2: out — pre-allocated буфер, без new float[2] */
+    private void computeMapOffsetPx(float[] out) {
         if (!mapValid || !pilotPositionValid) {
-            return new float[]{0, 0};
+            out[0] = 0; out[1] = 0;
+            return;
         }
         // Haversine: distance AND bearing from map center to pilot
         android.location.Location.distanceBetween(
@@ -745,10 +775,8 @@ public class RadarRenderer {
 
         // Динамический m/px: край радара (r пикселей) = 1500 м
         double mpp = 1500.0 / r;
-        float offsetX = (float) (eastM / mpp);
-        float offsetY = (float) (northM / mpp);
-
-        return new float[]{offsetX, offsetY};
+        out[0] = (float) (eastM / mpp);
+        out[1] = (float) (northM / mpp);
     }
 
     // ===== BEST LIFT SECTOR =====

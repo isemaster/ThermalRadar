@@ -82,8 +82,9 @@ public class GpsManager {
                     gpsLon = location.getLongitude();
                     gpsAccuracy = location.hasAccuracy() ? location.getAccuracy() : 999f;
                     lastFixMs = SystemClock.elapsedRealtime();
-                    // Отсев неточных фиксов для стартовой высоты
-                    if (location.hasAltitude() && gpsAccuracy < 25f) {
+                    // Отсев неточных фиксов для стартовой высоты — исправлено GPS-2: accuracy < 10м (было 25)
+                                if (location.hasAltitude() && gpsAccuracy < 10f
+                                        && (SystemClock.elapsedRealtime() - lastFixMs) < 3000) {
                         gpsAltitude = (float) location.getAltitude();
                         if (!altitudeInitialized) {
                             startAltitude = gpsAltitude;
@@ -135,7 +136,7 @@ public class GpsManager {
 
     public float getSpeed() { return gpsSpeed; }
     public float getHeading() { return gpsHeading; }
-    public boolean isReady() { return gpsReady; }
+    public boolean isReady() { return gpsReady && (SystemClock.elapsedRealtime() - lastFixMs) < 5000; }
     public float getAltitude() { return gpsAltitude; }
     public float getStartAltitude() { return startAltitude; }
     public boolean isAltitudeInitialized() { return altitudeInitialized; }

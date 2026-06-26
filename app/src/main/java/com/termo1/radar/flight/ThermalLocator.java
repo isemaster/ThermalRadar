@@ -55,13 +55,13 @@ public class ThermalLocator {
     private double refLon;
     private boolean refSet;
 
-    // Результат
-    private double thermalLat;
-    private double thermalLon;
-    private float thermalBearing;    // от пилота к центру
-    private float thermalDistance;   // от пилота до центра (м)
-    private boolean estimateValid;
-    private float estimateQuality;   // 0..1
+    // Результат — исправлено TL-1: volatile для torn read protection на ARM
+    private volatile double thermalLat;
+    private volatile double thermalLon;
+    private volatile float thermalBearing;    // от пилота к центру
+    private volatile float thermalDistance;   // от пилота до центра (м)
+    private volatile boolean estimateValid;
+    private volatile float estimateQuality;   // 0..1
 
     // ========================================================================
     // Init

@@ -20,15 +20,19 @@ public class VarioManager {
     private static final int BARO_CALIB_SAMPLES = 50;
     private static final int VARIO_BUF_SIZE = 64;
     private static final long VARIO_WINDOW_MS = 750;
-    private static final float NOISE_FLOOR_FIXED = 3.5f;
     private static final int HP_BUF_SIZE = 64;
+
+    // Dynamic noise floor для SNR (исправлено VM-2: статичное 3.5м дезактивировало vario-канал)
+    private float noiseFloorVario = 0.5f;
+    private int noiseCalibCount = 0;
+    private float noiseCalibSum = 0;
 
     // ISA: h = 44330 · (1 - (p/p0)^0.190263), где 0.190263 = (R·L)/(g·M) = 1/5.255
     private static final double ISA_HEIGHT_FACTOR = 0.190263072286998;
     private static final double ISA_HEIGHT_SCALE_M = 44330.7692307692;
 
-    /** Vario deadband — минимальное изменение для отображения (исправлено: 0.05→0.2 м/с) */
-    private static final float VARIO_DEADBAND = 0.2f;
+    /** Vario deadband — минимальное изменение для отображения (исправлено VM-1: 0.2→0.05 м/с) */
+    private static final float VARIO_DEADBAND = 0.05f;
 
     // База для расчёта высоты
     private float baselinePressure = 1013.25f;
@@ -101,8 +105,14 @@ public class VarioManager {
     public boolean processPressureSample(float pressure) {
         if (pressure < 300f || pressure > 1100f) return false;
 
-        // Калибровка: первые 50 сэмплов
+        // VM-3: калибровка только при стабильном давлении (пилот на земле)
         if (baroCalibCount < BARO_CALIB_SAMPLES) {
+            if (baroCalibCount > 0) {
+                float deltaP = Math.abs(pressure - baselinePressure);
+                if (deltaP > 0.5f) { // > 0.5 гПа = > 4м изменения = движение
+                    return false; // не калибруем, ждём стационарности
+                }
+            }
             baselinePressure += (pressure - baselinePressure) / (baroCalibCount + 1);
             baroCalibCount++;
             return false;
@@ -169,7 +179,17 @@ public class VarioManager {
                 sum += hpBuf[i] * hpBuf[i];
             }
             float rms = (float) Math.sqrt(sum / HP_BUF_SIZE);
-            recentSnr = rms / NOISE_FLOOR_FIXED;
+            // Исправлено VM-2: динамическая калибровка noise floor вместо фиксированного 3.5м
+            if (Math.abs(vario) < 0.3f) {  // спокойный воздух — обновляем baseline шума
+                noiseCalibSum += rms;
+                noiseCalibCount++;
+                if (noiseCalibCount >= 100) {
+                    noiseFloorVario = noiseCalibSum / noiseCalibCount;
+                    noiseCalibSum = 0;
+                    noiseCalibCount = 0;
+                }
+            }
+            recentSnr = rms / Math.max(noiseFloorVario, 0.1f);
             if (recentSnr > maxSnr) {
                 maxSnr = recentSnr;
             }
@@ -203,6 +223,8 @@ public class VarioManager {
     public float getAltFiltered() { return altFiltered; }
     /** Высота с калибровкой по GPS (исправлено C-08) */
     public float getAltCalibrated() { return altRaw + baroOffset; }
+    /** Исправлено VM-5: baroOffset для getAltitudeCalibratedFiltered в SensorController */
+    public float getBaroOffset() { return baroOffset; }
     public float getBaselinePressure() { return baselinePressure; }
     public float getRecentSnr() { return recentSnr; }
     public float getMaxSnr() { return maxSnr; }

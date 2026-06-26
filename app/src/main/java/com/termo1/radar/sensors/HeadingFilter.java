@@ -78,8 +78,13 @@ public class HeadingFilter {
         }
 
         long dtMs = timeMs - lastTimeMs;
-        if (dtMs <= 0) dtMs = 1;
-        if (dtMs > 2000) dtMs = 2000;
+        // Исправлено HF-2/3: при dtMs <= 0 или dtMs > 2000 — пропускаем update
+        // (clock skew или app backgrounded), возвращаем lastOutputDeg.
+        // Следующий валидный кадр применит CLAMP к lastOutputDeg, скачка не будет.
+        if (dtMs <= 0 || dtMs > 2000) {
+            lastTimeMs = timeMs;
+            return lastOutputDeg;
+        }
         double dt = dtMs / 1000.0;
         lastTimeMs = timeMs;
 
@@ -159,11 +164,15 @@ public class HeadingFilter {
         return outputDeg;
     }
 
-    /** Медиана для окна 5 (сортировка вставками для малого n) — без аллокаций */
+    /** Копия буфера для сортировки (чтобы не разрушать временной ряд) */
+    private final double[] medianSortBuf = new double[MEDIAN_WINDOW];
+
+    /** Медиана для окна 5 (сортировка вставками для малого n) */
     private double computeMedian() {
-        // Сортируем первые 3 из 5 (медиана окна 5 — третий элемент после сортировки)
-        // Используем insertion sort на месте, n=5 — копеечная операция
-        double[] b = medianBuf;
+        // Исправлено HF-1: сортируем КОПИЮ medianBuf, не оригинал
+        // Иначе System.arraycopy в update() удаляет наименьший элемент, а не самый старый
+        System.arraycopy(medianBuf, 0, medianSortBuf, 0, MEDIAN_WINDOW);
+        double[] b = medianSortBuf;
         // Сортировка вставками первых 5 элементов
         for (int i = 1; i < MEDIAN_WINDOW; i++) {
             double key = b[i];

@@ -1,11 +1,11 @@
 package com.termo1.radar.flight;
 
 /**
- * LiftDatabase — карта подъёма по 36 секторам (10° каждый).
+ * LiftDatabase — карта подъёма по 12 секторам (30° каждый).
  *
  * По образу XCSoar LiftDatabaseComputer:
- * - 36 секторов, каждый покрывает 10° диапазона heading
- * - Сектор = ((heading + 5°) % 360) / 10
+ * - 12 секторов, каждый покрывает 30° диапазона heading
+ * - Сектор = ((heading + 15°) % 360) / 30
  * - Во время крутки записываем текущий варио в сектор
  * - Отслеживаем сектор с максимальным подъёмом
  * - Сброс на каждом новом термике (при входе в крутку)
@@ -21,11 +21,11 @@ public class LiftDatabase {
     /** Количество секторов (12 по 30° — параплан: круг ~17 с при 50 Гц → ~72 сэмпла на сектор) */
     public static final int SECTOR_COUNT = 12;
 
-    /** Ширина одного сектора (градусы) */
-    private static final double SECTOR_WIDTH = 360.0 / SECTOR_COUNT; // 10°
+    /** Ширина одного сектора (градусы) — исправлено LD-1: 30° (было 10°) */
+    private static final double SECTOR_WIDTH = 30.0;
 
-    /** Половина ширины сектора (для округления) */
-    private static final double HALF_SECTOR = SECTOR_WIDTH / 2.0; // 5°
+    /** Половина ширины сектора (для округления) — исправлено LD-1: 15° (было 5°) */
+    private static final double HALF_SECTOR = 15.0;
 
     /** EMA alpha для сглаживания варио в секторе */
     private static final float SMOOTH_ALPHA = 0.3f;
