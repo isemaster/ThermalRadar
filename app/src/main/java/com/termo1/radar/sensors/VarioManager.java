@@ -198,19 +198,19 @@ public class VarioManager {
         return false;
     }
 
-    /** Адаптивный alpha — быстрее при турбулентности.
-     *  Исправлено по ревью §5.4: нижний clamp 0.9→0.8, чтобы настройка n=5 работала. */
+    /** Адаптивный alpha — медленнее при турбулентности (больше сглаживание).
+     *  Исправлено VM-4: турбулентность УВЕЛИЧИВАЕТ n (больше сглаживание), а не уменьшает. */
     private float getVarioAlpha() {
         int n = Math.max(5, Math.min(100, varioSmoothSamples));
         if (thermalDetector != null) {
             float turb = thermalDetector.getSignalProcessor().getTurbulenceLevel();
-            int reduction = (int) (turb * 80f);
-            reduction = Math.min(reduction, n / 2);
-            n = n - reduction;
-            if (n < 1) n = 1;
+            int increase = (int) (turb * 80f);
+            increase = Math.min(increase, 50); // макс +50 сэмплов
+            n = n + increase;
+            if (n > 100) n = 100;
         }
         float alpha = 1f - 1f / n;
-        // Нижний порог снижен с 0.9 до 0.8, чтобы настройки пользователя (n=5→α=0.8) работали
+        // Нижний порог 0.8, чтобы настройки пользователя (n=5→α=0.8) работали
         return Math.max(0.8f, Math.min(0.9999f, alpha));
     }
 

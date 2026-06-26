@@ -5,6 +5,7 @@ import android.location.Location;
 import android.location.LocationManager;
 import android.location.GpsStatus;
 import android.location.GpsSatellite;
+import android.location.GnssStatus;
 import android.os.Looper;
 import android.os.SystemClock;
 
@@ -39,24 +40,21 @@ public class GpsManager {
     private volatile long lastFixMs;
     private volatile int satelliteCount = 0;
     private LocationManager locationManager;
-    private GpsStatus.Listener gpsStatusListener;
+    private GnssStatus.Callback gnssCallback;
     private SensorController sensorController; // для баро-калибровки (C-08)
 
     public GpsManager(Context context) {
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(context);
         locationManager = (LocationManager) context.getSystemService(Context.LOCATION_SERVICE);
         if (locationManager != null) {
-            gpsStatusListener = new GpsStatus.Listener() {
+            gnssCallback = new GnssStatus.Callback() {
                 @Override
-                public void onGpsStatusChanged(int event) {
-                    if (event == GpsStatus.GPS_EVENT_SATELLITE_STATUS) {
-                        GpsStatus status = locationManager.getGpsStatus(null);
-                        int count = 0;
-                        for (GpsSatellite sat : status.getSatellites()) {
-                            if (sat.usedInFix()) count++;
-                        }
-                        satelliteCount = count;
+                public void onSatelliteStatusChanged(GnssStatus status) {
+                    int count = 0;
+                    for (int i = 0; i < status.getSatelliteCount(); i++) {
+                        if (status.usedInFix(i)) count++;
                     }
+                    satelliteCount = count;
                 }
             };
         }
@@ -110,15 +108,15 @@ public class GpsManager {
                             .setPriority(LocationRequest.PRIORITY_HIGH_ACCURACY),
                     locationCallback, looper);
         }
-        // Register satellite status listener
-        if (locationManager != null && gpsStatusListener != null) {
-            locationManager.addGpsStatusListener(gpsStatusListener);
+        // Register satellite status callback
+        if (locationManager != null && gnssCallback != null) {
+            locationManager.registerGnssStatusCallback(gnssCallback, null);
         }
     }
 
     public void stopGps() {
-        if (locationManager != null && gpsStatusListener != null) {
-            locationManager.removeGpsStatusListener(gpsStatusListener);
+        if (locationManager != null && gnssCallback != null) {
+            locationManager.unregisterGnssStatusCallback(gnssCallback);
         }
         if (fusedLocationClient != null && locationCallback != null) {
             try {

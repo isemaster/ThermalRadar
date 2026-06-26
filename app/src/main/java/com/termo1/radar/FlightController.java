@@ -20,6 +20,7 @@ import com.termo1.radar.logging.IgcLogger;
 import com.termo1.radar.logging.LogManager;
 import com.termo1.radar.model.ThermalBlip;
 import com.termo1.radar.sensors.SensorController;
+import com.termo1.radar.ui.VarioSoundManager;
 import com.termo1.radar.ui.VoiceController;
 
 import java.util.List;
@@ -68,6 +69,9 @@ public class FlightController {
     private final List<ThermalBlip> thermals;
     private final Object thermalLock = new Object();
 
+    private VarioSoundManager varioSoundManager;
+    private float varioThreshold = 0.5f;
+
     private float prevThermalLiftBaseline = -1.5f;
     private long lastThermalBaseCalcMs;
     private ThermalBaseResult lastThermalBaseResult;
@@ -77,6 +81,9 @@ public class FlightController {
     private static final long THERMAL_BEEP_INTERVAL_MS = 6000L;
     private long lastThermalBeepRealMs;
     private long lastThermalBeepMs;
+
+    public void setVarioSoundManager(VarioSoundManager vsm) { this.varioSoundManager = vsm; }
+    public void setVarioThreshold(float t) { this.varioThreshold = t; }
 
     public FlightController(ThermalDetector thermalDetector,
                             CirclingManager circlingManager,
@@ -131,6 +138,17 @@ public class FlightController {
     private void processBg() {
         if (!running) return;
         long bgNow = SystemClock.elapsedRealtime();
+
+        // Vario sound (live only)
+        if (!trackMode && varioSoundManager != null) {
+            varioSoundManager.update(sensorController.getVario());
+        }
+
+        // Flight state machine (live only, baro-based)
+        if (!testMode && !simMode && !scenarioMode && !trackMode) {
+            flightStateMachine.update(
+                    sensorController.getAltitudeRaw(), bgNow);
+        }
 
         // Speed-based flight detection
         if (!testMode && !simMode && !scenarioMode && !trackMode

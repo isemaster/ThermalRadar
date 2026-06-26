@@ -135,7 +135,7 @@ public class LiftDatabase {
 
     /**
      * Получить значение подъёма в секторе.
-     * @param sector  индекс сектора (0-35)
+     * @param sector  индекс сектора (0-11)
      * @return варио (м/с) или 0 если данных нет
      */
     public float getLift(int sector) {
@@ -207,7 +207,7 @@ public class LiftDatabase {
 
     /**
      * Получить массив значений подъёма для рендеринга.
-     * @return float[36], где entry = lift в м/с (0 если данных нет)
+     * @return float[12], где entry = lift в м/с (0 если данных нет)
      */
     public synchronized float[] getLiftValues() {
         float[] result = new float[SECTOR_COUNT];

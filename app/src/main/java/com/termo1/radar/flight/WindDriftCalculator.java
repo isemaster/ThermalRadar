@@ -72,14 +72,13 @@ public class WindDriftCalculator {
 
         // Проверка: не слишком ли сильный боковой ветер?
         double sinArg = windSpeed * Math.sin(windAngleRad) / airspeed;
+        // Исправлено WC-4: cap WCA ±45° вместо возврата 0 при sinArg > 0.99
+        double driftRad;
         if (Math.abs(sinArg) > 0.99) {
-            // Ветер слишком сильный для данного курса — не компенсировать
-            return new WindCorrected(
-                    desiredTrack, airspeed, 0f, 0f, "Ветер слишком сильный");
+            driftRad = Math.signum(sinArg) * Math.toRadians(45.0);
+        } else {
+            driftRad = Math.asin(sinArg);
         }
-
-        // Угол сноса
-        double driftRad = Math.asin(sinArg);
         float driftDeg = (float) Math.toDegrees(driftRad);
 
         // Курс для компенсации + WCA (исправлено WC-1..3)

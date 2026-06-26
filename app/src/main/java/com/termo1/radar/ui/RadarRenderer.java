@@ -101,6 +101,8 @@ public class RadarRenderer {
 
     private final DashPathEffect dash125 = new DashPathEffect(new float[]{6, 8}, 0);
     private final DashPathEffect thermalDash = new DashPathEffect(new float[]{3, 5}, 0);
+    /** Максимальная дистанция отображения термиков (м) — исправлено RR-3 */
+    private static final float THERMAL_MAX_DISPLAY_DIST_M = 150f;
     private float thermalMaxDist;
 
     // Background map (Phase 6 — OSM статическая карта под радаром)
@@ -298,7 +300,7 @@ public class RadarRenderer {
         this.showThermalCore = show;
         this.thermalCoreBearing = bearing;
         this.thermalCoreDistance = distance;
-        this.thermalCoreRadiusPx = (radiusMeters / 150f) * r;
+        this.thermalCoreRadiusPx = (radiusMeters / THERMAL_MAX_DISPLAY_DIST_M) * r;
     }
 
     /** Set full 36-sector lift values for sector diagram. */
@@ -511,12 +513,14 @@ public class RadarRenderer {
     }
 
     private void drawCardinalPoints(Canvas c) {
-        float offset = 100;
+        float offset = r * 0.065f; // ~6.5% от радиуса (исправлено RR-6: масштаб от r)
+        if (offset < 30f) offset = 30f;
+        if (offset > 200f) offset = 200f;
         nsewPaint.setColor(Color.argb(200, 0, 130, 255));
         c.drawText("N", cx, cy - r + offset, nsewPaint);
-        c.drawText("S", cx, cy + r - 20, nsewPaint);
-        c.drawText("W", cx - r + offset - 10, cy + 18, nsewPaint);
-        c.drawText("E", cx + r - offset + 10, cy + 18, nsewPaint);
+        c.drawText("S", cx, cy + r - offset * 0.2f, nsewPaint);
+        c.drawText("W", cx - r + offset - 10, cy + offset * 0.18f, nsewPaint);
+        c.drawText("E", cx + r - offset + 10, cy + offset * 0.18f, nsewPaint);
     }
 
     private void drawTickMarks(Canvas c) {
@@ -743,7 +747,7 @@ public class RadarRenderer {
     private void drawThermalCore(Canvas c) {
         if (!showThermalCore || thermalCoreDistance < 0) return;
 
-        float distPx = Math.min(thermalCoreDistance / 150f, 1f) * r;
+        float distPx = Math.min(thermalCoreDistance / THERMAL_MAX_DISPLAY_DIST_M, 1f) * r;
         float rad = (float) Math.toRadians(thermalCoreBearing);
         float px = cx + (float) Math.sin(rad) * distPx;
         float py = cy - (float) Math.cos(rad) * distPx;
@@ -770,7 +774,7 @@ public class RadarRenderer {
             float brightness = t.getBrightness(nowMs);
             if (brightness <= 0f) continue;
 
-            float distPx = Math.min(t.distance / 150f, 1f) * thermalMaxDist;
+            float distPx = Math.min(t.distance / THERMAL_MAX_DISPLAY_DIST_M, 1f) * thermalMaxDist;
             if (distPx < 15) distPx = 15;
 
             float rad = (float) Math.toRadians(t.angle);

@@ -43,6 +43,8 @@ public class HeadingFilter {
     /** Порог turn-rate для переключения режимов */
     private static final double TURN_RATE_THRESHOLD = 2.0;
     private double lastOutputDeg;  // последнее выведенное значение (0-360)
+    /** Накопленная разница в deadband (исправлено HF-4) */
+    private double pendingDiff;
 
     // === Состояние ===
     private boolean initialized;
@@ -154,14 +156,17 @@ public class HeadingFilter {
                 ? DEADBAND_STATIC_DEG
                 : DEADBAND_MOVING_DEG;
 
+        // Исправлено HF-4: накопление pendingDiff в deadband, чтобы не было скачков
         if (displayDiff < deadband) {
-            // Не трогаем xk — просто не обновляем lastOutputDeg.
-            // Фильтр продолжает накапливать историю.
+            pendingDiff += displayDiff * Math.signum(outputDeg - lastOutputDeg);
             return lastOutputDeg;
         }
-
-        lastOutputDeg = outputDeg;
-        return outputDeg;
+        // Применяем накопленную разницу + текущую
+        double totalDiff = pendingDiff + (outputDeg - lastOutputDeg);
+        pendingDiff = 0;
+        double newOutput = (lastOutputDeg + totalDiff + 360) % 360;
+        lastOutputDeg = newOutput;
+        return newOutput;
     }
 
     /** Копия буфера для сортировки (чтобы не разрушать временной ряд) */
@@ -199,5 +204,6 @@ public class HeadingFilter {
         initialized = false;
         lastOutputDeg = 0;
         medianCount = 0;
+        pendingDiff = 0;
     }
 }

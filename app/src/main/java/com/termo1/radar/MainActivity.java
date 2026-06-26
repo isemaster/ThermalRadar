@@ -500,6 +500,8 @@ public class MainActivity extends Activity {
                 varioThermalDetector, flightStateMachine, logManager, igcLogger,
                 sensorController, gpsManager, prefs,
                 thermals, flightCallback);
+        flightController.setVarioSoundManager(varioSoundManager);
+        flightController.setVarioThreshold(varioThreshold);
         // =====
 
         // Start foreground service (WakeLock + notification)
@@ -1134,136 +1136,12 @@ public class MainActivity extends Activity {
     }
 
     void startBgProcessing() {
-        bgThread = new HandlerThread("termo1-bg");
-        bgThread.start();
-        bgHandler = new Handler(bgThread.getLooper());
-        bgTask = new Runnable() {
-            @Override
-            public void run() {
-                // Обновляем FSM, circlingManager, лог — всё что нужно для TTS/лога
-                processSample();
-                long bgNow = SystemClock.elapsedRealtime();
-
-                // Speed-based flight detection (C-01 fix: was dead code!)
-                if (!testMode && !simMode && !scenarioMode && !trackMode
-                        && gpsManager.isReady()
-                        && gpsManager.getFixAgeMs() < 5000) {
-                    flightStateMachine.updateSpeedBased(
-                            gpsManager.getSpeed(),
-                            gpsManager.getLat(),
-                            gpsManager.getLon(),
-                            sensorController.getAltitudeRaw(), // C-08: баро, не GPS
-                            bgNow);
-                }
-                if (!trackMode) { // BUG-7 FIX: don't feed circlingManager with live sensors during replay
-                circlingManager.update(
-                    sensorController.getGyroX(),
-                    sensorController.getGyroY(),
-                    sensorController.getGyroZ(),
-                    sensorController.getGravityX(),
-                    sensorController.getGravityY(),
-                    sensorController.getGravityZ(),
-                    getCompassHeading(),
-                    gpsManager.getHeading(),
-                    sensorController.getVario(),
-                    gpsManager.getLat(),
-                    gpsManager.getLon(),
-                    gpsManager.getSpeed(),
-                    gpsManager.getHeading(),
-                    gpsManager.getAltitude(),
-                    bgNow);
-
-                // Phase 2: ThermalLocator + LiftDatabase update
-                if (circlingManager.isCircling()) {
-                    float varioVal = sensorController.getVario();
-                    float altMsl = gpsManager.getAltitude();
-
-                    // LiftDatabase: записываем варио в сектор
-                    if (!Float.isNaN(varioVal) && !Float.isInfinite(varioVal)) {
-                        liftDatabase.recordLift(getCompassHeading(), varioVal);
-                    }
-
-                    // ThermalLocator: добавляем точки с весом подъёма
-                    double baseline = varioThermalDetector != null
-                            ? varioThermalDetector.getBaseline() : prevThermalLiftBaseline;
-                    thermalLocator.addPoint(
-                            gpsManager.getLat(), gpsManager.getLon(),
-                            varioVal, baseline, bgNow);
-
-                    // Дрейфуем и вычисляем центр (если есть ветер)
-                    if (circlingManager.getWindFromDeg() >= 0) {
-                        double windRad = Math.toRadians(circlingManager.getWindFromDeg() + 180);
-                        double windU = circlingManager.getWindSpeedMs() * Math.sin(windRad);
-                        double windV = circlingManager.getWindSpeedMs() * Math.cos(windRad);
-                        thermalLocator.update(
-                                gpsManager.getLat(), gpsManager.getLon(),
-                                windU, windV, bgNow);
-                    } else {
-                        thermalLocator.update(
-                                gpsManager.getLat(), gpsManager.getLon(),
-                                0, 0, bgNow);
-                    }
-
-                    // ThermalBaseEstimator: раз в 5с
-                    if (bgNow - lastThermalBaseCalcMs > THERMAL_BASE_INTERVAL_MS) {
-                        lastThermalBaseCalcMs = bgNow;
-                        float climbAvg = 0f;
-                        // Simple climb average from vario
-                        if (varioVal > 0) {
-                            climbAvg = varioVal;
-                        }
-                        if (circlingManager.getWindFromDeg() >= 0 && climbAvg > 0.2f) {
-                            lastThermalBaseResult = ThermalBaseEstimator.estimate(
-                                    gpsManager.getLat(), gpsManager.getLon(),
-                                    altMsl, climbAvg,
-                                    circlingManager.getWindFromDeg(),
-                                    circlingManager.getWindSpeedMs());
-                        }
-                    }
-                } else {
-                    // Не крутимся — сброс
-                    thermalLocator.reset();
-                    liftDatabase.clear();
-                    lastThermalBaseResult = null;
-                }
-
-                // Phase 5: WindDriftCalculator — расчёт сноса (если есть ветер)
-                if (circlingManager.getWindFromDeg() >= 0 && circlingManager.getWindSpeedMs() > 0.3f) {
-                    float airspeed = prefs.getFloat("airspeed_ms", 9.5f);
-                    lastDrift = WindDriftCalculator.calculate(
-                            gpsManager.getHeading(),
-                            airspeed,
-                            circlingManager.getWindFromDeg(),
-                            circlingManager.getWindSpeedMs());
-                } else {
-                    lastDrift = null;
-                }
-                } // end !trackMode
-
-                // === Wind estimation from straight flight (live) ===
-                // GPS speed ± trim airspeed когда летим прямо, снижение ≤1.3 м/с
-                if (!trackMode && !circlingManager.isCircling()
-                        && Math.abs(sensorController.getVario()) <= 1.3f
-                        && gpsManager.isReady() && gpsManager.getSpeed() > 0.5f
-                        && gpsManager.getFixAgeMs() < 5000) {
-                    float heading = getCompassHeading();
-                    float track = gpsManager.getHeading();
-                    float gpsSpeed = gpsManager.getSpeed();
-                    float airspeed = prefs.getFloat("airspeed_ms", 9.5f);
-                    circlingManager.estimateWindFromGps(heading, track, gpsSpeed, airspeed);
-                }
-
-                bgHandler.postDelayed(this, BG_INTERVAL_MS);
-            }
-        };
-        bgHandler.postDelayed(bgTask, BG_INTERVAL_MS);
+        flightController.setFlags(trackMode, testMode, simMode, scenarioMode);
+        flightController.start();
     }
 
     void stopBgProcessing() {
-        if (bgTask != null) {
-            bgHandler.removeCallbacks(bgTask);
-            bgTask = null;
-        }
+        flightController.stop();
     }
 
     // ========================================================================

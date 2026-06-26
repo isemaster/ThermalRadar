@@ -357,12 +357,11 @@ public class IgcLogger {
     }
 
     /**
-     * Форматировать время IGC: HHMMSS из elapsed ms.
-     /** Форматировать время IGC: HHMMSS из elapsed ms (H-08: wallStartMs фикс) */
+     * Форматировать время IGC: HHMMSS из elapsed ms (H-08: wallStartMs фикс).
+     * Исправлено IL-2: кеш форматтера ThreadLocal вместо new Date() + format на 5Hz. */
     private String formatIGCTime(long elapsedMs) {
         long wallMs = wallStartMs + elapsedMs;
-        Date d = new Date(wallMs);
-        return IGC_TIME_FMT_TL.get().format(d);
+        return IGC_TIME_FMT_TL.get().format(new Date(wallMs));
     }
 
     /**
