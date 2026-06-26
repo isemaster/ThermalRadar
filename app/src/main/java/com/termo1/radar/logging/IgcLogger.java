@@ -414,7 +414,7 @@ public class IgcLogger {
                 - (SystemClock.elapsedRealtime() - startElapsedMs);
         Date startDate = new Date(wallStart);
 
-        writeLine("ATER");
+        writeLine("ATER" + IGC_DATE_FMT_TL.get().format(startDate));
         writeLine("HFDTE" + IGC_DATE_FMT_TL.get().format(startDate));
         writeLine("HFPLTPILOT:" + pilotName);
         writeLine("HFGTYGLIDERTYPE:" + gliderType);
