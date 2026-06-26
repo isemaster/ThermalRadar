@@ -2771,20 +2771,11 @@ public class MainActivity extends Activity {
 
             // Draw radar
             long nowMs = System.currentTimeMillis();
-            synchronized (thermalLock) {
-                // MA-5: reuse ThermalBlip objects вместо new ThermalBlip(t) каждую копию
-                int srcSize = thermals.size();
-                // Убедимся что thermalsCopy имеет достаточно объектов для переиспользования
-                while (thermalsCopy.size() < srcSize) {
-                    thermalsCopy.add(new ThermalBlip());
-                }
-                // Удаляем лишние (если thermals уменьшился)
-                while (thermalsCopy.size() > srcSize) {
-                    thermalsCopy.remove(thermalsCopy.size() - 1);
-                }
-                for (int ti = 0; ti < srcSize; ti++) {
-                    thermalsCopy.get(ti).set(thermals.get(ti));
-                }
+            // Thermals copy через RadarViewController (уже работает)
+            radarViewController.syncThermals(thermals);
+            thermalsCopy.clear();
+            for (ThermalBlip t : radarViewController.getThermalsCopy()) {
+                thermalsCopy.add(t);
             }
             if (scenarioMode && flightSim != null && flightSim.isRunning()) {
                 radarRenderer.setThermalCore(

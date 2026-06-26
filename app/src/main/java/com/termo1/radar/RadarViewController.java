@@ -62,17 +62,23 @@ public class RadarViewController {
         headingDisplaySmoothed = 0;
     }
 
-    /** Скопировать термики из общего списка в renderer-safe список */
+    /** Скопировать термики из общего списка в renderer-safe список (deep copy с reuse) */
     public void syncThermals(List<ThermalBlip> source) {
         synchronized (thermalLock) {
-            thermalsCopy.clear();
-            long nowMs = System.currentTimeMillis();
-            for (ThermalBlip tb : source) {
-                if (tb.isAlive(nowMs)) {
-                    thermalsCopy.add(tb);
-                }
+            int srcSize = source.size();
+            // Убедимся что thermalsCopy имеет достаточно объектов для переиспользования
+            while (thermalsCopy.size() < srcSize) {
+                thermalsCopy.add(new ThermalBlip());
             }
-            // Cull expired from source
+            // Удаляем лишние
+            while (thermalsCopy.size() > srcSize) {
+                thermalsCopy.remove(thermalsCopy.size() - 1);
+            }
+            for (int ti = 0; ti < srcSize; ti++) {
+                thermalsCopy.get(ti).set(source.get(ti));
+            }
+            // Удаляем мёртвые из source
+            long nowMs = System.currentTimeMillis();
             source.removeIf(tb -> !tb.isAlive(nowMs));
         }
     }
