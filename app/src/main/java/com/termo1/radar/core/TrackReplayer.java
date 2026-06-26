@@ -99,6 +99,11 @@ public class TrackReplayer {
     private int circlePointCount;
     private double noisePhase;
 
+    // Wind from spiral drift (дрейф центров последовательных спиралей)
+    private boolean hasPrevCircleCenter;
+    private double prevCircleLat, prevCircleLon;
+    private float prevCircleTimeSec;
+
     // Wind estimate from IGC (constant)
     private float windFromDeg = 315f;
     private float windSpeedMs = 5f;
@@ -573,10 +578,48 @@ public class TrackReplayer {
         // Check for circling (accumulated heading change)
         boolean isCircling = headingAccum > CIRCLE_HEADING_ACCUM;
         if (isCircling && !wasCircling) {
-            // Start of circling
+            // Start of a NEW spiral.
+            // thermalCenterLat/Lon holds the PREVIOUS completed spiral's centroid.
+            if (hasPrevCircleCenter) {
+                double drift = haversineMeters(prevCircleLat, prevCircleLon,
+                        thermalCenterLat, thermalCenterLon);
+                float dtSec = totalSimSec - prevCircleTimeSec;
+                if (drift > 5.0 && dtSec > 10f) {
+                    float driftSpeed = (float)(drift / dtSec);
+                    if (driftSpeed > 0.3f) {
+                        float driftBearing = haversineBearing(prevCircleLat, prevCircleLon,
+                                thermalCenterLat, thermalCenterLon)[1];
+                        float windFrom = driftBearing + 180f;
+                        if (windFrom >= 360f) windFrom -= 360f;
+                        if (smoothWindSpd < 0) {
+                            smoothWindDir = windFrom;
+                            smoothWindSpd = driftSpeed;
+                        } else {
+                            float diff = windFrom - smoothWindDir;
+                            while (diff > 180) diff -= 360;
+                            while (diff < -180) diff += 360;
+                            smoothWindDir += 0.15f * diff;
+                            if (smoothWindDir < 0) smoothWindDir += 360;
+                            if (smoothWindDir >= 360) smoothWindDir -= 360;
+                            smoothWindSpd += 0.15f * (driftSpeed - smoothWindSpd);
+                        }
+                        windFromDeg = smoothWindDir;
+                        windSpeedMs = smoothWindSpd;
+                    }
+                }
+            }
+            // Reset accumulation for new spiral
             circleLatSum = (float) pilotLat;
             circleLonSum = (float) pilotLon;
             circlePointCount = 1;
+        }
+
+        // Exit from circling — save completed centroid for wind-from-drift
+        if (!isCircling && wasCircling) {
+            prevCircleLat = thermalCenterLat;
+            prevCircleLon = thermalCenterLon;
+            prevCircleTimeSec = totalSimSec;
+            hasPrevCircleCenter = true;
         }
 
         if (isCircling) {
