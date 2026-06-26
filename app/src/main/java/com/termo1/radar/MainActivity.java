@@ -1081,10 +1081,11 @@ public class MainActivity extends Activity {
                             sensorController.getAltitudeRaw(), // C-08: баро, не GPS
                             bgNow);
                 }
+                if (!trackMode) { // BUG-7 FIX: don't feed circlingManager with live sensors during replay
                 circlingManager.update(
                     sensorController.getGyroZ(),
                     getCompassHeading(),
-                    gpsManager.getHeading(),  // GPS track
+                    gpsManager.getHeading(),
                     sensorController.getVario(),
                     gpsManager.getLat(),
                     gpsManager.getLon(),
@@ -1157,6 +1158,20 @@ public class MainActivity extends Activity {
                             circlingManager.getWindSpeedMs());
                 } else {
                     lastDrift = null;
+                }
+                } // end !trackMode
+
+                // === Wind estimation from straight flight (live) ===
+                // GPS speed ± trim airspeed когда летим прямо, снижение ≤1.3 м/с
+                if (!trackMode && !circlingManager.isCircling()
+                        && Math.abs(sensorController.getVario()) <= 1.3f
+                        && gpsManager.isReady() && gpsManager.getSpeed() > 3f
+                        && gpsManager.getFixAgeMs() < 5000) {
+                    float heading = getCompassHeading();
+                    float track = gpsManager.getHeading();
+                    float gpsSpeed = gpsManager.getSpeed();
+                    float airspeed = prefs.getFloat("airspeed_ms", 9.5f);
+                    circlingManager.estimateWindFromGps(heading, track, gpsSpeed, airspeed);
                 }
 
                 bgHandler.postDelayed(this, BG_INTERVAL_MS);
@@ -1711,6 +1726,7 @@ public class MainActivity extends Activity {
             thermals.clear();
             thermalsCopy.clear();
         }
+        gpsTrail.clear(); // BUG-5 FIX: clear live GPS trail before replay
 
         trackReplayer = new TrackReplayer();
         trackReplayer.setSpeed(5.0f);
@@ -1724,6 +1740,7 @@ public class MainActivity extends Activity {
             trackReplayer.loadFromIGC(getResources().openRawResource(R.raw.track_replay));
         }
         trackReplayer.setHasSensorData(hasSensorZip);
+        trackReplayer.setAirspeedMs(prefs.getFloat("airspeed_ms", 9.5f));
         trackReplayer.start();
         trackPrevFrameMs = 0;
 
@@ -1793,13 +1810,22 @@ public class MainActivity extends Activity {
                         }
                         if (!hasBlip) {
                             float strength = trackReplayer.isShowRedCore() ? 8f : 4f;
-                            thermals.add(new ThermalBlip(
+                            ThermalBlip tb = new ThermalBlip(
                                     trackReplayer.getThermalBearing(),
                                     strength,
                                     trackReplayer.getThermalDistance(),
                                     "track",
                                     nowMs
-                            ));
+                            );
+                            // BUG-6 FIX: set adaptive lifeMs like ThermalDetector does
+                            if (trackReplayer.isShowRedCore()) {
+                                tb.lifeMs = 12000L;
+                            } else if (strength > 3f) {
+                                tb.lifeMs = 8000L;
+                            } else {
+                                tb.lifeMs = 3000L;
+                            }
+                            thermals.add(tb);
                             while (thermals.size() > THERMAL_LIMIT) thermals.remove(0);
                         }
                     }
@@ -2626,8 +2652,9 @@ public class MainActivity extends Activity {
                 flightTimeMs = SystemClock.elapsedRealtime() - simStartMs;
             } else if (scenarioMode) {
                 flightTimeMs = SystemClock.elapsedRealtime() - scenarioStartMs;
-            } else if (trackMode) {
-                flightTimeMs = SystemClock.elapsedRealtime() - trackStartMs;
+            } else if (trackMode && trackReplayer != null) {
+                // BUG-3 FIX: use track time, not wall clock
+                flightTimeMs = (long)(trackReplayer.getCurrentTime() * 1000);
             } else if (logManager.isLogging()) {
                 flightTimeMs = System.currentTimeMillis() - logManager.getFlightStartMs();
             } else {
@@ -2700,7 +2727,12 @@ public class MainActivity extends Activity {
             if (gpsOk) {
                 long now = System.currentTimeMillis();
 
-                float currentVario = sensorController.getVario();
+                float currentVario;
+                if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                    currentVario = trackReplayer.getVario();
+                } else {
+                    currentVario = sensorController.getVario();
+                }
                 if (gpsTrail.isEmpty()) {
                     gpsTrail.add(new double[]{pilotLat, pilotLon, now, currentVario});
                 } else {

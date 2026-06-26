@@ -68,6 +68,11 @@ public class TrackReplayer {
     private float gyroZ;              // rad/s
     private float accelX, accelY;     // g
 
+    // Previous frame position for per-frame speed/vario calc (FIX: was using segment-start)
+    private double lastFrameLat, lastFrameLon;
+    private float lastFrameAlt;
+    private boolean hasLastFramePosition;
+
     // Thermal state
     private boolean thermalActive;
     private boolean showRedCore;
@@ -92,6 +97,9 @@ public class TrackReplayer {
     private float windFromDeg = 315f;
     private float windSpeedMs = 5f;
 
+    // Воздушная скорость для расчёта ветра (из настроек, default 9.5 м/с)
+    private float airspeedMs = 9.5f;
+
     // Real sensor data from companion ZIP
     private static class SensorSample {
         final long dtMs;
@@ -106,6 +114,10 @@ public class TrackReplayer {
     }
     private List<SensorSample> sensorData;
     private int sensorIdx; // current read position in sensorData
+
+    // Компасный heading из ZIP (реальный курс носа параплана, а не GPS track)
+    private float sensorHeading = 0f;
+    private boolean hasSensorHeading; // false = нет ZIP, используем track-based heading
 
     // Interpolation index
     private int currentIdx;
@@ -123,6 +135,48 @@ public class TrackReplayer {
     /** Установить наличие сенсорных данных (true = есть ZIP, false = только IGC). */
     public void setHasSensorData(boolean v) {
         this.hasSensorData = v;
+    }
+
+    /** Установить ветер для отображения при реплее (из CirclingManager или IGC) */
+    public void setWind(float fromDeg, float speedMs) {
+        this.windFromDeg = fromDeg;
+        this.windSpeedMs = speedMs;
+    }
+
+    /** Установить воздушную скорость (триммер) для расчёта ветра */
+    public void setAirspeedMs(float v) {
+        this.airspeedMs = Math.max(8f, Math.min(15f, v));
+    }
+
+    /**
+     * Оценка ветра по прямолинейному полёту.
+     * wind = ground_velocity - air_velocity
+     * Работает когда пилот на триммерах (снижение ≤1.3 м/с) — 99% случаев.
+     * GPS track + compass heading + trim airspeed.
+     */
+    public void estimateWindFromFlight() {
+        float hdgDeg = getCompassHeading();
+        double gpsRad = Math.toRadians(heading);   // heading = direction of travel (GPS track)
+        double hdgRad = Math.toRadians(hdgDeg);    // compass heading (nose)
+        double wx = speed * Math.sin(gpsRad) - airspeedMs * Math.sin(hdgRad);
+        double wy = speed * Math.cos(gpsRad) - airspeedMs * Math.cos(hdgRad);
+        float newSpeed = (float) Math.sqrt(wx*wx + wy*wy);
+        if (newSpeed < 0.3f) return;
+        float newDir = (float) Math.toDegrees(Math.atan2(wx, wy));
+        if (newDir < 0) newDir += 360;
+        // EMA smooth into existing wind
+        if (windSpeedMs < 0 || windFromDeg < 0) {
+            windFromDeg = newDir;
+            windSpeedMs = newSpeed;
+        } else {
+            float diff = newDir - windFromDeg;
+            while (diff > 180) diff -= 360;
+            while (diff < -180) diff += 360;
+            windFromDeg += 0.2f * diff;
+            if (windFromDeg < 0) windFromDeg += 360;
+            if (windFromDeg >= 360) windFromDeg -= 360;
+            windSpeedMs += 0.2f * (newSpeed - windSpeedMs);
+        }
     }
 
     /**
@@ -277,6 +331,10 @@ public class TrackReplayer {
         pilotLat = first.lat;
         pilotLon = first.lon;
         altitude = first.altMeters;
+        lastFrameLat = first.lat;
+        lastFrameLon = first.lon;
+        lastFrameAlt = first.altMeters;
+        hasLastFramePosition = false;
         heading = 0;
         vario = 0;
         speed = 0;
@@ -294,6 +352,11 @@ public class TrackReplayer {
         circlePointCount = 0;
         guidanceText = "";
         sensorIdx = 0;
+        // Wind: cold start. initWindFromTrack() will be called on first straight segment
+        windFromDeg = -1f;
+        windSpeedMs = -1f;
+        sensorHeading = 0f;
+        hasSensorHeading = false;
     }
 
     public void stop() {
@@ -383,10 +446,14 @@ public class TrackReplayer {
         float nextAlt = nextPoint.altMeters;
         float newAlt = prevAlt + (nextAlt - prevAlt) * frac;
 
-        // Vario from altitude change
-        float altDelta = newAlt - altitude;
-        vario = altDelta / Math.max(simDt, 0.01f);
-
+        // Vario from per-frame altitude change (FIX: was segment-start based)
+        if (hasLastFramePosition) {
+            float altDeltaPerFrame = newAlt - lastFrameAlt;
+            vario = altDeltaPerFrame / Math.max(simDt, 0.01f);
+        } else {
+            vario = 0;
+        }
+        lastFrameAlt = newAlt;
         altitude = newAlt;
 
         // Heading from position change (с учётом схождения меридианов)
@@ -419,9 +486,23 @@ public class TrackReplayer {
             prevHeading = heading;
         }
 
-        // Speed
-        double totalDist = haversineMeters(prevLat, prevLon, pilotLat, pilotLon);
-        speed = (float) (totalDist / Math.max(simDt, 0.01f));
+        // Speed from per-frame position delta (FIX: was segment-start based)
+        double frameDist;
+        if (hasLastFramePosition) {
+            frameDist = haversineMeters(lastFrameLat, lastFrameLon, pilotLat, pilotLon);
+        } else {
+            frameDist = 0;
+        }
+        speed = (float) (frameDist / Math.max(simDt, 0.01f));
+        lastFrameLat = pilotLat;
+        lastFrameLon = pilotLon;
+        hasLastFramePosition = true;
+
+        // === Wind estimation from straight flight ===
+        // Условия: ровный полёт (не крутка), снижение ≤1.3 м/с, есть скорость
+        if (Math.abs(vario) <= 1.3f && !wasCircling && speed > 3f) {
+            estimateWindFromFlight();
+        }
 
         // === Thermal detection ===
         updateThermalState(simDt);
@@ -517,6 +598,8 @@ public class TrackReplayer {
             SensorSample s = sensorData.get(sensorIdx);
             accelX = s.axMg / 1000f; // milli-g → g
             accelY = s.ayMg / 1000f;
+            sensorHeading = s.headingDeg;
+            hasSensorHeading = (s.headingDeg > 0f);
             hasSensorData = true;
             return;
         }
@@ -585,6 +668,14 @@ public class TrackReplayer {
     public double getLon() { return pilotLon; }
     public float getAltitude() { return altitude; }
     public float getHeading() { return heading; }
+    /**
+     * Компасный курс носа параплана.
+     * Из ZIP (реальный магнитометр) если доступен, иначе track-based heading.
+     */
+    public float getCompassHeading() {
+        if (hasSensorHeading) return sensorHeading;
+        return heading; // fallback to direction of travel
+    }
     public float getVario() { return vario; }
     public float getSpeed() { return speed; }
     public float getGyroZ() { return gyroZ; }

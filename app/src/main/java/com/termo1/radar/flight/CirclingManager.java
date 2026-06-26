@@ -762,6 +762,39 @@ public class CirclingManager {
         this.airspeedMs = Math.max(8f, Math.min(15f, ms));
     }
 
+    /**
+     * Оценка ветра по прямолинейному полёту.
+     * wind = ground_velocity - air_velocity.
+     * Работает на триммерах со снижением ≤1.3 м/с — 99% полёта.
+     * Может вызываться из bgTask (live) или trackTask (replay).
+     */
+    public void estimateWindFromGps(float headingDeg, float trackDeg,
+                                    float gpsSpeedMs, float airspeedMs) {
+        synchronized (stateLock) {
+            double gpsRad = Math.toRadians(trackDeg);
+            double hdgRad = Math.toRadians(headingDeg);
+            double wx = gpsSpeedMs * Math.sin(gpsRad) - airspeedMs * Math.sin(hdgRad);
+            double wy = gpsSpeedMs * Math.cos(gpsRad) - airspeedMs * Math.cos(hdgRad);
+            float newSpeed = (float) Math.sqrt(wx*wx + wy*wy);
+            if (newSpeed < 0.3f) return;
+            float newDir = (float) Math.toDegrees(Math.atan2(wx, wy));
+            if (newDir < 0) newDir += 360;
+            if (windFromDeg < 0) {
+                windFromDeg = newDir;
+                windSpeedMs = newSpeed;
+                windConfidence = 1;
+            } else {
+                float wdiff = newDir - windFromDeg;
+                if (wdiff > 180f) wdiff -= 360f;
+                else if (wdiff < -180f) wdiff += 360f;
+                windFromDeg += WIND_DIR_EMA_ALPHA * wdiff;
+                if (windFromDeg < 0f) windFromDeg += 360f;
+                if (windFromDeg >= 360f) windFromDeg -= 360f;
+                windSpeedMs += WIND_SPEED_EMA_ALPHA * (newSpeed - windSpeedMs);
+            }
+        }
+    }
+
     /** Полный сброс с очисткой WindStore и WindGradientDescent */
     public void fullReset() {
         reset();
