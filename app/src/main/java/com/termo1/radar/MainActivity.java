@@ -2527,11 +2527,23 @@ public class MainActivity extends Activity {
             float colX_center = w / 2f;
             float colX_right = w * 0.88f;
 
-            // Left column: GPS speed, GPS altitude
-            float gpsSpeed = gpsManager.getSpeed(); // м/с
-            float gpsAlt = gpsManager.getAltitude(); // м MSL
-            float startAlt = gpsManager.getStartAltitude();
-            float gpsAgl = gpsManager.isAltitudeInitialized() ? (gpsAlt - startAlt) : 0f;
+            // Speed: из реплеера или GPS
+            float gpsSpeed;
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                gpsSpeed = trackReplayer.getSpeed();
+            } else {
+                gpsSpeed = gpsManager.getSpeed(); // м/с
+            }
+            float gpsAlt, startAlt, gpsAgl;
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                gpsAlt = trackReplayer.getAltitude();
+                startAlt = 0; // при реплее AGL не считаем
+                gpsAgl = gpsAlt;
+            } else {
+                gpsAlt = gpsManager.getAltitude();
+                startAlt = gpsManager.getStartAltitude();
+                gpsAgl = gpsManager.isAltitudeInitialized() ? (gpsAlt - startAlt) : 0f;
+            }
 
             instrValuePaint.setTextAlign(Paint.Align.CENTER);
             instrValuePaint.setTextSize(112); // 4x
@@ -2621,8 +2633,14 @@ public class MainActivity extends Activity {
             canvas.drawText(ftStr, colX_center, valueRowY + 150, flightTimePaint);
 
             // Right column: Wind label ABOVE value (поднято на 1 строку), AGL below
-            float windDeg = circlingManager.getWindFromDeg();
-            float windSpdMs = circlingManager.getDisplayWindSpeed();
+            float windDeg, windSpdMs;
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                windDeg = trackReplayer.getWindFromDeg();
+                windSpdMs = trackReplayer.getWindSpeedMs();
+            } else {
+                windDeg = circlingManager.getWindFromDeg();
+                windSpdMs = circlingManager.getDisplayWindSpeed();
+            }
             if (windDeg >= 0 && windSpdMs > 0) {
                 instrLabelPaint.setColor(Color.argb(160, 100, 200, 255));
                 canvas.drawText("ветер, м/с", colX_right, valueRowY - 70, instrLabelPaint);
@@ -3034,8 +3052,13 @@ public class MainActivity extends Activity {
             }
 
             // Range = AGL × L/D (кап 99.9 км, может быть отрицательным)
-            float aglForRange = gpsManager.isAltitudeInitialized()
-                    ? (gpsManager.getAltitude() - gpsManager.getStartAltitude()) : 0f;
+            float aglForRange;
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                aglForRange = trackReplayer.getAltitude();
+            } else {
+                aglForRange = gpsManager.isAltitudeInitialized()
+                        ? (gpsManager.getAltitude() - gpsManager.getStartAltitude()) : 0f;
+            }
             float rangeKm = 0f;
             if (glideValid && aglForRange > 0) {
                 rangeKm = aglForRange * glideRatio / 1000f;
