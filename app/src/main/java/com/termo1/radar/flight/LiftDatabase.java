@@ -69,7 +69,7 @@ public class LiftDatabase {
     /**
      * Очистить все данные (вызывать при входе в новый термик).
      */
-    public void clear() {
+    public synchronized void clear() {
         for (int i = 0; i < SECTOR_COUNT; i++) {
             liftValues[i] = 0f;
             sampleCount[i] = 0;
@@ -91,7 +91,7 @@ public class LiftDatabase {
      * @param heading  текущий курс (градусы 0-360)
      * @param vario    текущий варио (м/с)
      */
-    public void recordLift(float heading, float vario) {
+    public synchronized void recordLift(float heading, float vario) {
         int idx = headingToSector(heading);
 
         totalSamples++;
@@ -163,14 +163,14 @@ public class LiftDatabase {
      * Индекс лучшего сектора (с максимальным подъёмом).
      * @return 0-35, или -1 если данных нет
      */
-    public int getBestSectorIndex() {
+    public synchronized int getBestSectorIndex() {
         return bestSectorIndex;
     }
 
     /**
      * Значение подъёма в лучшем секторе (м/с).
      */
-    public float getBestSectorLift() {
+    public synchronized float getBestSectorLift() {
         return bestSectorLift;
     }
 
@@ -209,7 +209,7 @@ public class LiftDatabase {
      * Получить массив значений подъёма для рендеринга.
      * @return float[36], где entry = lift в м/с (0 если данных нет)
      */
-    public float[] getLiftValues() {
+    public synchronized float[] getLiftValues() {
         float[] result = new float[SECTOR_COUNT];
         for (int i = 0; i < SECTOR_COUNT; i++) {
             result[i] = initialized[i] ? liftValues[i] : 0f;

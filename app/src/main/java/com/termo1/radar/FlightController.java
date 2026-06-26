@@ -147,12 +147,17 @@ public class FlightController {
         if (!trackMode) {
             // Circling manager
             circlingManager.update(
+                sensorController.getGyroX(),
+                sensorController.getGyroY(),
                 sensorController.getGyroZ(),
+                sensorController.getGravityX(),
+                sensorController.getGravityY(),
+                sensorController.getGravityZ(),
                 callback.getCompassHeading(),
                 gpsManager.getHeading(),
                 sensorController.getVario(),
-                gpsManager.getLat(),
-                gpsManager.getLon(),
+                (double) gpsManager.getLat(),
+                (double) gpsManager.getLon(),
                 gpsManager.getSpeed(),
                 gpsManager.getHeading(),
                 gpsManager.getAltitude(),

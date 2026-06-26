@@ -1,5 +1,7 @@
 package com.termo1.radar.flight;
 
+import android.os.SystemClock;
+
 /**
  * CirclingManager — детекция вращения в термике, сбор варио по секторам,
  * оценка ветра по дрейфу центров спиралей, голосовые подсказки.
@@ -89,6 +91,8 @@ public class CirclingManager {
 
     // Gyro (дополнительный сенсор)
     private float gyroEma;
+    /** Текущая высота MSL (обновляется в update) — исправлено CM-4 для getClimbAverage() */
+    private float currentAltMsl;
 
     // Тайминги состояний
     private long stateEnterMs;
@@ -221,7 +225,12 @@ public class CirclingManager {
     /**
      * Главное обновление. Вызывать на каждом сэмпле (10-50 Гц).
      *
-     * @param gyroZ    скорость поворота по гироскопу Z (рад/с), или 0 если нет
+     * @param gyroX   гироскоп X (рад/с)
+     * @param gyroY   гироскоп Y (рад/с)
+     * @param gyroZ   гироскоп Z (рад/с)
+     * @param gravX   гравитация X (g)
+     * @param gravY   гравитация Y (g)
+     * @param gravZ   гравитация Z (g)
      * @param heading  текущий курс с компаса (градусы 0-360)
      * @param track    текущий GPS track (градусы 0-360)
      * @param vario    вертикальная скорость (м/с)
@@ -232,21 +241,32 @@ public class CirclingManager {
      * @param altMsl   высота MSL (м)
      * @param nowMs    монотонное время
      */
-    public void update(float gyroZ, float heading, float track,
+    public void update(float gyroX, float gyroY, float gyroZ,
+                       float gravX, float gravY, float gravZ,
+                       float heading, float track,
                        float vario,
                        double gpsLat, double gpsLon,
                        float gpsSpeed, float gpsCourse,
                        float altMsl, long nowMs) {
         synchronized (stateLock) {
 
+            currentAltMsl = altMsl;
+
         // ================================================================
         // 1. Turn rate: track-based + heading-based (как XCSoar)
         // ================================================================
         updateTurnRates(track, heading, nowMs);
 
-        // Gyro EMA (дополнительно)
-        if (!Float.isNaN(gyroZ) && !Float.isInfinite(gyroZ)) {
-            gyroEma += GYRO_EMA_ALPHA * (gyroZ - gyroEma);
+        // Gyro EMA: проекция на вертикаль мира (CM-2 fix)
+        // gyroVertical = (gyro·gravity) / |gravity|
+        if (!Float.isNaN(gyroX) && !Float.isNaN(gyroY) && !Float.isNaN(gyroZ)
+                && !Float.isInfinite(gyroX) && !Float.isInfinite(gyroY) && !Float.isInfinite(gyroZ)
+                && !Float.isNaN(gravX) && !Float.isNaN(gravY) && !Float.isNaN(gravZ)) {
+            float gMag = (float) Math.sqrt(gravX*gravX + gravY*gravY + gravZ*gravZ);
+            if (gMag > 0.1f) {
+                float gyroVertical = (gyroX*gravX + gyroY*gravY + gyroZ*gravZ) / gMag;
+                gyroEma += GYRO_EMA_ALPHA * (gyroVertical - gyroEma);
+            }
         }
 
         // Combined turn detection: track_rate ИЛИ gyro
@@ -759,8 +779,10 @@ public class CirclingManager {
     public float getClimbAverage() {
         synchronized (stateLock) {
             if (climbStartMs <= 0 || state != CirclingState.CLIMB) return 0f;
-            // Рассчитываем через timeDelta (реализация по altDelta будет извне)
-            return 0f;
+            long nowMs = SystemClock.elapsedRealtime();
+            float dtSec = (nowMs - climbStartMs) / 1000f;
+            if (dtSec < 1f) return 0f;
+            return (currentAltMsl - climbStartAltitude) / dtSec;
         }
     }
 

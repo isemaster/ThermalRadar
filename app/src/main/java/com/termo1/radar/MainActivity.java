@@ -1157,7 +1157,12 @@ public class MainActivity extends Activity {
                 }
                 if (!trackMode) { // BUG-7 FIX: don't feed circlingManager with live sensors during replay
                 circlingManager.update(
+                    sensorController.getGyroX(),
+                    sensorController.getGyroY(),
                     sensorController.getGyroZ(),
+                    sensorController.getGravityX(),
+                    sensorController.getGravityY(),
+                    sensorController.getGravityZ(),
                     getCompassHeading(),
                     gpsManager.getHeading(),
                     sensorController.getVario(),
@@ -3097,7 +3102,8 @@ public class MainActivity extends Activity {
                 radarRenderer.setBestLiftSector(-1, 0, "");
             }
 
-            boolean showStats = circlingManager.isCircling() || circlingManager.isShowThermalLabel();
+            boolean showStats = (!trackMode && (circlingManager.isCircling() || circlingManager.isShowThermalLabel()))
+                    || (trackMode && trackReplayer != null && trackReplayer.isShowRedCore());
             String coreText = "";
             if (thermalLocator.isEstimateValid()) {
                 coreText = String.format(java.util.Locale.US,
@@ -3180,9 +3186,11 @@ public class MainActivity extends Activity {
             uiManager.drawVario(canvas, radarCxLocal, 130, varioDisplay);
             uiManager.drawStatus(canvas, radarCxLocal, currentStatus);
 
-            // "крутим термик" — по центру радара
-            if (circlingManager.isShowThermalLabel()) {
-                float labelY = trailCy; // center of radar section
+            // "крутим термик" — по центру радара (исправлено MA-9: trackMode → trackReplayer)
+            boolean showCirclingLabel = (!trackMode && circlingManager.isShowThermalLabel())
+                    || (trackMode && trackReplayer != null && trackReplayer.isShowRedCore());
+            if (showCirclingLabel) {
+                float labelY = trailCy;
                 canvas.drawText("крутим термик", radarCxLocal, labelY, thermalLabelPaint);
             }
 
