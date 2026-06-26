@@ -167,14 +167,14 @@ public class RadarRenderer {
         // Wind
         windLinePaint.setStyle(Paint.Style.STROKE);
         windLinePaint.setStrokeWidth(30); // 2x thicker (was 15)
-        windLinePaint.setColor(Color.argb(200, 100, 200, 255));
+        windLinePaint.setColor(Color.argb(220, 255, 80, 80)); // red
         windLinePaint.setStrokeCap(Paint.Cap.ROUND);
         windLinePaint.setStrokeJoin(Paint.Join.ROUND);
-        windLinePaint.setShadowLayer(6, 0, 0, Color.argb(80, 100, 200, 255));
+        windLinePaint.setShadowLayer(6, 0, 0, Color.argb(80, 255, 80, 80));
         windFillPaint.setStyle(Paint.Style.FILL);
-        windFillPaint.setColor(Color.argb(200, 100, 200, 255));
+        windFillPaint.setColor(Color.argb(220, 255, 80, 80));
         windLabelPaint.setAntiAlias(true);
-        windLabelPaint.setColor(Color.argb(200, 100, 200, 255));
+        windLabelPaint.setColor(Color.argb(220, 255, 80, 80));
         windLabelPaint.setTextSize(22);
         windLabelPaint.setTypeface(Typeface.MONOSPACE);
         windLabelPaint.setTextAlign(Paint.Align.CENTER);

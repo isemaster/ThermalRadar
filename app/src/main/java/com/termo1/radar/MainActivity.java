@@ -2592,8 +2592,14 @@ public class MainActivity extends Activity {
             instrLabelPaint.setColor(Color.argb(160, 0, 255, 0));
             canvas.drawText("скорость, км/ч", colX_left, valueRowY - 70, instrLabelPaint);
             // Определяем: летим хвостом вперёд? (компас vs GPS трек)
-            float compHdg = getCompassHeading();
-            float gpsTrk = gpsManager.getHeading();
+            float compHdg, gpsTrk;
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                compHdg = trackReplayer.getCompassHeading();
+                gpsTrk = trackReplayer.getHeading(); // direction of travel
+            } else {
+                compHdg = getCompassHeading();
+                gpsTrk = gpsManager.getHeading();
+            }
             float hdgDiff = Math.abs(compHdg - gpsTrk);
             if (hdgDiff > 180f) hdgDiff = 360f - hdgDiff;
             boolean goingBack = hdgDiff > 120f;
@@ -2988,6 +2994,12 @@ public class MainActivity extends Activity {
 
             canvas.restore();
 
+            // === Track player controls (под кругом радара, на карте) ===
+            if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                float pbY = localInstrH + localRadarH - 90; // bottom of radar area
+                drawPlaybackPanel(canvas, w * 0.05f, pbY);
+            }
+
             // ========================================================================
             // GLIDE BAR — L/D слева, координаты центр, дальность справа
             // ========================================================================
@@ -3252,15 +3264,9 @@ public class MainActivity extends Activity {
                     logLabelPaint.setColor(Color.argb(220, 33, 150, 243));
                     canvas.drawText("пишем лог", dataX, labelY, logLabelPaint);
                 }
-
-                // Track player panel (if replay)
-                if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
-                    drawPlaybackPanel(canvas, dataX, tiltY + 40);
-                }
             }
 
             // Стоп (справа)
-            canvas.drawRoundRect(startBtnRect, 10, 10, btnBgPaint);
             if (logManager.isLogging()) {
                 btnTextPaint.setColor(Color.argb(255, 255, 80, 80));
             } else {

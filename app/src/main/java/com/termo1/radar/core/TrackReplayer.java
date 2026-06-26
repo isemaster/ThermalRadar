@@ -79,6 +79,14 @@ public class TrackReplayer {
     private float smoothWindDir = -1f;
     private float smoothWindSpd = -1f;
 
+    // 5-сек скользящее среднее (буферы, 1 Гц = 5 семплов)
+    private static final int AVG_WINDOW = 5;
+    private final float[] speedAvgBuf = new float[AVG_WINDOW];
+    private final float[] windDirAvgBuf = new float[AVG_WINDOW];
+    private final float[] windSpdAvgBuf = new float[AVG_WINDOW];
+    private int avgIdx = 0;
+    private int avgCount = 0;
+
     // Thermal state
     private boolean thermalActive;
     private boolean showRedCore;
@@ -202,6 +210,33 @@ public class TrackReplayer {
         }
         windFromDeg = smoothWindDir;
         windSpeedMs = smoothWindSpd;
+    }
+
+    /** Скользящее среднее за 5 сек по буферу */
+    private float calcAvg5(float[] buf) {
+        if (avgCount == 0) return 0f;
+        float sum = 0;
+        for (int i = 0; i < avgCount; i++) sum += buf[i];
+        return sum / avgCount;
+    }
+
+    /** Скользящее среднее направления ветра (через sin/cos для 0-360) */
+    private float calcWindDir5() {
+        if (avgCount == 0) return smoothWindDir;
+        double sx = 0, sy = 0;
+        int n = 0;
+        for (int i = 0; i < avgCount; i++) {
+            if (windDirAvgBuf[i] >= 0) {
+                double rad = Math.toRadians(windDirAvgBuf[i]);
+                sx += Math.sin(rad);
+                sy += Math.cos(rad);
+                n++;
+            }
+        }
+        if (n == 0) return smoothWindDir;
+        float avg = (float) Math.toDegrees(Math.atan2(sx / n, sy / n));
+        if (avg < 0) avg += 360;
+        return avg;
     }
 
     /**
@@ -406,6 +441,8 @@ public class TrackReplayer {
         gravityEstimate[1] = 0f;
         gravityEstimate[2] = 0f;
         gravityInitialized = false;
+        avgIdx = 0;
+        avgCount = 0;
     }
 
     public void stop() {
@@ -535,22 +572,29 @@ public class TrackReplayer {
             prevHeading = heading;
         }
 
-        // Speed from per-frame position delta, EMA-smoothed (FIX: GPS repeats at 5Hz)
+        // Speed from per-frame position delta, 5-sec smoothed (FIX: GPS repeats at 5Hz)
         double frameDist;
         if (hasLastFramePosition) {
             frameDist = haversineMeters(lastFrameLat, lastFrameLon, pilotLat, pilotLon);
         } else {
             frameDist = 0;
         }
+        float rawSpeed;
         if (frameDist < 0.5) {
-            // GPS repeat (same position within 5Hz second) — hold previous speed
-            speed = smoothSpeed;
+            rawSpeed = smoothSpeed; // hold on GPS repeat
         } else {
-            float rawSpeed = (float) (frameDist / Math.max(simDt, 0.01f));
-            // EMA: 70% new + 30% old = fast enough to follow, smooth enough to not jitter
-            smoothSpeed = smoothSpeed * 0.3f + rawSpeed * 0.7f;
-            speed = smoothSpeed;
+            rawSpeed = (float) (frameDist / Math.max(simDt, 0.01f));
         }
+        smoothSpeed = smoothSpeed * 0.3f + rawSpeed * 0.7f;
+        // Push to 5-sec rolling average (at ~1Hz GPS rate via frameDist>0.5 guard)
+        if (frameDist > 0.5) {
+            speedAvgBuf[avgIdx] = smoothSpeed;
+            windDirAvgBuf[avgIdx] = smoothWindDir;
+            windSpdAvgBuf[avgIdx] = smoothWindSpd;
+            avgIdx = (avgIdx + 1) % AVG_WINDOW;
+            if (avgCount < AVG_WINDOW) avgCount++;
+        }
+        speed = calcAvg5(speedAvgBuf);
         lastFrameLat = pilotLat;
         lastFrameLon = pilotLon;
         hasLastFramePosition = true;
@@ -819,8 +863,8 @@ public class TrackReplayer {
     public float getThermalRadius() { return thermalRadiusM; }
     public String getGuidanceText() { return guidanceText; }
 
-    public float getWindFromDeg() { return windFromDeg; }
-    public float getWindSpeedMs() { return windSpeedMs; }
+    public float getWindFromDeg() { return avgCount > 0 ? calcWindDir5() : windFromDeg; }
+    public float getWindSpeedMs() { return avgCount > 0 ? calcAvg5(windSpdAvgBuf) : windSpeedMs; }
 
     /** Progress 0..1 */
     public float getProgress() {
