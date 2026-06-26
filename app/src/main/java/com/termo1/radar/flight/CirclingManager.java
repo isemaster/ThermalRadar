@@ -413,7 +413,7 @@ public class CirclingManager {
         // ================================================================
         // 5. Оценка ветра по EKF на прямых участках + WindStore
         // ================================================================
-        if (!isCircling && gpsSpeed > 3f && gpsLat != 0.0 && gpsLon != 0.0) {
+        if (!isCircling && gpsSpeed > 0.5f && gpsLat != 0.0 && gpsLon != 0.0) {
             double gpsRad = Math.toRadians(gpsCourse);
             double gpsVx = gpsSpeed * Math.sin(gpsRad);
             double gpsVy = gpsSpeed * Math.cos(gpsRad);

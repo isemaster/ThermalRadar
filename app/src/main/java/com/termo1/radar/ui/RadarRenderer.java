@@ -736,8 +736,8 @@ public class RadarRenderer {
 
         // Динамический m/px: край радара (r пикселей) = 1500 м
         double mpp = 1500.0 / r;
-        float offsetX = (float) (-eastM / mpp);
-        float offsetY = (float) (northM / mpp);
+        float offsetX = (float) (eastM / mpp);
+        float offsetY = (float) (-northM / mpp);
 
         return new float[]{offsetX, offsetY};
     }
