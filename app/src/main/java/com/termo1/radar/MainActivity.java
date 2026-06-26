@@ -2059,7 +2059,7 @@ public class MainActivity extends Activity {
         private static final int GLIDE_BUF_MAX = 16;
         private final double[] glideLatBuf = new double[GLIDE_BUF_MAX];
         private final double[] glideLonBuf = new double[GLIDE_BUF_MAX];
-        private final float[] glideAltBuf = new float[GLIDE_BUF_MAX];
+        private final float[] glideVarioBuf = new float[GLIDE_BUF_MAX];
         private final long[] glideTimeBuf = new long[GLIDE_BUF_MAX];
         private int glideBufHead = 0;
         private int glideBufCount = 0;
@@ -2666,6 +2666,16 @@ public class MainActivity extends Activity {
                     double[] last = gpsTrail.get(gpsTrail.size() - 1);
                     long lastAge = now - (long) last[2];
                     if (lastAge >= GPS_TRAIL_ADD_INTERVAL_MS) {
+                        // Фильтр GPS-спиков: параплан не может двигаться >30 м/с (15 возд + 15 ветер)
+                        float[] spikeCheck = new float[2];
+                        android.location.Location.distanceBetween(
+                                last[0], last[1], pilotLat, pilotLon, spikeCheck);
+                        float speedMs = spikeCheck[0] / (lastAge / 1000f);
+                        if (speedMs > 30f) {
+                            // Спик — используем предыдущую точку вместо прыжка
+                            pilotLat = last[0];
+                            pilotLon = last[1];
+                        }
                         gpsTrail.add(new double[]{pilotLat, pilotLon, now, currentVario});
                     }
                 }
@@ -2677,9 +2687,24 @@ public class MainActivity extends Activity {
                     isNewGlideSample = (now - glideTimeBuf[lastGi]) >= 1000;
                 }
                 if (isNewGlideSample) {
+                    // Для буфера L/D тоже фильтруем спики
+                    if (glideBufCount > 0) {
+                        int lastGi = (glideBufHead - 1 + GLIDE_BUF_MAX) % GLIDE_BUF_MAX;
+                        float[] spikeCheck = new float[2];
+                        android.location.Location.distanceBetween(
+                                glideLatBuf[lastGi], glideLonBuf[lastGi],
+                                pilotLat, pilotLon, spikeCheck);
+                        float dtSec = (now - glideTimeBuf[lastGi]) / 1000f;
+                        float speedMs = (dtSec > 0) ? spikeCheck[0] / dtSec : 0;
+                        if (speedMs > 30f) {
+                            // Спик — повторяем предыдущую позицию
+                            pilotLat = glideLatBuf[lastGi];
+                            pilotLon = glideLonBuf[lastGi];
+                        }
+                    }
                     glideLatBuf[glideBufHead] = pilotLat;
                     glideLonBuf[glideBufHead] = pilotLon;
-                    glideAltBuf[glideBufHead] = (float)gpsManager.getAltitude();
+                    glideVarioBuf[glideBufHead] = currentVario;
                     glideTimeBuf[glideBufHead] = now;
                     glideBufHead = (glideBufHead + 1) % GLIDE_BUF_MAX;
                     if (glideBufCount < GLIDE_BUF_MAX) glideBufCount++;
@@ -2920,6 +2945,20 @@ public class MainActivity extends Activity {
                 float netDist = netRes[0];  // метры, всегда ≥0
                 float netBearing = netRes[1]; // пеленг от oldest к newest
 
+                // Высота по бароварио: интегрируем vario за окно
+                float altDiffVario = 0f;
+                int vi = oldestIdx;
+                int vSteps = 0;
+                while (vi != newestIdx && vSteps < GLIDE_BUF_MAX) {
+                    int vNext = (vi + 1) % GLIDE_BUF_MAX;
+                    if (glideTimeBuf[vNext] == 0) break;
+                    float dt = (glideTimeBuf[vNext] - glideTimeBuf[vi]) / 1000f;
+                    // vario положительный = набор = отнимаем от снижения
+                    altDiffVario += -glideVarioBuf[vi] * dt; // + = снижение
+                    vi = vNext;
+                    vSteps++;
+                }
+
                 // Текущий курс пилота (GPS track)
                 float pilotTrack = gpsManager.getHeading();
 
@@ -2928,10 +2967,9 @@ public class MainActivity extends Activity {
                 if (angleDiff > 180f) angleDiff = 360f - angleDiff;
                 boolean goingBackward = angleDiff > 120f;
 
-                float altDiff = glideAltBuf[oldestIdx] - glideAltBuf[newestIdx]; // + = снижение
-                if (altDiff > 0.5f) {
+                if (altDiffVario > 0.5f) {
                     // Снижаемся — считаем L/D
-                    float rawRatio = netDist / altDiff;
+                    float rawRatio = netDist / altDiffVario;
                     if (netDist < 5f) {
                         // Стоим на месте (вертикальное снижение в сильный встречный)
                         glideRatio = 0f;
