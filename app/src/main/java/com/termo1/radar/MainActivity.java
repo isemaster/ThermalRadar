@@ -890,47 +890,61 @@ public class MainActivity extends Activity {
             return;
         }
 
-        float vario;
-        if (scenarioMode && flightSim != null && flightSim.isRunning()) {
-            vario = flightSim.getVario();
-        } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
-            vario = trackReplayer.getVario();
-        } else {
-            vario = sensorController.getVario();
-        }
-        float level = 0f;
-        if (thermalDetector != null) {
-            SignalProcessor sp = thermalDetector.getSignalProcessor();
-            if (sp != null) level = sp.getTurbulenceMs2();
-        }
+        // Проверяем: есть ли ПОДТВЕРЖДЁННЫЙ блип с расстоянием
+        ThermalBlip activeBlip = thermalDetector.getCurrentBlip();
+        boolean hasConfirmedBlip = (activeBlip != null)
+                && thermalDetector.isBlipConfirmed()
+                && (SystemClock.elapsedRealtime() - activeBlip.bornMs < activeBlip.lifeMs);
 
-        // VarioThermal detector
-        boolean varioThermal = false;
-        if (varioThermalDetector != null && !simMode && !scenarioMode && !trackMode) {
-            long now = SystemClock.elapsedRealtime();
-            varioThermalDetector.update(vario, now);
-            varioThreshold = prefs.getFloat("vario_threshold", 0.5f);
-            varioThermalDetector.setThreshold(varioThreshold);
-            if (varioSoundManager != null) {
-                varioSoundManager.setDeadBandHigh(varioThreshold);
+        // Только если реально есть блип — показываем "термик рядом"
+        if (hasConfirmedBlip && (thermalDetector.getStatus() == ThermalDetector.STATUS_THERMAL
+                || thermalDetector.getStatus() == ThermalDetector.STATUS_INSIDE)) {
+            float distM = activeBlip.distance;
+            currentStatus = String.format(java.util.Locale.US, "ТЕРМИК РЯДОМ — %.0fм", distM);
+            // Вибрация сработает при смене статуса в onDraw
+        } else {
+            float vario;
+            if (scenarioMode && flightSim != null && flightSim.isRunning()) {
+                vario = flightSim.getVario();
+            } else if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
+                vario = trackReplayer.getVario();
+            } else {
+                vario = sensorController.getVario();
             }
-            varioThermal = varioThermalDetector.isThermalDetected();
-        }
+            float level = 0f;
+            if (thermalDetector != null) {
+                SignalProcessor sp = thermalDetector.getSignalProcessor();
+                if (sp != null) level = sp.getTurbulenceMs2();
+            }
 
-        if (varioThermal) {
-            currentStatus = "ВАРИО ТЕРМИК";
-        } else if (vario > 1.0f && level > 0.3f) {
-            currentStatus = UiManager.STATUS_CLIMB;
-        } else if (thermalDetector.getStatus() == ThermalDetector.STATUS_INSIDE) {
-            currentStatus = UiManager.STATUS_CLIMB;
-        } else if (thermalDetector.getStatus() == ThermalDetector.STATUS_THERMAL) {
-            currentStatus = UiManager.STATUS_THERMAL;
-        } else if (vario < -1.0f) {
-            currentStatus = UiManager.STATUS_SINK;
-        } else if (thermalDetector.getStatus() == ThermalDetector.STATUS_SUSPECT) {
-            currentStatus = UiManager.STATUS_SPIRAL;
-        } else {
-            currentStatus = UiManager.STATUS_SEARCH;
+            boolean varioThermal = false;
+            if (varioThermalDetector != null && !simMode && !scenarioMode && !trackMode) {
+                long now = SystemClock.elapsedRealtime();
+                varioThermalDetector.update(vario, now);
+                varioThreshold = prefs.getFloat("vario_threshold", 0.5f);
+                varioThermalDetector.setThreshold(varioThreshold);
+                if (varioSoundManager != null) {
+                    varioSoundManager.setDeadBandHigh(varioThreshold);
+                }
+                varioThermal = varioThermalDetector.isThermalDetected();
+            }
+
+            if (varioThermal) {
+                currentStatus = "ВАРИО ТЕРМИК";
+            } else if (vario > 1.0f && level > 0.3f) {
+                currentStatus = UiManager.STATUS_CLIMB;
+            } else if (thermalDetector.getStatus() == ThermalDetector.STATUS_INSIDE) {
+                currentStatus = UiManager.STATUS_CLIMB;
+            } else if (thermalDetector.getStatus() == ThermalDetector.STATUS_THERMAL) {
+                // thermal status без блипа — показываем как подозрение
+                currentStatus = UiManager.STATUS_SPIRAL;
+            } else if (vario < -1.0f) {
+                currentStatus = UiManager.STATUS_SINK;
+            } else if (thermalDetector.getStatus() == ThermalDetector.STATUS_SUSPECT) {
+                currentStatus = UiManager.STATUS_SPIRAL;
+            } else {
+                currentStatus = UiManager.STATUS_SEARCH;
+            }
         }
     }
 
@@ -2529,7 +2543,7 @@ public class MainActivity extends Activity {
 
             // Speed label (км/ч — крупно, м/с — мелко рядом)
             instrLabelPaint.setColor(Color.argb(160, 0, 255, 0));
-            canvas.drawText("скорость, км/ч", colX_left, valueRowY - 40, instrLabelPaint);
+            canvas.drawText("скорость, км/ч", colX_left, valueRowY - 70, instrLabelPaint);
             // Speed value in km/h (big); m/s small below
             instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
             canvas.drawText(String.format(java.util.Locale.US, "%.0f", gpsSpeed * 3.6f), colX_left, valueRowY + 20, instrValuePaint);
@@ -2594,12 +2608,12 @@ public class MainActivity extends Activity {
             float windSpdMs = circlingManager.getDisplayWindSpeed();
             if (windDeg >= 0 && windSpdMs > 0) {
                 instrLabelPaint.setColor(Color.argb(160, 100, 200, 255));
-                canvas.drawText("ветер, м/с", colX_right, valueRowY - 40, instrLabelPaint);
+                canvas.drawText("ветер, м/с", colX_right, valueRowY - 70, instrLabelPaint);
                 instrValuePaint.setColor(Color.argb(220, 100, 200, 255));
                 canvas.drawText(String.format(java.util.Locale.US, "%.1f", windSpdMs), colX_right, valueRowY + 20, instrValuePaint);
             } else {
                 instrLabelPaint.setColor(Color.argb(120, 100, 200, 255));
-                canvas.drawText("ветер, м/с", colX_right, valueRowY - 40, instrLabelPaint);
+                canvas.drawText("ветер, м/с", colX_right, valueRowY - 70, instrLabelPaint);
                 instrValuePaint.setColor(Color.argb(120, 100, 200, 255));
                 canvas.drawText("--", colX_right, valueRowY + 20, instrValuePaint);
             }
@@ -2879,7 +2893,7 @@ public class MainActivity extends Activity {
             // ========================================================================
             // GLIDE BAR — L/D слева, координаты центр, дальность справа
             // ========================================================================
-            float bottomPanelY = localInstrH + localRadarH + localGlideH + h * 0.05f;
+            float bottomPanelY = localInstrH + localRadarH + localGlideH + h * 0.05f - 20f;
             float btnAreaTop = bottomPanelY - (50 + 24);
             float glideBarY2 = btnAreaTop + 30;
 
@@ -2958,7 +2972,7 @@ public class MainActivity extends Activity {
                 glideBarPaint.setTextAlign(Paint.Align.CENTER);
                 glideBarPaint.setTextSize(24);
                 glideBarPaint.setColor(Color.argb(120, 0, 200, 100));
-                canvas.drawText("видно " + satCount + " спутников", w / 2f, glideBarY2 - 22, glideBarPaint);
+                canvas.drawText("видно " + satCount + " спутников", w / 2f, glideBarY2 - 50, glideBarPaint);
                 // Coordinates
                 glideBarPaint.setTextAlign(Paint.Align.CENTER);
                 glideBarPaint.setColor(Color.argb(180, 100, 200, 255));
