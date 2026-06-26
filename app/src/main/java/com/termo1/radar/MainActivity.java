@@ -2331,14 +2331,17 @@ public class MainActivity extends Activity {
 
             // Static map: обновить если сместились >500м
             double mapLat, mapLon;
+            boolean mapHasPosition = false;
             if (trackMode && trackReplayer != null && trackReplayer.isRunning()) {
                 mapLat = trackReplayer.getLat();
                 mapLon = trackReplayer.getLon();
+                mapHasPosition = (mapLat != 0.0 && mapLon != 0.0);
             } else {
                 mapLat = gpsManager.getLat();
                 mapLon = gpsManager.getLon();
+                mapHasPosition = gpsManager.isReady() && mapLat != 0.0 && mapLon != 0.0;
             }
-            if (gpsManager.isReady() && mapLat != 0.0 && mapLon != 0.0) {
+            if (mapHasPosition) {
                 staticMapLoader.updateIfNeeded(mapLat, mapLon, 14);
                 if (radarRenderer.isMapRefreshNeeded()) {
                     staticMapLoader.forceUpdate(mapLat, mapLon, 14);
