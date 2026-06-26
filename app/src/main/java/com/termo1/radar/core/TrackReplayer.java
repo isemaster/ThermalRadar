@@ -69,10 +69,13 @@ public class TrackReplayer {
     private float gyroZ;              // rad/s
     private float accelX, accelY;     // g
 
-    // Previous frame position for per-frame speed/vario calc (FIX: was using segment-start)
+    // Previous frame position for per-frame speed/vario calc
     private double lastFrameLat, lastFrameLon;
     private float lastFrameAlt;
     private boolean hasLastFramePosition;
+
+    // GPS update tracking: время последнего IGC-сегмента с новой GPS позицией
+    private float lastGpsTimeSec = -1f;
 
     // Сглаженная скорость (EMA) — убирает провалы на GPS-повторах 5Hz
     private float smoothSpeed = 0f;
@@ -181,32 +184,49 @@ public class TrackReplayer {
      * wind = ground_velocity - air_velocity
      * Работает когда пилот на триммерах (снижение ≤1.3 м/с) — 99% случаев.
      * GPS track + compass heading + trim airspeed.
+     * Если compass heading ненадёжен (отличается от track >45°) — 
+     * используем упрощённый along-track расчёт (speed - airspeed вдоль трека).
      * Результат: направление ОТКУДА дует ветер (meteo convention, +180°).
      */
     public void estimateWindFromFlight() {
         float hdgDeg = getCompassHeading();
         double gpsRad = Math.toRadians(heading);   // heading = direction of travel (GPS track)
         double hdgRad = Math.toRadians(hdgDeg);    // compass heading (nose)
-        double wx = speed * Math.sin(gpsRad) - airspeedMs * Math.sin(hdgRad);
-        double wy = speed * Math.cos(gpsRad) - airspeedMs * Math.cos(hdgRad);
-        float newSpeed = (float) Math.sqrt(wx*wx + wy*wy);
-        if (newSpeed < 0.3f) return;
-        // atan2(wx,wy) = КУДА дует ветер → +180° = ОТКУДА (meteo convention)
-        float newDir = (float) Math.toDegrees(Math.atan2(wx, wy)) + 180f;
-        if (newDir < 0) newDir += 360;
-        if (newDir >= 360) newDir -= 360;
+
+        // Check heading reliability: if compass differs from track >45°, it's noisy
+        float hdgDiff = Math.abs(hdgDeg - heading);
+        if (hdgDiff > 180) hdgDiff = 360 - hdgDiff;
+        boolean headingReliable = hdgDiff < 45f;
+
+        float windSpeed, windDir;
+        if (headingReliable) {
+            // Full 2D wind vector from heading + track
+            double wx = speed * Math.sin(gpsRad) - airspeedMs * Math.sin(hdgRad);
+            double wy = speed * Math.cos(gpsRad) - airspeedMs * Math.cos(hdgRad);
+            windSpeed = (float) Math.sqrt(wx*wx + wy*wy);
+            windDir = (float) Math.toDegrees(Math.atan2(wx, wy)) + 180f;
+        } else {
+            // Along-track only: wind = speed - airspeed (headwind negative)
+            float alongWind = speed - airspeedMs;
+            windSpeed = Math.abs(alongWind);
+            // Wind FROM the direction of travel (headwind = opposite of track)
+            windDir = heading + 180f;
+        }
+        if (windDir < 0) windDir += 360;
+        if (windDir >= 360) windDir -= 360;
+        if (windSpeed < 0.3f) return;
         // EMA smooth: α=0.15 (медленнее, чем было 0.2 — меньше прыжков)
         if (smoothWindSpd < 0 || smoothWindDir < 0) {
-            smoothWindDir = newDir;
-            smoothWindSpd = newSpeed;
+            smoothWindDir = windDir;
+            smoothWindSpd = windSpeed;
         } else {
-            float diff = newDir - smoothWindDir;
+            float diff = windDir - smoothWindDir;
             while (diff > 180) diff -= 360;
             while (diff < -180) diff += 360;
             smoothWindDir += 0.15f * diff;
             if (smoothWindDir < 0) smoothWindDir += 360;
             if (smoothWindDir >= 360) smoothWindDir -= 360;
-            smoothWindSpd += 0.15f * (newSpeed - smoothWindSpd);
+            smoothWindSpd += 0.15f * (windSpeed - smoothWindSpd);
         }
         windFromDeg = smoothWindDir;
         windSpeedMs = smoothWindSpd;
@@ -412,6 +432,7 @@ public class TrackReplayer {
         lastFrameAlt = first.altMeters;
         hasLastFramePosition = false;
         sameSecCount = 0;
+        lastGpsTimeSec = -1f;
         heading = 0;
         vario = 0;
         speed = 0;
@@ -585,10 +606,15 @@ public class TrackReplayer {
         boolean gpsChanged = (Math.abs(p0.lat - p1.lat) > 0.0000001
                           || Math.abs(p0.lon - p1.lon) > 0.0000001);
         if (gpsChanged && p0 != null && p1 != null) {
-            // Real GPS update: use segment-level speed = segmentLength / segmentTime
+            // Real GPS update: speed = segmentLength / real GPS interval
+            // GPS interval = time since LAST GPS update (via IGC timestamps with sub-seconds)
+            float gpsInterval = 1.0f; // default: 1 Hz GPS
+            if (lastGpsTimeSec > 0) {
+                gpsInterval = Math.max(p1.timeSec - lastGpsTimeSec, 0.001f);
+            }
+            lastGpsTimeSec = p1.timeSec;
             double segDist = haversineMeters(p0.lat, p0.lon, p1.lat, p1.lon);
-            float segTime = Math.max(p1.timeSec - p0.timeSec, 0.001f);
-            float segSpeed = (float)(segDist / segTime);
+            float segSpeed = (float)(segDist / gpsInterval);
             // EMA blend with smoothSpeed for continuity
             smoothSpeed = smoothSpeed * 0.3f + segSpeed * 0.7f;
             // Push to 5-sec rolling average
