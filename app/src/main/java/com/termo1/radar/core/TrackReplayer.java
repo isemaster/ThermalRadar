@@ -109,12 +109,16 @@ public class TrackReplayer {
     // Real sensor data from companion ZIP
     private static class SensorSample {
         final long dtMs;
-        final float axMg, ayMg;   // accel in milli-g
-        final float varioMs;       // m/s
+        final float axMg, ayMg, azMg;   // accel in milli-g (all 3 axes)
+        final float mx, my, mz;          // magnetometer (μT)
+        final float varioMs;             // m/s
         final float headingDeg;
-        final long timestampMs;    // elapsedRealtime-like
-        SensorSample(long dtMs, float axMg, float ayMg, float varioMs, float headingDeg, long timestampMs) {
-            this.dtMs = dtMs; this.axMg = axMg; this.ayMg = ayMg;
+        final long timestampMs;          // elapsedRealtime-like
+        SensorSample(long dtMs, float axMg, float ayMg, float azMg,
+                     float mx, float my, float mz,
+                     float varioMs, float headingDeg, long timestampMs) {
+            this.dtMs = dtMs; this.axMg = axMg; this.ayMg = ayMg; this.azMg = azMg;
+            this.mx = mx; this.my = my; this.mz = mz;
             this.varioMs = varioMs; this.headingDeg = headingDeg; this.timestampMs = timestampMs;
         }
     }
@@ -124,6 +128,11 @@ public class TrackReplayer {
     // Компасный heading из ZIP (реальный курс носа параплана, а не GPS track)
     private float sensorHeading = 0f;
     private boolean hasSensorHeading; // false = нет ZIP, используем track-based heading
+
+    // Gravity estimate for world-transform (removing gravity from raw accel → linear accel)
+    private final float[] gravityEstimate = new float[]{0f, 0f, 0f};
+    private boolean gravityInitialized;
+    private static final float GRAVITY_IIR_ALPHA = 0.005f; // very slow adaptation for gravity
 
     // Interpolation index
     private int currentIdx;
@@ -321,8 +330,12 @@ public class TrackReplayer {
                         float varioMs = Float.parseFloat(parts[8]);
                         float axMg = Float.parseFloat(parts[9]); // already in milli-g
                         float ayMg = Float.parseFloat(parts[10]);
+                        float azMg = (parts.length > 11) ? Float.parseFloat(parts[11]) : 0f;
+                        float mx = (parts.length > 15) ? Float.parseFloat(parts[15]) : 0f;
+                        float my = (parts.length > 16) ? Float.parseFloat(parts[16]) : 0f;
+                        float mz = (parts.length > 17) ? Float.parseFloat(parts[17]) : 0f;
                         float headingDeg = (parts.length > 21) ? Float.parseFloat(parts[21]) : 0f;
-                        sensorData.add(new SensorSample(dtMs, axMg, ayMg, varioMs, headingDeg, baseTimeMs + dtMs));
+                        sensorData.add(new SensorSample(dtMs, axMg, ayMg, azMg, mx, my, mz, varioMs, headingDeg, baseTimeMs + dtMs));
                     } catch (Exception ignored) {}
                 }
                 zis.closeEntry();
@@ -384,6 +397,10 @@ public class TrackReplayer {
         smoothSpeed = 0f;
         smoothWindDir = -1f;
         smoothWindSpd = -1f;
+        gravityEstimate[0] = 0f;
+        gravityEstimate[1] = 0f;
+        gravityEstimate[2] = 0f;
+        gravityInitialized = false;
     }
 
     public void stop() {
@@ -619,7 +636,7 @@ public class TrackReplayer {
         }
     }
 
-    /** Обновить accel: из реальных сенсоров или синтезированный */
+    /** Обновить accel: из реальных сенсоров с world-transform или синтезированный */
     private void updateAccel(float dt) {
         // Если есть реальные сенсорные данные — используем их
         if (sensorData != null && !sensorData.isEmpty() && sensorIdx < sensorData.size()) {
@@ -631,11 +648,46 @@ public class TrackReplayer {
                 sensorIdx++;
             }
             SensorSample s = sensorData.get(sensorIdx);
-            accelX = s.axMg / 1000f; // milli-g → g
-            accelY = s.ayMg / 1000f;
             sensorHeading = s.headingDeg;
             hasSensorHeading = (s.headingDeg > 0f);
             hasSensorData = true;
+
+            // Raw body accel in g (from milli-g)
+            float axG = s.axMg / 1000f;
+            float ayG = s.ayMg / 1000f;
+            float azG = s.azMg / 1000f;
+
+            // Gravity estimate via IIR low-pass (gravity = DC component of raw accel)
+            if (!gravityInitialized) {
+                gravityEstimate[0] = axG;
+                gravityEstimate[1] = ayG;
+                gravityEstimate[2] = azG;
+                gravityInitialized = true;
+            } else {
+                gravityEstimate[0] += GRAVITY_IIR_ALPHA * (axG - gravityEstimate[0]);
+                gravityEstimate[1] += GRAVITY_IIR_ALPHA * (ayG - gravityEstimate[1]);
+                gravityEstimate[2] += GRAVITY_IIR_ALPHA * (azG - gravityEstimate[2]);
+            }
+
+            // Build rotation matrix from gravity estimate + magnetometer
+            float[] R = new float[9];
+            float[] grav = new float[]{gravityEstimate[0], gravityEstimate[1], gravityEstimate[2]};
+            float[] mag = new float[]{s.mx, s.my, s.mz};
+            // Use Android's SensorManager to get body→world rotation matrix
+            android.hardware.SensorManager.getRotationMatrix(R, null, grav, mag);
+
+            // Linear acceleration (raw - gravity) in body frame, in m/s²
+            float linXms2 = (axG - gravityEstimate[0]) * 9.81f;
+            float linYms2 = (ayG - gravityEstimate[1]) * 9.81f;
+            float linZms2 = (azG - gravityEstimate[2]) * 9.81f;
+
+            // Transform to world coordinates: world = R * body
+            // World X and Y = horizontal linear acceleration → feed to ThermalDetector
+            float worldX = R[0] * linXms2 + R[1] * linYms2 + R[2] * linZms2;
+            float worldY = R[3] * linXms2 + R[4] * linYms2 + R[5] * linZms2;
+
+            accelX = worldX / 9.81f; // convert back to g for ThermalDetector
+            accelY = worldY / 9.81f;
             return;
         }
         hasSensorData = false;
