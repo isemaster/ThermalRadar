@@ -2544,9 +2544,23 @@ public class MainActivity extends Activity {
             // Speed label (км/ч — крупно, м/с — мелко рядом)
             instrLabelPaint.setColor(Color.argb(160, 0, 255, 0));
             canvas.drawText("скорость, км/ч", colX_left, valueRowY - 70, instrLabelPaint);
-            // Speed value in km/h (big); m/s small below
-            instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
-            canvas.drawText(String.format(java.util.Locale.US, "%.0f", gpsSpeed * 3.6f), colX_left, valueRowY + 20, instrValuePaint);
+            // Определяем: летим хвостом вперёд? (компас vs GPS трек)
+            float compHdg = getCompassHeading();
+            float gpsTrk = gpsManager.getHeading();
+            float hdgDiff = Math.abs(compHdg - gpsTrk);
+            if (hdgDiff > 180f) hdgDiff = 360f - hdgDiff;
+            boolean goingBack = hdgDiff > 120f;
+            float displaySpeedKmh = gpsSpeed * 3.6f;
+            if (goingBack) displaySpeedKmh = -displaySpeedKmh;
+            // Speed value: красное мигание при сносе назад
+            if (goingBack) {
+                boolean blink = (SystemClock.elapsedRealtime() / 500) % 2 == 0;
+                instrValuePaint.setColor(blink ? Color.argb(220, 255, 80, 80) : Color.argb(50, 255, 80, 80));
+            } else {
+                instrValuePaint.setColor(Color.argb(220, 0, 255, 0));
+            }
+            canvas.drawText(String.format(java.util.Locale.US, "%.0f", displaySpeedKmh),
+                    colX_left, valueRowY + 20, instrValuePaint);
             // m/s мелко под км/ч
             instrLabelPaint.setTextSize(20);
             instrLabelPaint.setColor(Color.argb(120, 0, 255, 0));
@@ -2609,7 +2623,7 @@ public class MainActivity extends Activity {
             if (windDeg >= 0 && windSpdMs > 0) {
                 instrLabelPaint.setColor(Color.argb(160, 100, 200, 255));
                 canvas.drawText("ветер, м/с", colX_right, valueRowY - 70, instrLabelPaint);
-                instrValuePaint.setColor(Color.argb(220, 100, 200, 255));
+                instrValuePaint.setColor(windSpdMs > 12f ? Color.argb(220, 255, 80, 80) : Color.argb(220, 100, 200, 255));
                 canvas.drawText(String.format(java.util.Locale.US, "%.1f", windSpdMs), colX_right, valueRowY + 20, instrValuePaint);
             } else {
                 instrLabelPaint.setColor(Color.argb(120, 100, 200, 255));
@@ -2921,6 +2935,7 @@ public class MainActivity extends Activity {
             float bottomPanelY = localInstrH + localRadarH + localGlideH + h * 0.05f - 20f;
             float btnAreaTop = bottomPanelY - (50 + 24);
             float glideBarY2 = btnAreaTop + 30;
+            boolean glideBackward = false;
 
             // L/D — из буфера GPS + поляра как fallback
             float glideRatio = 0f;
@@ -2959,8 +2974,8 @@ public class MainActivity extends Activity {
                     vSteps++;
                 }
 
-                // Текущий курс пилота (GPS track)
-                float pilotTrack = gpsManager.getHeading();
+                // Текущий курс пилота: по КОМПАСУ (куда смотрит нос)
+                float pilotTrack = getCompassHeading();
 
                 // Определяем знак: если движемся вбок/назад относительно курса
                 float angleDiff = Math.abs(netBearing - pilotTrack);
@@ -2976,6 +2991,9 @@ public class MainActivity extends Activity {
                     } else if (goingBackward) {
                         // Летим хвостом вперёд — отрицательное L/D
                         glideRatio = Math.max(-99.0f, -rawRatio);
+                        glideBackward = true;
+                        currentStatus = String.format(java.util.Locale.US, "СНОС НАЗАД — %.1f м/с", netDist / 8f);
+                        previousStatus = "";
                     } else {
                         // Нормальное планирование
                         glideRatio = Math.min(99.0f, rawRatio);
