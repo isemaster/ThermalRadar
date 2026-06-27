@@ -288,9 +288,9 @@ public class RadarView extends View implements View.OnClickListener {
 
     // Glide ratio buffer (8 sec window, 1 Hz samples)
 
-    private static final int GLIDE_WINDOW_SEC = 8;
+    private static final int GLIDE_WINDOW_SEC = 30;
 
-    private static final int GLIDE_BUF_MAX = 16;
+    private static final int GLIDE_BUF_MAX = 32;
 
     private final double[] glideLatBuf = new double[GLIDE_BUF_MAX];
 

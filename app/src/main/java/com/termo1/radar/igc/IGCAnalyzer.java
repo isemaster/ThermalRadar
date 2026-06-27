@@ -31,12 +31,12 @@ public class IGCAnalyzer {
     // Константы
     // ========================================================================
     private static final float VARIO_EMA_ALPHA = 0.25f;
-    private static final int L_D_WINDOW_SEC = 8;
+    private static final int L_D_WINDOW_SEC = 30;
     private static final float CIRCLE_HEADING_ACCUM = 360f;
     private static final float CIRCLE_ANGLE_WINDOW_SEC = 30f;
     private static final float THERMAL_VARIO_THRESHOLD = 0.5f;
     private static final float THERMAL_CONFIRM_TIME = 8f;
-    private static final int AVG_WINDOW = 5;
+    private static final int AVG_WINDOW = 3;
     private static final float VARIO_AVG_WINDOW_SEC = 30f;
     private static final int WIND_BUF_MAX = 100; // 100s sliding window
     private static final float AIRSPEED_MS = 9.5f;
@@ -59,6 +59,7 @@ public class IGCAnalyzer {
 
     // Скорость из GPS-сегментов (1Гц обновление)
     private float lastGpsTimeSec = -1f;
+    private float lastFrameSpeed = 0f;
     private boolean hasLastFrame;
     private float lastFrameAlt;
 
@@ -75,7 +76,7 @@ public class IGCAnalyzer {
     private int windCount = 0;
 
     // L/D буфер (8 сек, ~1Гц)
-    private static final int LD_BUF_MAX = 16;
+    private static final int LD_BUF_MAX = 32;
     private final double[] ldLatBuf = new double[LD_BUF_MAX];
     private final double[] ldLonBuf = new double[LD_BUF_MAX];
     private final float[] ldVarioBuf = new float[LD_BUF_MAX]; // baro vario integral
@@ -223,11 +224,20 @@ public class IGCAnalyzer {
         float newAlt = a.displayAltM + (b.displayAltM - a.displayAltM) * t;
         float newVarioAlt = a.getVarioAltM() + (b.getVarioAltM() - a.getVarioAltM()) * t;
 
-        // Vario (EMA smoothed)
+        // Vario (EMA smoothed) with TE compensation
         if (hasLastFrame) {
             float altDelta = newVarioAlt - lastFrameAlt;
             float rawVario = altDelta / Math.max(dt, 0.01f);
-            smoothVario = smoothVario * (1f - VARIO_EMA_ALPHA) + rawVario * VARIO_EMA_ALPHA;
+            // TE compensation: subtract kinetic energy change
+            // TE = (v2^2 - v1^2) / (2*g), vario_TE = dh/dt + TE/dt
+            float speed = getSpeedMs();
+            float teVario = rawVario;
+            if (dt > 0.001f) {
+                float keDelta = (speed * speed - lastFrameSpeed * lastFrameSpeed) / (2f * 9.81f);
+                teVario += keDelta / dt;
+            }
+            smoothVario = smoothVario * (1f - VARIO_EMA_ALPHA) + teVario * VARIO_EMA_ALPHA;
+            lastFrameSpeed = speed;
         } else {
             smoothVario = 0f;
         }
@@ -268,7 +278,8 @@ public class IGCAnalyzer {
             float segSpeed = (float)(segDist / gpsInterval);
             smoothSpeed = smoothSpeed * 0.3f + segSpeed * 0.7f;
 
-            speedAvgBuf[avgIdx] = smoothSpeed;
+            // Speed: 3-second SMA for display, raw segSpeed pushed
+            speedAvgBuf[avgIdx] = segSpeed;
             avgIdx = (avgIdx + 1) % AVG_WINDOW;
             if (avgCount < AVG_WINDOW) avgCount++;
             // Wind ring buffer (100s sliding window)
