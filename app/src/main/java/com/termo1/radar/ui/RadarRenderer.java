@@ -226,10 +226,10 @@ public class RadarRenderer {
         mapTrailPaint.setStrokeCap(Paint.Cap.ROUND);
         mapTrailPaint.setStrokeJoin(Paint.Join.ROUND);
 
-        // IGC track polyline (MA-4) — белый 3px, полупрозрачный
+        // IGC track polyline (MA-4) — ярко-синий 3px пунктир
         trackPolylinePaint.setStyle(Paint.Style.STROKE);
         trackPolylinePaint.setStrokeWidth(3f);
-        trackPolylinePaint.setColor(Color.argb(140, 200, 200, 255));
+        trackPolylinePaint.setColor(Color.argb(200, 30, 100, 255));
         trackPolylinePaint.setStrokeCap(Paint.Cap.ROUND);
         trackPolylinePaint.setStrokeJoin(Paint.Join.ROUND);
         trackPolylinePaint.setPathEffect(new DashPathEffect(new float[]{6, 4}, 0));

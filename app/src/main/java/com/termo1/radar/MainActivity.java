@@ -1809,25 +1809,6 @@ public class MainActivity extends Activity {
         igcAnalyzer.scrollTo(0);
         currentDisplayFrame = igcAnalyzer.getCurrentFrame();
 
-        // Предзаполняем trailBuf IGC-треком для мгновенного отображения на карте
-        {
-            com.termo1.radar.igc.TrackPoint[] igcTrack = result.track;
-            trailHead = 0;
-            trailCount = 0;
-            int step = Math.max(1, igcTrack.length / 2000); // subsample to ~2000
-            for (int i = 0; i < igcTrack.length; i += step) {
-                com.termo1.radar.igc.TrackPoint tp = igcTrack[i];
-                if (trailBuf[trailHead] == null)
-                    trailBuf[trailHead] = new TrailPoint();
-                trailBuf[trailHead].lat = tp.lat;
-                trailBuf[trailHead].lon = tp.lon;
-                trailBuf[trailHead].timeMs = (long)(tp.timeSec * 1000);
-                trailBuf[trailHead].vario = 0f;
-                trailHead = (trailHead + 1) % GPS_TRAIL_MAX;
-                if (trailCount < GPS_TRAIL_MAX) trailCount++;
-            }
-        }
-
         // Bridge для RadarView (делегирует DisplayFrame)
         trackReplayer = new TrackReplayerDisplayBridge();
 
