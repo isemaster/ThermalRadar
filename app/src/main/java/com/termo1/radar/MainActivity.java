@@ -30,6 +30,9 @@ import com.termo1.radar.core.SimulationManager;
 import com.termo1.radar.core.TrackReplayer;
 import com.termo1.radar.core.SignalProcessor;
 import com.termo1.radar.core.ThermalDetector;
+import com.termo1.radar.igc.IGCParser;
+import com.termo1.radar.igc.IGCAnalyzer;
+import com.termo1.radar.igc.DisplayFrame;
 import com.termo1.radar.flight.FlightStateMachine;
 import com.termo1.radar.flight.BlindFlightMode;
 import com.termo1.radar.flight.VarioThermalDetector;
@@ -264,6 +267,115 @@ public class MainActivity extends Activity {
     SimulationManager simulation;
     FlightSimulator flightSim;
     TrackReplayer trackReplayer;
+    /** IGC pipeline: display frame (replay & live) */
+    volatile DisplayFrame currentDisplayFrame;
+    /** IGC pipeline: analyzer (replay mode) */
+    IGCAnalyzer igcAnalyzer;
+    /** IGC pipeline: analyzer (live mode, пересоздаётся каждые 500ms) */
+    private IGCAnalyzer liveAnalyzer;
+    /** IGC pipeline: время последнего live анализа */
+    private long lastLiveIgcAnalyzeMs;
+
+    /**
+     * Обёртка TrackReplayer для IGC pipeline.
+     * Позволяет RadarView читать данные из DisplayFrame без изменения RadarView.
+     * RadarView видит a.trackReplayer != null → работает как раньше.
+     */
+    class TrackReplayerDisplayBridge extends TrackReplayer {
+        @Override public double getLat() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.pilotLat : 0;
+        }
+        @Override public double getLon() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.pilotLon : 0;
+        }
+        @Override public float getAltitude() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.altitudeMsl : 0;
+        }
+        @Override public float getSpeed() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.speedMs : 0;
+        }
+        @Override public float getVario() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.varioMs : 0;
+        }
+        @Override public float getHeading() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.headingDeg : 0;
+        }
+        @Override public float getWindFromDeg() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.windFromDeg : -1;
+        }
+        @Override public float getWindSpeedMs() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.windSpeedMs : 0;
+        }
+        @Override public float getCompassHeading() {
+            return getHeading(); // IGC реплей не имеет компаса
+        }
+        @Override public boolean isRunning() { return trackMode; }
+        @Override public boolean isFinished() {
+            DisplayFrame df = currentDisplayFrame;
+            return df == null || !df.isRunning;
+        }
+        @Override public boolean isPaused() { return false; }
+        @Override public void setPaused(boolean v) {}
+        @Override public float getCurrentTime() {
+            IGCAnalyzer a = igcAnalyzer;
+            return a != null ? a.getCurrentTime() : 0;
+        }
+        @Override public float getTotalTime() {
+            IGCAnalyzer a = igcAnalyzer;
+            return a != null ? a.getTotalTime() : 0;
+        }
+        @Override public float getProgress() {
+            IGCAnalyzer a = igcAnalyzer;
+            if (a == null || a.getTotalTime() <= 0) return 0;
+            return Math.min(1, a.getCurrentTime() / a.getTotalTime());
+        }
+        @Override public List<com.termo1.radar.core.TrackReplayer.TrackPoint> getTrack() {
+            return null; // IGC pipeline не использует старый TrackPoint
+        }
+        @Override public boolean isThermalActive() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null && df.showRedCore;
+        }
+        @Override public boolean isShowRedCore() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null && df.showRedCore;
+        }
+        @Override public float getThermalBearing() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.thermalBearingDeg : 0;
+        }
+        @Override public float getThermalDistance() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.thermalDistM : 0;
+        }
+        @Override public float getThermalRadius() { return 25f; }
+        @Override public String getGuidanceText() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.guidanceText : "";
+        }
+        @Override public boolean hasRealAccel() { return false; }
+        @Override public float getAccelX() { return 0; }
+        @Override public float getAccelY() { return 0; }
+        @Override public void setSpeed(float v) {}
+        @Override public void setHasSensorData(boolean v) {}
+        @Override public void setAirspeedMs(float v) {}
+        @Override public void setWind(float fromDeg, float speedMs) {}
+        @Override public void start() {}
+        @Override public void stop() {}
+        @Override public void update(long realDeltaMs) {}
+        @Override public void seekTo(float timeSec) {}
+        @Override public boolean loadFile(String filePath) { return false; }
+        @Override public void loadEmbeddedDemoTrack(android.content.Context context) {}
+        @Override public boolean loadSensorZip(String zipPath) { return false; }
+    }
     long simStartMs;
     long lastThermalBeepMs;
     long lastMaxSnrResetMs;
@@ -892,6 +1004,7 @@ public class MainActivity extends Activity {
             logManager.setBaseFileName(baseName);
             logManager.startLogging();
             igcLogger.startLogging();
+            igcLogger.clearLiveTrack(); // IGC pipeline: чистый старт
             // C-11: убрал resetCalibration() — баро калибруется на земле,
             // а GPS-калибровка (baroOffset) происходит на первом точном фиксе
             sensorController.calibrateHeading();
@@ -903,6 +1016,7 @@ public class MainActivity extends Activity {
         @Override
         public void onFlightFinished() {
             igcLogger.stopLogging();
+            igcLogger.clearLiveTrack(); // IGC pipeline: стоп
             logManager.stopLogging();
             android.widget.Toast.makeText(MainActivity.this,
                     "Полёт завершён, лог сохранён", android.widget.Toast.LENGTH_SHORT).show();
@@ -1077,6 +1191,7 @@ public class MainActivity extends Activity {
             @Override
             public void run() {
                 if (!running) return;
+                updateLiveDisplayFrame(); // IGC pipeline: live DisplayFrame
                 radarView.invalidate();
                 renderHandler.postDelayed(this, RENDER_INTERVAL_MS);
             }
@@ -1627,7 +1742,7 @@ public class MainActivity extends Activity {
     long trackPrevFrameMs;
 
     void startTrackReplay(String filePath) {
-        Log.i("TERMO1_REPLAY", "startTrackReplay: filePath=" + filePath);
+        Log.i("TERMO1_REPLAY", "startTrackReplay (IGC pipeline): filePath=" + filePath);
         // Останавливаем запись если активна
         if (logManager.isLogging() || igcLogger.isLogging()) {
             igcLogger.stopLogging();
@@ -1643,56 +1758,71 @@ public class MainActivity extends Activity {
         trailHead = 0;
         trailCount = 0;
 
-        trackReplayer = new TrackReplayer();
-        // Исправлено MA-1: стартуем с 1x скорости (было 5.0f), trackSpeedIdx=0
-        trackReplayer.setSpeed(1.0f);
-        // Определяем, есть ли ZIP с сенсорами
-        boolean hasSensorZip = false;
+        // ===== IGC PIPELINE: парсим трек =====
+        IGCParser.ParseResult result = null;
         if (filePath != null) {
-            boolean loaded = trackReplayer.loadFile(filePath);
-            if (!loaded) {
+            result = IGCParser.parse(filePath);
+            if (result == null || result.track.length < 2) {
                 android.widget.Toast.makeText(MainActivity.this,
                         "Не удалось загрузить трек: " + filePath,
                         android.widget.Toast.LENGTH_LONG).show();
                 trackMode = false;
-                trackReplayer = null;
                 return;
             }
-            String zipPath = filePath.replace(".igc", ".zip");
-            hasSensorZip = new java.io.File(zipPath).exists();
+            Log.i("TERMO1_REPLAY", "IGC parsed: " + result.track.length + " points, "
+                    + "QNH=" + result.qnhHpa + ", CRC=" + (result.crcValid ? "OK" : "MISSING"));
         } else {
-            trackReplayer.loadEmbeddedDemoTrack(MainActivity.this);
-            if (trackReplayer.getTrack() == null || trackReplayer.getTrack().size() < 2) {
+            // Встроенный демо-трек
+            try {
+                result = IGCParser.parse(getResources().openRawResource(
+                        com.termo1.radar.R.raw.track_replay));
+            } catch (Exception e) {
+                android.util.Log.e("TERMO1_REPLAY", "Failed to load demo track", e);
+            }
+            if (result == null || result.track.length < 2) {
                 android.widget.Toast.makeText(MainActivity.this,
                         "Не удалось загрузить встроенный трек",
                         android.widget.Toast.LENGTH_LONG).show();
-                Log.e("TERMO1_REPLAY", "Embedded track load returned null or < 2 points");
+                Log.e("TERMO1_REPLAY", "Embedded track load returned < 2 points");
                 trackMode = false;
-                trackReplayer = null;
                 return;
             }
         }
-        Log.i("TERMO1_REPLAY", "startTrackReplay: track size=" +
-                (trackReplayer.getTrack() != null ? trackReplayer.getTrack().size() : "null"));
-        trackReplayer.setHasSensorData(hasSensorZip);
-        trackReplayer.setAirspeedMs(prefs.getFloat("airspeed_ms", 9.5f));
-        trackReplayer.start();
-        Log.i("TERMO1_REPLAY", "after start: running=" + trackReplayer.isRunning() +
-                " finished=" + trackReplayer.isFinished());
+
+        // Создаём анализатор
+        igcAnalyzer = new IGCAnalyzer(result.track);
+        igcAnalyzer.scrollTo(0);
+        currentDisplayFrame = igcAnalyzer.getCurrentFrame();
+
+        // Bridge для RadarView (делегирует DisplayFrame)
+        trackReplayer = new TrackReplayerDisplayBridge();
+
+        Log.i("TERMO1_REPLAY", "IGC analyzer ready: totalTime=" + igcAnalyzer.getTotalTime()
+                + "s, launchAlt=" + igcAnalyzer.getLaunchAltitude() + "m");
+
         trackPrevFrameMs = 0;
 
-        // Исправлено MA-3: останавливаем GPS и сенсоры — при реплее нужны только данные из IGC
+        // Останавливаем GPS и сенсоры — при реплее нужны только данные из IGC
         gpsManager.stopGps();
         sensorController.unregisterSensors();
+
+        // Загружаем companion ZIP для accel-блипов
+        boolean hasSensorZip = false;
+        if (filePath != null) {
+            String zipPath = filePath.replace(".igc", ".zip");
+            hasSensorZip = new java.io.File(zipPath).exists();
+        }
+        boolean finalHasSensorZip = hasSensorZip;
+        String finalFilePath = filePath;
 
         trackTask = new Runnable() {
             @Override
             public void run() {
-                // Исправлено MA-13: local snapshot trackReplayer для защиты от NPE
-                // Если stopTrackReplay вызывается между проверками trackMode и trackReplayer
-                TrackReplayer tr = trackReplayer;
-                if (!trackMode || tr == null) return;
-                if (tr.isFinished()) {
+                IGCAnalyzer analyzer = igcAnalyzer;
+                if (!trackMode || analyzer == null) return;
+
+                float progress = analyzer.getCurrentTime() / Math.max(analyzer.getTotalTime(), 1f);
+                if (progress >= 1f) {
                     stopTrackReplay();
                     return;
                 }
@@ -1702,82 +1832,25 @@ public class MainActivity extends Activity {
                     realDeltaMs = 0;
                 } else {
                     realDeltaMs = now - trackPrevFrameMs;
-                    if (realDeltaMs > 100) realDeltaMs = 50; // cap for pauses
+                    if (realDeltaMs > 100) realDeltaMs = 50;
                 }
                 trackPrevFrameMs = now;
-                tr.update(realDeltaMs);
 
-                // Feed accel through thermal detector — исправлено TR-12: только если есть реальные данные ZIP
-                if (thermalDetector != null && tr.hasRealAccel()) {
-                    thermalDetector.processSample(tr.getAccelX(), tr.getAccelY());
-                    ThermalBlip detBlip = thermalDetector.getCurrentBlip();
-                    if (detBlip != null) {
-                        long nowMs = System.currentTimeMillis();
-                        if (nowMs - detBlip.bornMs < detBlip.lifeMs) {
-                            synchronized (thermalLock) {
-                                boolean found = false;
-                                for (ThermalBlip tb : thermals) {
-                                    if (tb.bornMs == detBlip.bornMs) {
-                                        tb.distance = detBlip.distance;
-                                        tb.strength = detBlip.strength;
-                                        tb.angle = detBlip.angle;
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                                if (!found) {
-                                    thermals.add(detBlip);
-                                    while (thermals.size() > THERMAL_LIMIT) thermals.remove(0);
-                                }
-                            }
-                        }
-                    }
+                // Продвигаем анализатор
+                float simDt = (realDeltaMs / 1000f) * 1.0f; // 1x speed default
+                analyzer.advance(simDt);
+
+                // Публикуем DisplayFrame (thread-safe: volatile write)
+                currentDisplayFrame = analyzer.getCurrentFrame();
+
+                // Accel blips из companion ZIP (add-on)
+                if (finalHasSensorZip && thermalDetector != null && finalFilePath != null) {
+                    feedAccelFromZip(analyzer, finalFilePath);
                 }
 
-                // Add persistent thermal blip from replayer
-                if (tr.isThermalActive()) {
-                    long nowMs = System.currentTimeMillis();
-                    synchronized (thermalLock) {
-                        Iterator<ThermalBlip> it = thermals.iterator();
-                        while (it.hasNext()) {
-                            if (!it.next().isAlive(nowMs)) it.remove();
-                        }
-                        boolean hasBlip = false;
-                        for (ThermalBlip tb : thermals) {
-                            if (Math.abs(tb.angle - tr.getThermalBearing()) < 20f
-                                    && Math.abs(tb.distance - tr.getThermalDistance()) < 30f) {
-                                tb.distance = tr.getThermalDistance();
-                                tb.angle = tr.getThermalBearing();
-                                hasBlip = true;
-                                break;
-                            }
-                        }
-                        if (!hasBlip) {
-                            float strength = tr.isShowRedCore() ? 8f : 4f;
-                            ThermalBlip tb = new ThermalBlip(
-                                    tr.getThermalBearing(),
-                                    strength,
-                                    tr.getThermalDistance(),
-                                    "track",
-                                    nowMs
-                            );
-                            // BUG-6 FIX: set adaptive lifeMs like ThermalDetector does
-                            if (tr.isShowRedCore()) {
-                                tb.lifeMs = 12000L;
-                            } else if (strength > 3f) {
-                                tb.lifeMs = 8000L;
-                            } else {
-                                tb.lifeMs = 3000L;
-                            }
-                            thermals.add(tb);
-                            while (thermals.size() > THERMAL_LIMIT) thermals.remove(0);
-                        }
-                    }
-                }
-
-                // NEW-03: не постить если на паузе
-                if (!tr.isPaused()) {
-                    trackHandler.postDelayed(this, 20);
+                // Продолжаем
+                if (!trackHandler.postDelayed(this, 20)) {
+                    Log.e("TERMO1_REPLAY", "Failed to post trackTask");
                 }
             }
         };
@@ -1785,16 +1858,91 @@ public class MainActivity extends Activity {
 
         // Статус и подгрузка карты под трек
         trackFileName = filePath != null ? new java.io.File(filePath).getName() : "встроенный";
-        trackSpeedIdx = 0; // 1x по умолчанию (NEW-01)
+        trackSpeedIdx = 0;
         String trackName = trackFileName;
-        currentStatus = "▶ Проигрываем: " + trackName;
-        // Исправлено MA-1: Toast показывает реальную скорость (1x по умолчанию)
+        currentStatus = "▶ IGC Проигрываем: " + trackName;
         android.widget.Toast.makeText(MainActivity.this,
                 "▶ " + trackName + " (1x)", android.widget.Toast.LENGTH_SHORT).show();
 
         // Форсированная загрузка карты в координатах трека
-        if (filePath != null && trackReplayer.getLat() != 0.0 && trackReplayer.getLon() != 0.0) {
-            staticMapLoader.forceUpdate(trackReplayer.getLat(), trackReplayer.getLon(), 14);
+        DisplayFrame frame = currentDisplayFrame;
+        if (frame != null && frame.pilotLat != 0.0 && frame.pilotLon != 0.0) {
+            staticMapLoader.forceUpdate(frame.pilotLat, frame.pilotLon, 14);
+        }
+    }
+
+    /**
+     * Accel блипы из companion ZIP (add-on к IGC pipeline).
+     * Читает из ZIP в соответствии с текущей позицией IGCAnalyzer.
+     */
+    private void feedAccelFromZip(IGCAnalyzer analyzer, String filePath) {
+        String zipPath = filePath.replace(".igc", ".zip");
+        java.io.File zipFile = new java.io.File(zipPath);
+        if (!zipFile.exists()) return;
+
+        // Простейшая реализация: открываем ZIP, ищем CSV, парсим построчно
+        // до позиции analyzer.getCurrentTime()
+        try (java.util.zip.ZipInputStream zis =
+                     new java.util.zip.ZipInputStream(new java.io.FileInputStream(zipPath))) {
+            java.util.zip.ZipEntry entry;
+            while ((entry = zis.getNextEntry()) != null) {
+                if (!entry.getName().endsWith(".csv")) {
+                    zis.closeEntry();
+                    continue;
+                }
+                java.io.BufferedReader br =
+                        new java.io.BufferedReader(new java.io.InputStreamReader(zis));
+                br.readLine(); // skip header
+                float trackTimeSec = analyzer.getCurrentTime();
+                long targetDtMs = (long)(trackTimeSec * 1000f);
+
+                String line;
+                while ((line = br.readLine()) != null) {
+                    String[] parts = line.split(",");
+                    if (parts.length < 10) continue;
+                    try {
+                        long dtMs = Long.parseLong(parts[0]);
+                        if (dtMs > targetDtMs + 100) break; // past our position
+                        if (Math.abs(dtMs - targetDtMs) < 200) {
+                            float axMg = Float.parseFloat(parts[9]);
+                            float ayMg = Float.parseFloat(parts[10]);
+                            // Feed to thermal detector
+                            if (thermalDetector != null) {
+                                float axG = axMg / 1000f;
+                                float ayG = ayMg / 1000f;
+                                thermalDetector.processSample(axG, ayG);
+                                ThermalBlip detBlip = thermalDetector.getCurrentBlip();
+                                if (detBlip != null) {
+                                    long nowMs = System.currentTimeMillis();
+                                    if (nowMs - detBlip.bornMs < detBlip.lifeMs) {
+                                        synchronized (thermalLock) {
+                                            boolean found = false;
+                                            for (ThermalBlip tb : thermals) {
+                                                if (tb.bornMs == detBlip.bornMs) {
+                                                    tb.distance = detBlip.distance;
+                                                    tb.strength = detBlip.strength;
+                                                    tb.angle = detBlip.angle;
+                                                    found = true;
+                                                    break;
+                                                }
+                                            }
+                                            if (!found) {
+                                                thermals.add(detBlip);
+                                                while (thermals.size() > THERMAL_LIMIT)
+                                                    thermals.remove(0);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                }
+                zis.closeEntry();
+                break;
+            }
+        } catch (Exception e) {
+            android.util.Log.e("TERMO1_REPLAY", "Accel feed error: " + zipPath, e);
         }
     }
 
@@ -1811,6 +1959,9 @@ public class MainActivity extends Activity {
             trackHandler.removeCallbacks(trackTask);
             trackTask = null;
         }
+        // IGC pipeline cleanup
+        igcAnalyzer = null;
+        currentDisplayFrame = null;
         if (trackReplayer != null) {
             trackReplayer.stop();
             trackReplayer = null;
@@ -1908,9 +2059,40 @@ public class MainActivity extends Activity {
         }
     }
 
-    // ========================================================================
-    // Back button
-    // ========================================================================
+    /**
+     * Обновить live DisplayFrame из IGC-логгера (1.5Hz, каждые 666ms).
+     * Вызывается из renderTask.
+     */
+    void updateLiveDisplayFrame() {
+        // Только если идёт запись IGC и не в режиме реплея
+        if (trackMode || igcLogger == null || !igcLogger.isLogging()) return;
+
+        long now = System.currentTimeMillis();
+        if (now - lastLiveIgcAnalyzeMs < 666) return; // 1.5Hz
+        lastLiveIgcAnalyzeMs = now;
+
+        // Получить live трек из IGC-логгера
+        com.termo1.radar.igc.TrackPoint[] liveTrack = igcLogger.getLiveTrackArray();
+        if (liveTrack == null || liveTrack.length < 2) return;
+
+        // Создать/обновить анализатор
+        liveAnalyzer = new IGCAnalyzer(liveTrack);
+        liveAnalyzer.scrollTo(liveAnalyzer.getTotalTime()); // на последнюю позицию
+
+        // Публикуем DisplayFrame
+        currentDisplayFrame = liveAnalyzer.getCurrentFrame();
+
+        // Bridge: trackReplayer читает из DisplayFrame для RadarView
+        // (trackReplayer уже установлен в onCreate как TrackReplayerDisplayBridge)
+    }
+
+    /**
+     * Доступ к текущему DisplayFrame для RadarView.
+     * Работает в обоих режимах: реплей (IGC pipeline) и live.
+     */
+    public DisplayFrame displayFrame() {
+        return currentDisplayFrame;
+    }
 
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {

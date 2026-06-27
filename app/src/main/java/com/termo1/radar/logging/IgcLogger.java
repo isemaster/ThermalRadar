@@ -254,6 +254,31 @@ public class IgcLogger {
         Log.i(TAG, "IGC logging STOPPED: " + currentFileName + " (" + seqNum + " records)");
     }
 
+    // IGC pipeline: live track buffer (for real-time IGC analysis)
+    private final java.util.ArrayList<com.termo1.radar.igc.TrackPoint> liveTrack =
+            new java.util.ArrayList<>();
+    private static final int LIVE_TRACK_MAX = 7200; // 2 hours at 5Hz = 36000, use 7200 (1Hz)
+
+    /** Получить текущий путь к IGC-файлу */
+    public String getCurrentFilePath() {
+        if (logDir == null || currentFileName == null) return null;
+        return new java.io.File(new java.io.File(logDir, "igc"), currentFileName).getAbsolutePath();
+    }
+
+    /** Получить live track buffer (для IGC pipeline) */
+    public com.termo1.radar.igc.TrackPoint[] getLiveTrackArray() {
+        synchronized (liveTrack) {
+            return liveTrack.toArray(new com.termo1.radar.igc.TrackPoint[0]);
+        }
+    }
+
+    /** Очистить live track buffer (при старте/стопе полёта) */
+    public void clearLiveTrack() {
+        synchronized (liveTrack) {
+            liveTrack.clear();
+        }
+    }
+
     public boolean isLogging() { return logging; }
 
     // ========================================================================
@@ -301,6 +326,21 @@ public class IgcLogger {
                 elapsed, lat, lon,
                 baroAlt, gpsAlt, fixAge, acc, hasFix);
         writeLine(bRecord);
+
+        // IGC pipeline: push to live track buffer (1Hz, every 5th B-record)
+        // We push at 1Hz to keep buffer size manageable
+        if (seqNum % 5 == 1) {
+            synchronized (liveTrack) {
+                float timeSec = elapsed / 1000f;
+                com.termo1.radar.igc.TrackPoint tp =
+                    new com.termo1.radar.igc.TrackPoint(
+                        lat, lon, baroAlt, gpsAlt, timeSec, hasFix);
+                liveTrack.add(tp);
+                if (liveTrack.size() > LIVE_TRACK_MAX) {
+                    liveTrack.remove(0);
+                }
+            }
+        }
     }
 
     /**
