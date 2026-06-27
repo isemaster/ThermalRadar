@@ -294,6 +294,10 @@ public class MainActivity extends Activity {
             DisplayFrame df = currentDisplayFrame;
             return df != null ? df.altitudeMsl : 0;
         }
+        @Override public float getLaunchAltitude() {
+            DisplayFrame df = currentDisplayFrame;
+            return df != null ? df.launchAltitude : 0;
+        }
         @Override public float getSpeed() {
             DisplayFrame df = currentDisplayFrame;
             return df != null ? df.speedMs : 0;
@@ -337,7 +341,17 @@ public class MainActivity extends Activity {
             return Math.min(1, a.getCurrentTime() / a.getTotalTime());
         }
         @Override public List<com.termo1.radar.core.TrackReplayer.TrackPoint> getTrack() {
-            return null; // IGC pipeline не использует старый TrackPoint
+            IGCAnalyzer a = igcAnalyzer;
+            if (a == null) return null;
+            com.termo1.radar.igc.TrackPoint[] igcTrack = a.getTrack();
+            if (igcTrack == null || igcTrack.length < 2) return null;
+            List<com.termo1.radar.core.TrackReplayer.TrackPoint> result =
+                    new ArrayList<>(igcTrack.length);
+            for (com.termo1.radar.igc.TrackPoint tp : igcTrack) {
+                result.add(new com.termo1.radar.core.TrackReplayer.TrackPoint(
+                        tp.lat, tp.lon, tp.displayAltM, tp.timeSec));
+            }
+            return result;
         }
         @Override public boolean isThermalActive() {
             DisplayFrame df = currentDisplayFrame;

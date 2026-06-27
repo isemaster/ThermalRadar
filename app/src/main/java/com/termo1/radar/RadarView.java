@@ -1972,53 +1972,61 @@ public class RadarView extends View implements View.OnClickListener {
 
 
 
-        float headingDisplay = a.getCompassHeading();
+        float headingDisplayFinal;
 
-        long headingFrameMs = SystemClock.elapsedRealtime();
+        float varioDisplay;
 
-        if (!a.headingDisplayInitialized) {
+        if (a.trackMode && a.trackReplayer != null && a.trackReplayer.isRunning()) {
 
-            a.headingDisplaySmoothed = headingDisplay;
+            // North-up для реплея: heading=0, пропускаем smoothing от живого компаса
 
-            a.headingDisplayInitialized = true;
-
-            a.lastHeadingFrameMs = headingFrameMs;
-
-        } else {
-
-            double dtSec = (headingFrameMs - a.lastHeadingFrameMs) / 1000.0;
-
-            a.lastHeadingFrameMs = headingFrameMs;
-
-            double smoothingFactor = 1.0 - Math.pow(0.1, dtSec / 0.1);
-
-            if (smoothingFactor > 1.0) smoothingFactor = 1.0;
-
-            if (smoothingFactor < 0.01) smoothingFactor = 0.01;
-
-            float diff = ((headingDisplay - a.headingDisplaySmoothed + 540f) % 360f) - 180f;
-
-            a.headingDisplaySmoothed = (float)((a.headingDisplaySmoothed + diff * smoothingFactor + 360f) % 360f);
-
-        }
-
-        float headingDisplayFinal = a.headingDisplaySmoothed;
-
-        float varioDisplay = a.sensorController.getVario();
-
-        if (a.scenarioMode && a.flightSim != null && a.flightSim.isRunning()) {
-
-            headingDisplay = a.flightSim.getHeading();
-
-            varioDisplay = a.flightSim.getVario();
-
-        } else if (a.trackMode && a.trackReplayer != null && a.trackReplayer.isRunning()) {
-
-            headingDisplay = a.trackReplayer.getHeading();
+            headingDisplayFinal = 0f;
 
             varioDisplay = a.trackReplayer.getVario();
 
-            // Исправлено MA-7: не зануляем heading в a.trackMode — радар track-up
+            a.headingDisplayInitialized = false;
+
+        } else if (a.scenarioMode && a.flightSim != null && a.flightSim.isRunning()) {
+
+            headingDisplayFinal = a.flightSim.getHeading();
+
+            varioDisplay = a.flightSim.getVario();
+
+        } else {
+
+            float headingDisplay = a.getCompassHeading();
+
+            long headingFrameMs = SystemClock.elapsedRealtime();
+
+            if (!a.headingDisplayInitialized) {
+
+                a.headingDisplaySmoothed = headingDisplay;
+
+                a.headingDisplayInitialized = true;
+
+                a.lastHeadingFrameMs = headingFrameMs;
+
+            } else {
+
+                double dtSec = (headingFrameMs - a.lastHeadingFrameMs) / 1000.0;
+
+                a.lastHeadingFrameMs = headingFrameMs;
+
+                double smoothingFactor = 1.0 - Math.pow(0.1, dtSec / 0.1);
+
+                if (smoothingFactor > 1.0) smoothingFactor = 1.0;
+
+                if (smoothingFactor < 0.01) smoothingFactor = 0.01;
+
+                float diff = ((headingDisplay - a.headingDisplaySmoothed + 540f) % 360f) - 180f;
+
+                a.headingDisplaySmoothed = (float)((a.headingDisplaySmoothed + diff * smoothingFactor + 360f) % 360f);
+
+            }
+
+            headingDisplayFinal = a.headingDisplaySmoothed;
+
+            varioDisplay = a.sensorController.getVario();
 
         }
 
@@ -2255,17 +2263,18 @@ public class RadarView extends View implements View.OnClickListener {
 
 
             // Текущий курс пилота: по КОМПАСУ (куда смотрит нос)
-
-            float pilotTrack = a.getCompassHeading();
-
-
+            float pilotTrack;
+            if (a.trackMode && a.trackReplayer != null && a.trackReplayer.isRunning()) {
+                // При реплее: heading из DisplayFrame (GPS track направление)
+                com.termo1.radar.igc.DisplayFrame df = a.displayFrame();
+                pilotTrack = (df != null) ? df.headingDeg : 0f;
+            } else {
+                pilotTrack = a.getCompassHeading();
+            }
 
             // Определяем знак: если движемся вбок/назад относительно курса
-
             float angleDiff = Math.abs(netBearing - pilotTrack);
-
             if (angleDiff > 180f) angleDiff = 360f - angleDiff;
-
             boolean goingBackward = angleDiff > 120f;
 
 
@@ -2372,7 +2381,7 @@ public class RadarView extends View implements View.OnClickListener {
 
         if (a.trackMode && a.trackReplayer != null && a.trackReplayer.isRunning()) {
 
-            aglForRange = a.trackReplayer.getAltitude();
+            aglForRange = Math.max(0, a.trackReplayer.getAltitude() - a.trackReplayer.getLaunchAltitude());
 
         } else {
 

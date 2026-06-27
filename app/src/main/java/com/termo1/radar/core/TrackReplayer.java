@@ -27,7 +27,7 @@ public class TrackReplayer {
         public final double lat, lon;
         public final float altMeters; // pressure altitude in meters
         public final float timeSec;   // seconds from start of flight
-        TrackPoint(double lat, double lon, float alt, float timeSec) {
+        public TrackPoint(double lat, double lon, float alt, float timeSec) {
             this.lat = lat; this.lon = lon;
             this.altMeters = alt; this.timeSec = timeSec;
         }
