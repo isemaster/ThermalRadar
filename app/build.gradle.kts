@@ -14,8 +14,8 @@ android {
         applicationId = "com.termo1.radar"
         minSdk = 26
         targetSdk = 34
-        versionCode = 100
-        versionName = "0.3.1"
+        versionCode = 101
+        versionName = "0.3.2"
     }
 
     buildTypes {
