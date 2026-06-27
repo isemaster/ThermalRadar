@@ -38,7 +38,7 @@ public class IGCAnalyzer {
     private static final float THERMAL_CONFIRM_TIME = 8f;
     private static final int AVG_WINDOW = 5;
     private static final float VARIO_AVG_WINDOW_SEC = 30f;
-    private static final float WIND_EMA_ALPHA = 0.08f; // smoothing (was 0.15)
+    private static final int WIND_BUF_MAX = 100; // 100s sliding window
     private static final float AIRSPEED_MS = 9.5f;
 
     // ========================================================================
@@ -62,12 +62,17 @@ public class IGCAnalyzer {
     private boolean hasLastFrame;
     private float lastFrameAlt;
 
-    // 5-сек rolling avg
+    // 5-сек rolling avg for speed
     private final float[] speedAvgBuf = new float[AVG_WINDOW];
-    private final float[] windDirAvgBuf = new float[AVG_WINDOW];
-    private final float[] windSpdAvgBuf = new float[AVG_WINDOW];
     private int avgIdx = 0;
     private int avgCount = 0;
+
+    // Wind 100s sliding window (ring buffer, ~1Гц)
+    private final float[] windDirBuf = new float[WIND_BUF_MAX];
+    private final float[] windSpdBuf = new float[WIND_BUF_MAX];
+    private final float[] windTimeBuf = new float[WIND_BUF_MAX];
+    private int windHead = 0;
+    private int windCount = 0;
 
     // L/D буфер (8 сек, ~1Гц)
     private static final int LD_BUF_MAX = 16;
@@ -264,10 +269,16 @@ public class IGCAnalyzer {
             smoothSpeed = smoothSpeed * 0.3f + segSpeed * 0.7f;
 
             speedAvgBuf[avgIdx] = smoothSpeed;
-            windDirAvgBuf[avgIdx] = smoothWindDir;
-            windSpdAvgBuf[avgIdx] = smoothWindSpd;
             avgIdx = (avgIdx + 1) % AVG_WINDOW;
             if (avgCount < AVG_WINDOW) avgCount++;
+            // Wind ring buffer (100s sliding window)
+            if (smoothWindDir >= 0) {
+                windDirBuf[windHead] = smoothWindDir;
+                windSpdBuf[windHead] = smoothWindSpd;
+                windTimeBuf[windHead] = currentTimeSec;
+                windHead = (windHead + 1) % WIND_BUF_MAX;
+                if (windCount < WIND_BUF_MAX) windCount++;
+            }
         }
 
         hasLastFrame = true;
@@ -440,7 +451,7 @@ public class IGCAnalyzer {
         float speed = getSpeedMs();
         if (speed < 0.5f) return;
 
-        // Simple: along-track wind (no compass needed)
+        // Along-track wind (no compass needed)
         float alongWind = speed - AIRSPEED_MS;
         float windSpd = Math.abs(alongWind);
         if (windSpd < 0.3f) return;
@@ -450,24 +461,23 @@ public class IGCAnalyzer {
         if (windDir >= 360) windDir -= 360;
 
         // Crosswind rejection
-        if (smoothWindSpd > 0) {
-            float dirDiff = Math.abs(windDir - smoothWindDir);
-            if (dirDiff > 180) dirDiff = 360 - dirDiff;
-            if (dirDiff > 90) return;
+        if (windCount > 0) {
+            float avgDir = getWindFromDeg();
+            if (avgDir >= 0) {
+                float dirDiff = Math.abs(windDir - avgDir);
+                if (dirDiff > 180) dirDiff = 360 - dirDiff;
+                if (dirDiff > 90) return;
+            }
         }
 
-        // EMA
+        // Просто сохраняем в smoothWindDir/Spd для внутренних расчётов
+        // (getWindFromDeg/getWindSpeedMs используют кольцевой буфер)
         if (smoothWindSpd < 0 || smoothWindDir < 0) {
             smoothWindDir = windDir;
             smoothWindSpd = windSpd;
         } else {
-            float diff = windDir - smoothWindDir;
-            while (diff > 180) diff -= 360;
-            while (diff < -180) diff += 360;
-            smoothWindDir += WIND_EMA_ALPHA * diff;
-            if (smoothWindDir < 0) smoothWindDir += 360;
-            if (smoothWindDir >= 360) smoothWindDir -= 360;
-            smoothWindSpd += WIND_EMA_ALPHA * (windSpd - smoothWindSpd);
+            smoothWindDir = windDir;
+            smoothWindSpd = windSpd;
         }
     }
 
@@ -496,13 +506,9 @@ public class IGCAnalyzer {
                             smoothWindDir = windFrom;
                             smoothWindSpd = driftSpeed;
                         } else {
-                            float diff = windFrom - smoothWindDir;
-                            while (diff > 180) diff -= 360;
-                            while (diff < -180) diff += 360;
-                            smoothWindDir += WIND_EMA_ALPHA * diff;
-                            if (smoothWindDir < 0) smoothWindDir += 360;
-                            if (smoothWindDir >= 360) smoothWindDir -= 360;
-                            smoothWindSpd += WIND_EMA_ALPHA * (driftSpeed - smoothWindSpd);
+                            // Напрямую — сглаживание через кольцевой буфер
+                            smoothWindDir = windFrom;
+                            smoothWindSpd = driftSpeed;
                         }
                     }
                 }
@@ -627,11 +633,39 @@ public class IGCAnalyzer {
     }
 
     public float getWindFromDeg() {
-        return avgCount > 0 ? calcWindDir5() : smoothWindDir;
+        if (windCount < 2) return smoothWindDir;
+        float now = currentTimeSec;
+        float minTime = now - 100f;
+        double sumSin = 0, sumCos = 0;
+        int cnt = 0;
+        for (int i = 0; i < windCount; i++) {
+            int idx = (windHead - 1 - i + WIND_BUF_MAX) % WIND_BUF_MAX;
+            if (windTimeBuf[idx] < minTime) break;
+            double rad = Math.toRadians(windDirBuf[idx]);
+            sumSin += Math.sin(rad);
+            sumCos += Math.cos(rad);
+            cnt++;
+        }
+        if (cnt < 2) return smoothWindDir;
+        float avg = (float) Math.toDegrees(Math.atan2(sumSin / cnt, sumCos / cnt));
+        if (avg < 0) avg += 360;
+        return avg;
     }
 
     public float getWindSpeedMs() {
-        return avgCount > 0 ? calcAvg5(windSpdAvgBuf) : smoothWindSpd;
+        if (windCount < 2) return smoothWindSpd;
+        float now = currentTimeSec;
+        float minTime = now - 100f;
+        float sum = 0;
+        int cnt = 0;
+        for (int i = 0; i < windCount; i++) {
+            int idx = (windHead - 1 - i + WIND_BUF_MAX) % WIND_BUF_MAX;
+            if (windTimeBuf[idx] < minTime) break;
+            sum += windSpdBuf[idx];
+            cnt++;
+        }
+        if (cnt < 2) return smoothWindSpd;
+        return sum / cnt;
     }
 
     public float getAvgVario30() {
@@ -730,23 +764,7 @@ public class IGCAnalyzer {
         return sum / avgCount;
     }
 
-    private float calcWindDir5() {
-        if (avgCount == 0) return smoothWindDir;
-        double sx = 0, sy = 0;
-        int n = 0;
-        for (int i = 0; i < avgCount; i++) {
-            if (windDirAvgBuf[i] >= 0) {
-                double rad = Math.toRadians(windDirAvgBuf[i]);
-                sx += Math.sin(rad);
-                sy += Math.cos(rad);
-                n++;
-            }
-        }
-        if (n == 0) return smoothWindDir;
-        float avg = (float) Math.toDegrees(Math.atan2(sx / n, sy / n));
-        if (avg < 0) avg += 360;
-        return avg;
-    }
+
 
     // ========================================================================
     // HUD formatting (zero-allocation cache)

@@ -1688,11 +1688,11 @@ public class RadarView extends View implements View.OnClickListener {
 
             {
 
-                int start = (trailCount < GPS_TRAIL_MAX) ? 0
+                int start = (a.trailCount < GPS_TRAIL_MAX) ? 0
 
                         : (a.trailHead) % GPS_TRAIL_MAX;
 
-                int n = Math.min(trailCount, GPS_TRAIL_MAX);
+                int n = Math.min(a.trailCount, GPS_TRAIL_MAX);
 
                 int idx = start;
 
@@ -2184,17 +2184,30 @@ public class RadarView extends View implements View.OnClickListener {
 
         float glideBarY2 = btnAreaTop + 30;
 
-        boolean glideBackward = false;
 
 
-
-        // L/D — из буфера GPS + поляра как fallback
+        // L/D — при реплее из DisplayFrame, иначе из буфера GPS
 
         float glideRatio = 0f;
 
         boolean glideValid = false;
 
-        if (glideBufCount >= 2) {
+        boolean glideBackward = false;
+
+        if (a.trackMode && a.trackReplayer != null && a.trackReplayer.isRunning()) {
+            // При реплее: L/D из IGCAnalyzer (DisplayFrame)
+            com.termo1.radar.igc.DisplayFrame df = a.displayFrame();
+            if (df != null) {
+                glideRatio = df.glideRatio;
+                glideValid = (df.glideRatio != 0f || df.glideRangeKm != 0f);
+                glideBackward = df.goingBack;
+                if (glideBackward) {
+                    String statusStr = "СНОС НАЗАД";
+                    a.currentStatus = statusStr;
+                    a.previousStatus = "";
+                }
+            }
+        } else if (glideBufCount >= 2) {
 
             int newestIdx = (glideBufHead - 1 + GLIDE_BUF_MAX) % GLIDE_BUF_MAX;
 
