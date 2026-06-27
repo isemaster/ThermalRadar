@@ -239,4 +239,68 @@ public class VarioManager {
     public void calibrateFromGps(float gpsAltitude) {
         baroOffset = gpsAltitude - altRaw;
     }
+
+    // ========================================================================
+    // Инжекция высоты для реплея IGC (аналог FlyMe h/a → vario)
+    // ========================================================================
+    /**
+     * Инжектировать высоту напрямую (вместо processPressureSample).
+     * Используется TrackReplayer: высота известна из IGC B-record,
+     * не нужно пересчитывать из давления.
+     * Vario вычисляется через стандартный буфер + скользящее среднее.
+     */
+    public void injectAltitudeMsl(float altMeters) {
+        long nowNanos = SystemClock.elapsedRealtimeNanos();
+
+        if (baroCalibCount < BARO_CALIB_SAMPLES) {
+            altRaw = altMeters;
+            altFiltered = altMeters;
+            prevAltRaw = altMeters;
+            lastBaroNanos = nowNanos;
+            baroCalibCount++;
+            return;
+        }
+
+        // EMA как в processPressureSample
+        float alpha = getVarioAlpha();
+        altFiltered = alpha * altFiltered + (1f - alpha) * altMeters;
+
+        // Vario = конечная разность
+        long dtNanos = nowNanos - lastBaroNanos;
+        lastBaroNanos = nowNanos;
+        long dtMs = dtNanos / 1_000_000;
+        if (dtMs > 1) {
+            float rawVario = (altMeters - prevAltRaw) * 1000f / (float) dtMs;
+            prevAltRaw = altMeters;
+
+            long nowMs = SystemClock.elapsedRealtime();
+            varioBuf[varioHead] = rawVario;
+            varioTimeBuf[varioHead] = nowMs;
+            varioHead = (varioHead + 1) % VARIO_BUF_SIZE;
+            if (varioHead == varioTail) {
+                varioTail = (varioTail + 1) % VARIO_BUF_SIZE;
+            }
+
+            // Скользящее среднее за 750 мс
+            long cutoff = nowMs - VARIO_WINDOW_MS;
+            float sum = 0f;
+            int count = 0;
+            int idx = varioTail;
+            while (idx != varioHead) {
+                if (varioTimeBuf[idx] >= cutoff) {
+                    sum += varioBuf[idx];
+                    count++;
+                }
+                idx = (idx + 1) % VARIO_BUF_SIZE;
+            }
+            vario = (count > 0) ? sum / count : 0f;
+            if (Math.abs(vario) < VARIO_DEADBAND) vario = 0f;
+        }
+
+        // HPF + RMS для SNR
+        float hp = altMeters - altFiltered;
+        hpBuf[hpBufIdx] = hp;
+        hpBufIdx = (hpBufIdx + 1) & (HP_BUF_SIZE - 1);
+        if (hpBufFill < HP_BUF_SIZE) hpBufFill++;
+    }
 }

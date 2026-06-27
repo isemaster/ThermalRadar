@@ -149,4 +149,33 @@ public class GpsManager {
 
     /** Количество спутников, используемых в fix */
     public int getSatelliteCount() { return satelliteCount; }
+
+    // ========================================================================
+    // Инжекция данных для реплея IGC (аналог FlyMe o/j.a)
+    // ========================================================================
+    /**
+     * Подать IGC-точку в GpsManager как если бы это был живой GPS-фикс.
+     * Используется TrackReplayer в режиме simulation.
+     * Устанавливает volatile поля напрямую, без FusedLocationProviderClient.
+     */
+    public void injectLocation(double lat, double lon, float altMsl,
+                               float speedMs, float headingDeg, long timestampMs) {
+        gpsLat = lat;
+        gpsLon = lon;
+        gpsAltitude = altMsl;
+        gpsSpeed = speedMs;
+        gpsHeading = headingDeg;
+        gpsAccuracy = 5f; // симуляция: точный GPS
+        lastFixMs = SystemClock.elapsedRealtime();
+        gpsReady = true;
+
+        if (!altitudeInitialized) {
+            startAltitude = altMsl;
+            altitudeInitialized = true;
+        }
+        // Калибровка баро по GPS-высоте (исправлено C-08)
+        if (sensorController != null) {
+            sensorController.calibrateBaroFromGps(gpsAltitude);
+        }
+    }
 }

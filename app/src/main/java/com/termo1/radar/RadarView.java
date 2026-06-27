@@ -2100,6 +2100,43 @@ public class RadarView extends View implements View.OnClickListener {
 
 
 
+        // ========================================================================
+        // FlyMe-style Thermal Helper (vario dots + 3D circle + HUD arrow)
+        // ========================================================================
+
+        // 1. Vario-хелперы — цветные точки на треке (аналог FlyMe showVarioHelpers)
+        if (a.thermalHelperPainter != null) {
+            a.thermalHelperPainter.drawVarioHelpers(canvas,
+                trailPxBuf, trailPyBuf, trailCount,
+                a.sensorController);
+        }
+
+        // 2. 3D термик-круг при крутке (аналог FlyMe drawThermal3d)
+        boolean isCircling = a.trackMode
+            ? (a.trackReplayer != null && a.trackReplayer.isShowRedCore())
+            : a.circlingManager.isCircling();
+        if (a.thermalHelperPainter != null && isCircling) {
+            float thermalCx = w / 2f;
+            float thermalCy = trailCy;
+            // Смещаем круг по направлению к термику (из TrackReplayer или CirclingManager)
+            if (a.trackMode && a.trackReplayer != null) {
+                float bearing = a.trackReplayer.getThermalBearing();
+                float dist = a.trackReplayer.getThermalDistance();
+                if (dist > 0 && !Float.isNaN(bearing)) {
+                    float bearingRad = (float) Math.toRadians(bearing);
+                    float distPx = Math.min(dist / 150f * trailR, trailR * 0.3f);
+                    thermalCx += (float) Math.sin(bearingRad) * distPx;
+                    thermalCy -= (float) Math.cos(bearingRad) * distPx;
+                }
+            } else if (a.circlingManager != null && a.circlingManager.isCircling()) {
+                // Live mode: центр крутки — по курсу пилота (getCircleCenter не реализован)
+                float bearingRad = (float) Math.toRadians(a.gpsManager.getHeading());
+                thermalCx = (w / 2f) + (float) Math.sin(bearingRad) * trailR * 0.15f;
+                thermalCy = trailCy - (float) Math.cos(bearingRad) * trailR * 0.15f;
+            }
+            a.thermalHelperPainter.drawThermalCircle3d(canvas, thermalCx, thermalCy, true);
+        }
+
         // "крутим термик" — по центру радара (исправлено MA-9: a.trackMode → a.trackReplayer)
 
         boolean showCirclingLabel = (!a.trackMode && a.circlingManager.isShowThermalLabel())
@@ -2158,7 +2195,25 @@ public class RadarView extends View implements View.OnClickListener {
 
         canvas.restore();
 
+        // 3. HUD-стрелка ближайшего термика (аналог FlyMe BoxNearThermal)
+        if (a.thermalHelperPainter != null) {
+            float thermalBearing = -1f;
+            float thermalDist = 0f;
+            if (a.trackMode && a.trackReplayer != null) {
+                thermalBearing = a.trackReplayer.getThermalBearing();
+                thermalDist = a.trackReplayer.getThermalDistance();
+            } else if (a.flightSim != null && a.flightSim.isRunning()) {
+                thermalBearing = a.flightSim.getThermalBearing();
+                thermalDist = a.flightSim.getThermalDistance();
+            }
+            float hudX = w * 0.85f;
+            float hudY = localInstrH + localRadarH * 0.85f;
+            a.thermalHelperPainter.drawThermalHud(canvas,
+                    a.gpsManager.getHeading(), thermalBearing, thermalDist,
+                    hudX, hudY);
+        }
 
+        // === Track player controls
 
         // === Track player controls (под кругом радара, на карте) ===
 

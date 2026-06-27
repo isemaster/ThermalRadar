@@ -52,6 +52,7 @@ import com.termo1.radar.model.ThermalBlip;
 import com.termo1.radar.sensors.SensorController;
 import com.termo1.radar.sensors.VarioManager;
 import com.termo1.radar.ui.RadarRenderer;
+import com.termo1.radar.ui.ThermalHelperPainter;
 import com.termo1.radar.ui.HudController;
 import com.termo1.radar.ui.StatusManager;
 import com.termo1.radar.ui.SettingsActivity;
@@ -195,6 +196,7 @@ public class MainActivity extends Activity {
 
     RadarView radarView;
     RadarRenderer radarRenderer;
+    ThermalHelperPainter thermalHelperPainter;
     UiManager uiManager;
     VarioSoundManager varioSoundManager;
     AlertDialog exitDialog;
@@ -580,6 +582,7 @@ public class MainActivity extends Activity {
 
         // Renderer + UI
         radarRenderer = new RadarRenderer();
+        thermalHelperPainter = new ThermalHelperPainter();
         uiManager = new UiManager();
         uiManager.setDensity(getResources().getDisplayMetrics().density);
         uiManager.setNightMode(prefs.getBoolean("night_mode", false));
