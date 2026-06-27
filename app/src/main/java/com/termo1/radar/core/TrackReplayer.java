@@ -1003,6 +1003,8 @@ public class TrackReplayer {
     public float getGyroZ() { return gyroZ; }
     public float getAccelX() { return accelX; }
     public float getAccelY() { return accelY; }
+    /** Высота старта (первая точка IGC) — для AGL. По умолч. 0, переопределяется в bridge. */
+    public float getLaunchAltitude() { return 0f; }
     /** Исправлено TR-12: есть ли реальные данные акселерометра из ZIP */
     public boolean hasRealAccel() { return hasSensorData && sensorData != null && !sensorData.isEmpty(); }
 

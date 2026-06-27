@@ -166,7 +166,7 @@ public class HudController {
         hudSb.setLength(0);
         if (ftSec != lastFtSec) {
             hudSb.setLength(0);
-            hudSb.append(String.format("%02d:%02d", ftSec / 3600, (ftSec % 3600) / 60));
+            hudSb.append(String.format("%02d:%02d:%02d", ftSec / 3600, (ftSec % 3600) / 60, ftSec % 60));
             lastFtStr = hudSb.toString();
             lastFtSec = (int) ftSec;
         }

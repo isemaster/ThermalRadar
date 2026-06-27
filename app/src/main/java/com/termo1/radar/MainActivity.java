@@ -303,8 +303,7 @@ public class MainActivity extends Activity {
             return df != null ? df.varioMs : 0;
         }
         @Override public float getHeading() {
-            DisplayFrame df = currentDisplayFrame;
-            return df != null ? df.headingDeg : 0;
+            return 0f; // North-up для реплея
         }
         @Override public float getWindFromDeg() {
             DisplayFrame df = currentDisplayFrame;
@@ -315,7 +314,7 @@ public class MainActivity extends Activity {
             return df != null ? df.windSpeedMs : 0;
         }
         @Override public float getCompassHeading() {
-            return getHeading(); // IGC реплей не имеет компаса
+            return 0f; // North-up для реплея
         }
         @Override public boolean isRunning() { return trackMode; }
         @Override public boolean isFinished() {

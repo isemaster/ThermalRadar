@@ -38,7 +38,7 @@ public class IGCAnalyzer {
     private static final float THERMAL_CONFIRM_TIME = 8f;
     private static final int AVG_WINDOW = 5;
     private static final float VARIO_AVG_WINDOW_SEC = 30f;
-    private static final float WIND_EMA_ALPHA = 0.15f;
+    private static final float WIND_EMA_ALPHA = 0.08f; // smoothing (was 0.15)
     private static final float AIRSPEED_MS = 9.5f;
 
     // ========================================================================
@@ -77,6 +77,7 @@ public class IGCAnalyzer {
     private final float[] ldTimeBuf = new float[LD_BUF_MAX];
     private int ldHead = 0;
     private int ldCount = 0;
+    private float lastLDTime = -10f; // 1Hz sampling guard
 
     // Circling detection
     private float headingAccum = 0f;
@@ -188,6 +189,7 @@ public class IGCAnalyzer {
         hasLastFrame = false;
         lastGpsTimeSec = -1f;
         lastFrameAlt = altitude;
+        lastLDTime = currentTimeSec - 2f; // reset L/D buffer (recalc in 2s)
     }
 
     /** Продвинуться на dt секунд */
@@ -360,6 +362,9 @@ public class IGCAnalyzer {
     // L/D
     // ========================================================================
     private void updateLDBuffer() {
+        // 1Hz sampling: только раз в секунду sim-времени
+        if (currentTimeSec - lastLDTime < 0.9f) return;
+        lastLDTime = currentTimeSec;
         ldLatBuf[ldHead] = pilotLat;
         ldLonBuf[ldHead] = pilotLon;
         ldVarioBuf[ldHead] = smoothVario;

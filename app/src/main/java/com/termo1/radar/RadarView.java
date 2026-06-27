@@ -1262,9 +1262,9 @@ public class RadarView extends View implements View.OnClickListener {
 
             gpsAlt = a.trackReplayer.getAltitude();
 
-            startAlt = 0; // при реплее AGL не считаем
+            startAlt = a.trackReplayer.getLaunchAltitude();
 
-            gpsAgl = gpsAlt;
+            gpsAgl = Math.max(0, gpsAlt - startAlt);
 
         } else {
 
@@ -1346,7 +1346,7 @@ public class RadarView extends View implements View.OnClickListener {
 
             gpsAltVal = a.trackReplayer.getAltitude();
 
-            aglVal = 0f;
+            aglVal = Math.max(0, gpsAltVal - a.trackReplayer.getLaunchAltitude());
 
         } else {
 
@@ -3020,7 +3020,7 @@ public class RadarView extends View implements View.OnClickListener {
 
         // Строка 2: seekbar
 
-        float barY = y + 16;
+        float barY = y + 6; // +10px выше
 
         float barH = 6;
 
@@ -3062,11 +3062,13 @@ public class RadarView extends View implements View.OnClickListener {
 
         // Строка 3: кнопки
 
-        float btnY = barY + barH + 28;
+        float btnY = barY + barH + 18; // +10px выше
 
         float btnW = 80, btnH = 44;
 
         pbBtnPaint.setStrokeWidth(5);
+
+        pbBtnPaint.setColor(Color.argb(255, 255, 60, 60)); // красные кнопки
 
 
 
@@ -3077,6 +3079,8 @@ public class RadarView extends View implements View.OnClickListener {
         boolean isPaused = a.trackReplayer != null && a.trackReplayer.isPaused();
 
         pbTextPaint.setTextSize(30);
+
+        pbTextPaint.setColor(Color.argb(255, 255, 60, 60));
 
         canvas.drawText(isPaused ? "▶" : "❚❚", pbPlayBtn.centerX(), pbPlayBtn.centerY() + 10, pbTextPaint);
 
