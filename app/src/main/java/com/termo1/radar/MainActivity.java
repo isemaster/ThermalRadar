@@ -264,6 +264,8 @@ public class MainActivity extends Activity {
     boolean simMode;
     boolean scenarioMode;
     boolean trackMode;
+    /** AUTO-3: блокирует автостарт когда пользователь в Settings */
+    private boolean userInSettings = false;
     SimulationManager simulation;
     FlightSimulator flightSim;
     TrackReplayer trackReplayer;
@@ -647,6 +649,11 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         running = true;
+        // AUTO-4: UI активен — разрешаем автостарт
+        userInSettings = false;
+        if (flightController != null) {
+            flightController.setUserPaused(false);
+        }
 
         // Фикс 3: если в режиме реплея — не запускаем GPS и сенсоры
         if (trackMode) {
@@ -754,6 +761,11 @@ public class MainActivity extends Activity {
         // Сенсоры/GPS/WakeLock НЕ трогаем (C-02 fix: иначе автостарт не сработает
         // при выключенном экране до взлёта).
         // ThermalRadarService держит foreground и WakeLock.
+        // AUTO-3: помечаем что UI на паузе — блокируем автостарт в настройках/фоне
+        userInSettings = true;
+        if (flightController != null) {
+            flightController.setUserPaused(true);
+        }
         stopTestMode();
     }
 
@@ -1011,7 +1023,13 @@ public class MainActivity extends Activity {
             new FlightStateMachine.FlightStateListener() {
         @Override
         public void onFlightStarted() {
-            if (trackMode) return; // не пишем лог при реплее
+            if (trackMode || simMode || scenarioMode || testMode) return;
+            // AUTO-5: блокировать автостарт пока пользователь в настройках
+            if (userInSettings) {
+                android.util.Log.w("TERMO1",
+                        "Suppressing autostart: user is in settings");
+                return;
+            }
             // Единое имя файла для IGC и sensor companion
             java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("yyyyMMdd_HHmmss", java.util.Locale.US);
             String baseName = "Flight_" + sdf.format(new java.util.Date());
@@ -1764,6 +1782,10 @@ public class MainActivity extends Activity {
             logManager.stopLogging();
         }
         trackMode = true;
+        // AUTO-1: синхронизируем флаги FlightController
+        if (flightController != null) {
+            flightController.setFlags(true, testMode, simMode, scenarioMode);
+        }
         trackStartMs = SystemClock.elapsedRealtime();
 
         synchronized (thermalLock) {
@@ -1804,8 +1826,8 @@ public class MainActivity extends Activity {
             }
         }
 
-        // Создаём анализатор
-        igcAnalyzer = new IGCAnalyzer(result.track);
+        // Создаём анализатор с QNH из H-record
+        igcAnalyzer = new IGCAnalyzer(result.track, result.qnhHpa);
         igcAnalyzer.scrollTo(0);
         currentDisplayFrame = igcAnalyzer.getCurrentFrame();
 
@@ -1966,6 +1988,10 @@ public class MainActivity extends Activity {
 
     void stopTrackReplay() {
         trackMode = false;
+        // AUTO-2: синхронизируем флаги FlightController
+        if (flightController != null) {
+            flightController.setFlags(false, testMode, simMode, scenarioMode);
+        }
         // Исправлено MA-3: возвращаем GPS и сенсоры к жизни
         gpsManager.startGps();
         gpsManager.setSensorController(sensorController);

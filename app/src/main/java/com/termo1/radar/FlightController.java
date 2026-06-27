@@ -44,11 +44,12 @@ public class FlightController {
     private static final long BG_INTERVAL_MS = 100L;
     private static final long THERMAL_BASE_INTERVAL_MS = 5000;
 
-    private boolean running;
-    private boolean trackMode;
-    private boolean testMode;
-    private boolean simMode;
-    private boolean scenarioMode;
+    private volatile boolean running;
+    private volatile boolean trackMode;
+    private volatile boolean testMode;
+    private volatile boolean simMode;
+    private volatile boolean scenarioMode;
+    private volatile boolean userPaused;
     private HandlerThread bgThread;
     private Handler bgHandler;
     private Runnable bgTask;
@@ -120,6 +121,10 @@ public class FlightController {
         this.scenarioMode = scenarioMode;
     }
 
+    public void setUserPaused(boolean paused) {
+        this.userPaused = paused;
+    }
+
     public void start() {
         running = true;
         bgThread = new HandlerThread("termo1-bg");
@@ -144,14 +149,17 @@ public class FlightController {
             varioSoundManager.update(sensorController.getVario());
         }
 
+        // AUTO-3/4: разрешаем FSM только если UI активен ИЛИ уже летим
+        boolean allowAutostart = !userPaused || flightStateMachine.isFlying();
+
         // Flight state machine (live only, baro-based)
-        if (!testMode && !simMode && !scenarioMode && !trackMode) {
+        if (allowAutostart && !testMode && !simMode && !scenarioMode && !trackMode) {
             flightStateMachine.update(
                     sensorController.getAltitudeRaw(), bgNow);
         }
 
         // Speed-based flight detection
-        if (!testMode && !simMode && !scenarioMode && !trackMode
+        if (allowAutostart && !testMode && !simMode && !scenarioMode && !trackMode
                 && gpsManager.isReady()
                 && gpsManager.getFixAgeMs() < 5000) {
             flightStateMachine.updateSpeedBased(

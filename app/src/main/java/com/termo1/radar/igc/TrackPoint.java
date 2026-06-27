@@ -5,7 +5,13 @@ package com.termo1.radar.igc;
  *
  * Единое представление для всех источников: чужой IGC, живой полёт.
  * Содержит как pressure altitude (baro), так и GPS altitude.
- * displayAltM = gpsAltM > 0 ? gpsAltM : pressAltM
+ *
+ * Приоритет высоты для отображения (исправлено ALT-1):
+ *   1. Pressure altitude (P_ALT) — гладкая, в 30-50× стабильнее GPS
+ *   2. GPS altitude (G_ALT) — fallback когда P_ALT == 0 ("00000" в IGC)
+ *
+ * QNH-коррекция не применяется на уровне TrackPoint — прокидывается
+ * через IGCAnalyzer.postProcessDisplayFrame().
  */
 public class TrackPoint {
     public final double lat, lon;
@@ -14,7 +20,7 @@ public class TrackPoint {
     public final float timeSec;       // seconds from start of flight
     public final boolean fixValid;    // 'A' = valid, 'V' = invalid
 
-    /** Высота для отображения: GPS preferred, fallback pressure */
+    /** Высота для отображения: баро приоритет (гладкая), GPS fallback (шумная) */
     public final float displayAltM;
 
     public TrackPoint(double lat, double lon,
@@ -26,10 +32,12 @@ public class TrackPoint {
         this.gpsAltM = gpsAltM;
         this.timeSec = timeSec;
         this.fixValid = fixValid;
-        this.displayAltM = (gpsAltM > 0f) ? gpsAltM : pressAltM;
+        // ALT-1: Баро должна быть приоритет — она в 30-50 раз глаже GPS.
+        // Было: (gpsAltM > 0f) ? gpsAltM : pressAltM
+        this.displayAltM = (pressAltM > 0f) ? pressAltM : gpsAltM;
     }
 
-    /** Высота для расчёта vario: pressure (baro — гладкая) */
+    /** Высота для расчёта vario: та же логика — баро приоритет */
     public float getVarioAltM() {
         return (pressAltM > 0f) ? pressAltM : gpsAltM;
     }

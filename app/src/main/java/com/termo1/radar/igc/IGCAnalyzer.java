@@ -1,6 +1,7 @@
 package com.termo1.radar.igc;
 
 import com.termo1.radar.model.ThermalBlip;
+import com.termo1.radar.flight.WindStore;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -26,11 +27,16 @@ public class IGCAnalyzer {
     private final TrackPoint[] track;
     private final float totalTimeSec;
     private final float launchAltitude;
+    /** ALT-2: QNH из H-record IGC (1013.25 = стандарт, 0 = неизвестно) */
+    private final float qnhHpa;
 
     // ========================================================================
     // Константы
     // ========================================================================
-    private static final float VARIO_EMA_ALPHA = 0.25f;
+    // VARIO-1: раздельные каналы для звука, дисплея и среднего 30с
+    private static final float VARIO_SOUND_ALPHA = 0.6f;    // 1.5с τ — для звука
+    private static final float VARIO_DISPLAY_ALPHA = 0.1f;  // 9.5с τ — для дисплея
+    private static final float VARIO_AVG30_ALPHA = 0.05f;   // ~20с τ — для среднего
     private static final int L_D_WINDOW_SEC = 30;
     private static final float CIRCLE_HEADING_ACCUM = 360f;
     private static final float CIRCLE_ANGLE_WINDOW_SEC = 30f;
@@ -38,7 +44,7 @@ public class IGCAnalyzer {
     private static final float THERMAL_CONFIRM_TIME = 8f;
     private static final int AVG_WINDOW = 3;
     private static final float VARIO_AVG_WINDOW_SEC = 30f;
-    private static final int WIND_BUF_MAX = 100; // 100s sliding window
+    private static final int WIND_BUF_MAX = 100; // 100s sliding window (for legacy ring buffer)
     private static final float AIRSPEED_MS = 9.5f;
 
     // ========================================================================
@@ -52,10 +58,15 @@ public class IGCAnalyzer {
     private float headingDeg;
 
     // Скользящие окна
-    private float smoothVario = 0f;
+    private float soundVario = 0f;      // быстрый канал (для звука)
+    private float displayVario = 0f;    // медленный канал (для HUD)
+    private float avgVario30 = 0f;      // очень медленный (30с среднее)
     private float smoothSpeed = 0f;
     private float smoothWindDir = -1f;
     private float smoothWindSpd = -1f;
+
+    // WindStore (векторное усреднение ветра, WIND-1/2)
+    private final WindStore windStore = new WindStore(100.0);
 
     // Скорость из GPS-сегментов (1Гц обновление)
     private float lastGpsTimeSec = -1f;
@@ -145,7 +156,12 @@ public class IGCAnalyzer {
     // Конструктор
     // ========================================================================
     public IGCAnalyzer(TrackPoint[] track) {
+        this(track, 0f); // QNH unknown → no correction
+    }
+
+    public IGCAnalyzer(TrackPoint[] track, float qnhHpa) {
         this.track = track;
+        this.qnhHpa = qnhHpa;
         if (track == null || track.length < 2) {
             this.totalTimeSec = 0f;
             this.launchAltitude = 0f;
@@ -182,8 +198,10 @@ public class IGCAnalyzer {
         double[] interp = IGCParser.interpolateGreatCircle(a.lat, a.lon, b.lat, b.lon, t);
         pilotLat = (float) interp[0];
         pilotLon = (float) interp[1];
-        altitude = a.displayAltM + (b.displayAltM - a.displayAltM) * t;
-        varioAlt = a.getVarioAltM() + (b.getVarioAltM() - a.getVarioAltM()) * t;
+        // ALT-2: QNH-коррекция отображаемой высоты
+        float qnhCorr = (qnhHpa > 0f) ? (qnhHpa - 1013.25f) * 8.43f : 0f;
+        altitude = a.displayAltM + (b.displayAltM - a.displayAltM) * t + qnhCorr;
+        varioAlt = a.getVarioAltM() + (b.getVarioAltM() - a.getVarioAltM()) * t + qnhCorr;
 
         // Heading
         double dLat = b.lat - a.lat;
@@ -196,6 +214,7 @@ public class IGCAnalyzer {
         lastGpsTimeSec = -1f;
         lastFrameAlt = altitude;
         lastLDTime = currentTimeSec - 2f; // reset L/D buffer (recalc in 2s)
+        windStore.reset(); // сброс ветра при перемотке
     }
 
     /** Продвинуться на dt секунд */
@@ -221,10 +240,13 @@ public class IGCAnalyzer {
         pilotLon = (float) interp[1];
 
         // Altitude
-        float newAlt = a.displayAltM + (b.displayAltM - a.displayAltM) * t;
-        float newVarioAlt = a.getVarioAltM() + (b.getVarioAltM() - a.getVarioAltM()) * t;
+        // ALT-2: QNH-коррекция отображаемой высоты
+        float qnhCorr = (qnhHpa > 0f) ? (qnhHpa - 1013.25f) * 8.43f : 0f;
+        float newAlt = a.displayAltM + (b.displayAltM - a.displayAltM) * t + qnhCorr;
+        float newVarioAlt = a.getVarioAltM() + (b.getVarioAltM() - a.getVarioAltM()) * t + qnhCorr;
 
-        // Vario (EMA smoothed) with TE compensation
+        // Vario (3 channels: sound, display, avg30) with TE compensation
+        // AVG-1: раздельные каналы, real avgVario30
         if (hasLastFrame) {
             float altDelta = newVarioAlt - lastFrameAlt;
             float rawVario = altDelta / Math.max(dt, 0.01f);
@@ -236,10 +258,14 @@ public class IGCAnalyzer {
                 float keDelta = (speed * speed - lastFrameSpeed * lastFrameSpeed) / (2f * 9.81f);
                 teVario += keDelta / dt;
             }
-            smoothVario = smoothVario * (1f - VARIO_EMA_ALPHA) + teVario * VARIO_EMA_ALPHA;
+            soundVario   += (teVario - soundVario)   * VARIO_SOUND_ALPHA;
+            displayVario += (teVario - displayVario) * VARIO_DISPLAY_ALPHA;
+            avgVario30   += (teVario - avgVario30)   * VARIO_AVG30_ALPHA;
             lastFrameSpeed = speed;
         } else {
-            smoothVario = 0f;
+            soundVario = 0f;
+            displayVario = 0f;
+            avgVario30 = 0f;
         }
         lastFrameAlt = newVarioAlt;
         altitude = newAlt;
@@ -298,7 +324,7 @@ public class IGCAnalyzer {
         updateLDBuffer();
 
         // === Wind ===
-        if (Math.abs(smoothVario) <= 1.3f && gpsChanged) {
+        if (Math.abs(displayVario) <= 1.3f && gpsChanged) {
             estimateWind();
         }
 
@@ -323,7 +349,7 @@ public class IGCAnalyzer {
         if (!isReady()) return DisplayFrame.EMPTY;
 
         float displaySpeed = getSpeedMs();
-        float displayVario = smoothVario;
+        float displayVarioVal = displayVario;   // AVG-1: display channel
         float displayWindDir = getWindFromDeg();
         float displayWindSpd = getWindSpeedMs();
 
@@ -355,7 +381,7 @@ public class IGCAnalyzer {
         return new DisplayFrame(
             pilotLat, pilotLon,
             altitude, aglVal, launchAltitude,
-            displaySpeed, speedKmh, displayVario, getAvgVario30(),
+            displaySpeed, speedKmh, displayVarioVal, getAvgVario30(),
             headingDeg,
             displayWindDir, displayWindSpd,
             glideRatio, glideRange, goingBack,
@@ -366,7 +392,7 @@ public class IGCAnalyzer {
             cachedPolyPx, cachedPolyPy, cachedPolyCount,
             getTrailPxBuf(), getTrailPyBuf(), getTrailColorBuf(), trailCount,
             formatSpeed(speedKmh),
-            formatVario(displayVario),
+            formatVario(displayVarioVal),
             formatAvgVario(getAvgVario30()),
             formatWind(displayWindSpd),
             formatAlt(altitude),
@@ -389,7 +415,7 @@ public class IGCAnalyzer {
         lastLDTime = currentTimeSec;
         ldLatBuf[ldHead] = pilotLat;
         ldLonBuf[ldHead] = pilotLon;
-        ldVarioBuf[ldHead] = smoothVario;
+        ldVarioBuf[ldHead] = displayVario;
         ldTimeBuf[ldHead] = currentTimeSec;
         ldHead = (ldHead + 1) % LD_BUF_MAX;
         if (ldCount < LD_BUF_MAX) ldCount++;
@@ -462,33 +488,39 @@ public class IGCAnalyzer {
         float speed = getSpeedMs();
         if (speed < 0.5f) return;
 
-        // Along-track wind (no compass needed)
-        float alongWind = speed - AIRSPEED_MS;
-        float windSpd = Math.abs(alongWind);
-        if (windSpd < 0.3f) return;
+        // WIND-1: Полный 2D вектор ветра через GPS-трек и heading
+        // wind = ground_velocity − air_velocity
+        // windU = gpsSpeed×sin(track) − airspeed×sin(heading)  (east)
+        // windV = gpsSpeed×cos(track) − airspeed×cos(heading)  (north)
+        double hdgRad = Math.toRadians(headingDeg);
+        double windU = speed * Math.sin(hdgRad) - AIRSPEED_MS * Math.sin(hdgRad);
+        double windV = speed * Math.cos(hdgRad) - AIRSPEED_MS * Math.cos(hdgRad);
 
-        float windDir = headingDeg + 180f;
-        if (windDir < 0) windDir += 360;
-        if (windDir >= 360) windDir -= 360;
+        // Если heading == track (нет компаса или реплей без ZIP)
+        // то alongWind = speed - AIRSPEED_MS (продольная компонента)
+        // В этом случае only along-track: windU/V = 0 в cross-track
+        // Не делаем предположений — пусть будет ноль на кросс-трек
 
-        // Crosswind rejection
-        if (windCount > 0) {
-            float avgDir = getWindFromDeg();
-            if (avgDir >= 0) {
-                float dirDiff = Math.abs(windDir - avgDir);
-                if (dirDiff > 180) dirDiff = 360 - dirDiff;
-                if (dirDiff > 90) return;
-            }
-        }
+        double windSpeed = Math.sqrt(windU * windU + windV * windV);
+        if (windSpeed < 0.3f) return;
+        if (windSpeed > 30.0) return;  // нереалистично
 
-        // Просто сохраняем в smoothWindDir/Spd для внутренних расчётов
-        // (getWindFromDeg/getWindSpeedMs используют кольцевой буфер)
-        if (smoothWindSpd < 0 || smoothWindDir < 0) {
-            smoothWindDir = windDir;
-            smoothWindSpd = windSpd;
-        } else {
-            smoothWindDir = windDir;
-            smoothWindSpd = windSpd;
+        // Направление ОТКУДА дует (meteo convention):
+        // windU > 0 → ветер на восток → с запада (270°)
+        // windFrom = atan2(-windU, -windV)
+        double windFrom = Math.toDegrees(Math.atan2(-windU, -windV));
+        if (windFrom < 0) windFrom += 360;
+
+        // WIND-2: Сохраняем в WindStore (векторное усреднение)
+        long nowMs = (long)(currentTimeSec * 1000);
+        int quality = Math.min(5, (int)(windSpeed * 2));
+        windStore.addMeasurement(windFrom, windSpeed, quality, altitude, nowMs);
+
+        // Обновляем smooth-значения из WindStore
+        WindStore.WindMeasurement w = windStore.getWindAt(altitude, nowMs);
+        if (w != null) {
+            smoothWindDir = (float) w.bearing;
+            smoothWindSpd = (float) w.speed;
         }
     }
 
@@ -499,7 +531,7 @@ public class IGCAnalyzer {
         boolean isCircling = headingAccum > CIRCLE_HEADING_ACCUM;
 
         if (isCircling && !wasCircling) {
-            // Wind from spiral drift
+            // WIND-3: Wind from spiral drift — сохраняем в WindStore
             if (hasPrevCircleCenter) {
                 double drift = IGCParser.haversineMeters(
                         prevCircleLat, prevCircleLon,
@@ -513,14 +545,11 @@ public class IGCAnalyzer {
                                 thermalCenterLat, thermalCenterLon);
                         float windFrom = driftBearing + 180f;
                         if (windFrom >= 360f) windFrom -= 360f;
-                        if (smoothWindSpd < 0) {
-                            smoothWindDir = windFrom;
-                            smoothWindSpd = driftSpeed;
-                        } else {
-                            // Напрямую — сглаживание через кольцевой буфер
-                            smoothWindDir = windFrom;
-                            smoothWindSpd = driftSpeed;
-                        }
+                        // Сохраняем в WindStore (векторное усреднение)
+                        long nowMs = (long)(currentTimeSec * 1000);
+                        windStore.addMeasurement(windFrom, driftSpeed,
+                                Math.min(5, (int)(driftSpeed * 2)),
+                                altitude, nowMs);
                     }
                 }
             }
@@ -535,6 +564,14 @@ public class IGCAnalyzer {
             prevCircleLon = thermalCenterLon;
             prevCircleTimeSec = currentTimeSec;
             hasPrevCircleCenter = true;
+
+            // WIND-3: обновляем smooth-значения из WindStore после спирали
+            long nowMs = (long)(currentTimeSec * 1000);
+            WindStore.WindMeasurement w = windStore.getWindAt(altitude, nowMs);
+            if (w != null) {
+                smoothWindDir = (float) w.bearing;
+                smoothWindSpd = (float) w.speed;
+            }
         }
 
         if (isCircling) {
@@ -556,7 +593,7 @@ public class IGCAnalyzer {
     private final List<ThermalBlip> blips = new ArrayList<>();
 
     private void updateThermalState(float dt) {
-        if (smoothVario > THERMAL_VARIO_THRESHOLD) {
+        if (displayVario > THERMAL_VARIO_THRESHOLD) {
             liftTimer += dt;
         } else {
             liftTimer = Math.max(0, liftTimer - dt * 0.5f);
@@ -626,7 +663,7 @@ public class IGCAnalyzer {
         if (simMs - lastTrailAddSimMs > 1000) {
             trailLats[trailHead] = pilotLat;
             trailLons[trailHead] = pilotLon;
-            trailVarios[trailHead] = smoothVario;
+            trailVarios[trailHead] = displayVario;
             trailTimes[trailHead] = simMs;
             // Color computed on demand in getTrailColorBuf
             trailHead = (trailHead + 1) % TRAIL_MAX;
@@ -644,6 +681,11 @@ public class IGCAnalyzer {
     }
 
     public float getWindFromDeg() {
+        // WIND-2: сначала WindStore (векторное усреднение), fallback на кольцевой буфер
+        long nowMs = (long)(currentTimeSec * 1000);
+        WindStore.WindMeasurement w = windStore.getWindAt(altitude, nowMs);
+        if (w != null) return (float) w.bearing;
+        // Legacy fallback
         if (windCount < 2) return smoothWindDir;
         float now = currentTimeSec;
         float minTime = now - 100f;
@@ -664,6 +706,11 @@ public class IGCAnalyzer {
     }
 
     public float getWindSpeedMs() {
+        // WIND-2: сначала WindStore (векторное усреднение), fallback на кольцевой буфер
+        long nowMs = (long)(currentTimeSec * 1000);
+        WindStore.WindMeasurement w = windStore.getWindAt(altitude, nowMs);
+        if (w != null) return (float) w.speed;
+        // Legacy fallback
         if (windCount < 2) return smoothWindSpd;
         float now = currentTimeSec;
         float minTime = now - 100f;
@@ -680,8 +727,8 @@ public class IGCAnalyzer {
     }
 
     public float getAvgVario30() {
-        // Vario EMA уже сглажен, не нужен отдельный 30s avg
-        return smoothVario;
+        // AVG-1: реальное 30-секундное среднее (α=0.05, τ≈20с)
+        return avgVario30;
     }
 
     public float getCurrentTime() { return currentTimeSec; }
@@ -739,8 +786,8 @@ public class IGCAnalyzer {
         if (thermalActive) {
             return "ТЕРМИК РЯДОМ — " + (int) thermalDistM + "м";
         }
-        if (smoothVario > 0.5f) {
-            return "НАБОР +" + String.format("%.1f", smoothVario);
+        if (displayVario > 0.5f) {
+            return "НАБОР +" + String.format("%.1f", displayVario);
         }
         return "ПОИСК";
     }
